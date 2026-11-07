@@ -13,4 +13,4 @@ Household Financial Control Tower: a family-collaborative app for a household's 
 - `assets/` - the single asset library; every asset is registered in `assets/ASSETS.md`
 
 ## Name and logo
-HomeTower. Logo: a house that is also a control tower; the tower's radar arc doubles as a rising chart line. One deep color, no mascot. See `assets/ASSETS.md`.
+HomeTower. Logo (final, supplied by the owner on 2026-11-07): a rising tower topped by an upward arrow, teal and deep navy, with the HomeTower wordmark below. Files: `assets/logo.png` (full lockup) and `assets/logo-mark.png` (symbol only). See `assets/ASSETS.md`.
