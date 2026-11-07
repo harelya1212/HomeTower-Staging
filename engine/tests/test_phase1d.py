@@ -136,3 +136,20 @@ def test_foreign_tax_credit_limitation():
     r2 = foreign_tax_credit(5_000, 20_000, 167_800, 26_340)
     assert r2.credit_allowed == 3_139.45
     assert r2.excess_credit == 1_860.55
+
+
+# ---------- freshness ----------
+
+def test_freshness_windows():
+    from datetime import date as _date
+    from hometower_engine.freshness import document_freshness, reminder_candidates
+    today = _date(2026, 11, 7)
+    stale = document_freshness(DocumentRecord("payslip", "parsed", 0.9, _date(2026, 10, 1)), today)
+    assert stale.status == "stale" and stale.age_days == 37
+    aging = document_freshness(DocumentRecord("payslip", "parsed", 0.9, _date(2026, 10, 8)), today)
+    assert aging.status == "aging"  # age 30, window 35, inside the 7-day warning
+    fresh = document_freshness(DocumentRecord("401k_statement", "parsed", 0.9, _date(2026, 9, 18)), today)
+    assert fresh.status == "fresh"
+    cands = reminder_candidates([DocumentRecord("payslip", "parsed", 0.9, _date(2026, 10, 1)),
+                                 DocumentRecord("401k_statement", "parsed", 0.9, _date(2026, 9, 18))], today)
+    assert [c.doc_type for c in cands] == ["payslip"]
