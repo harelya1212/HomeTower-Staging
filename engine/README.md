@@ -42,7 +42,12 @@ Not modelled yet (the engine says so rather than guessing):
 - Credits (child tax credit, AOTC), AMT, itemized-deduction detail
 
 ## Data status
-Both 2026 packs are marked ESTIMATED in their own files: the figures were
-ported from the prototype's constants. Before any production use they must
-be verified against official IRS / state DOR publications and the pack
-version bumped.
+- `federal-2026.json` - version 2026.1-official, VERIFIED 2026-11-07
+  against IRS Revenue Procedure 2025-32 (IR-2025-103). The prototype's
+  estimated constants (2026.0-estimated) proved materially wrong - every
+  bracket threshold and the standard deductions differed - and were
+  replaced wholesale. Golden tests G1-G3 were recomputed on the official
+  figures.
+- `states-2026.json` - still ESTIMATED (ported prototype figures). The AZ
+  2.5% flat rate is statutory since 2023; a DOR-publication verification
+  pass over all states is still owed before production use.
