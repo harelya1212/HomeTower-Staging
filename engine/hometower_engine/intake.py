@@ -34,6 +34,23 @@ class DocumentRecord:
 
 
 @dataclass
+class CalibrationRecord:
+    """Last year's FILED returns and what the authorities actually said.
+
+    The calibration anchor (owner requirement, 2026-11-07): the prior
+    return as filed to the IRS and the state, verified against the real
+    outcome (actual refund or actual amount owed). The basic plan always
+    asks for it; when it is missing, the app keeps asking.
+    """
+    tax_year: int
+    federal_filed: bool = False
+    state_filed: bool = False
+    actual_federal_refund_owe: Optional[float] = None  # + refund, - owed
+    actual_state_refund_owe: Optional[float] = None
+    outcome_verified: bool = False  # checked against the IRS/state outcome
+
+
+@dataclass
 class HouseholdIntake:
     name: str
     state: str
@@ -47,6 +64,7 @@ class HouseholdIntake:
     has_foreign_accounts_or_income: bool = False
     ytd_payroll_known: bool = False
     capital_loss_carryforward_known: bool = False
+    calibration: Optional[CalibrationRecord] = None
 
 
 def validate(h: HouseholdIntake) -> list[str]:
