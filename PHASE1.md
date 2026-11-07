@@ -21,11 +21,23 @@
 ## Success gate for Phase 1 (defined before code)
 Beta households that: complete intake, receive a projection against their target, and return in month 2 for the next snapshot. If that does not happen, the problem is the product, not the marketing.
 
-## Equity and foreign scope (decided 2026-11-07, on the owner's question)
-- Phase 1 TaxImpact models purchased lots. A post-vest RSU sale is modelled as a normal lot (basis = vest-date value, holding period from vest). ESPP shares after a disqualifying disposition likewise.
-- The intake ASKS about RSU, ESPP and non-US accounts/income from day one and flags them as not-yet-modelled - the app states the limit instead of estimating (accuracy rules).
-- Deferred to the Stock/Equity Scenario Engine phase: RSU vesting tracker with the 22% supplemental-withholding gap, ESPP qualifying/disqualifying disposition classification.
-- Deferred, separate module: foreign-source income and accounts (FBAR, Form 8938, foreign tax credit, treaties).
+## Equity and foreign scope (owner decision 2026-11-07, superseding the morning split)
+ALL of the following enter Phase 1 IN FULL. Owner's reason, recorded: he
+personally holds such items, and will use his own real cases to judge the
+quality of the answers.
+- Stocks: TaxImpact on purchased lots (already in the wedge).
+- RSU: vesting events modelled - ordinary income at vest, the 22%
+  supplemental-withholding gap projected against the household's actual
+  projection, and post-vest sales as lots (basis = vest-date value,
+  holding period from vest).
+- ESPP: qualifying vs disqualifying disposition classification, discount
+  as ordinary income under each class, basis and holding-period results.
+- Foreign: non-US accounts and income module - FBAR (FinCEN 114) filing
+  test, Form 8938 filing test, foreign tax credit limitation.
+- The intake still ASKS about all of these from day one; nothing is
+  flagged not-yet-modelled for these categories any more. What remains
+  outside Phase 1 in this area: treaty-by-treaty detail and
+  multi-year equity scenario depth (the deferred Scenario Engines).
 
 ## DEFERRED - re-examine at phase gates, do not delete
 - Full Retirement Scenario Engine (per-spouse, 10/12/15 years)
