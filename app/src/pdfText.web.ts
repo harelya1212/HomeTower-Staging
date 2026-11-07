@@ -4,11 +4,16 @@
 // Tax PDFs (returns, statements, 1099s) are generated with a real text
 // layer, so extraction quality matches the paste-text path and every
 // field is still user-confirmed before saving.
+//
+// LOADING RULE (white-page incident, 2026-11-07): pdf.js is loaded
+// LAZILY, inside this action only - never at module scope. Bisect
+// proof: the statically-imported pdfjs-dist 6.5.438 legacy build
+// crashed the whole app at startup (blank page in Chromium and iOS
+// Safari); the identical build without it rendered fine. A lazy load
+// inside an explicit user action is not the TReps failure mode (that
+// was a silent-catch dynamic import gating a STATUS): here every load
+// or parse failure returns as a stage result shown in the UI.
 // Worker version pinned to the installed pdfjs-dist version (6.5.438).
-import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
-
-GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.worker.min.mjs";
-
 export interface PdfTextOutcome {
   text: string;
   stage: string;
@@ -21,9 +26,16 @@ interface TextItemLike {
 }
 
 export async function extractPdfText(uri: string): Promise<PdfTextOutcome> {
+  let pdfjs: typeof import("pdfjs-dist/legacy/build/pdf.mjs");
+  try {
+    pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    pdfjs.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.worker.min.mjs";
+  } catch (e) {
+    return { text: "", stage: "pdf-load", error: e instanceof Error ? e.message : String(e) };
+  }
   try {
     const data = await (await fetch(uri)).arrayBuffer();
-    const pdf = await getDocument({ data }).promise;
+    const pdf = await pdfjs.getDocument({ data }).promise;
     const pages: string[] = [];
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
