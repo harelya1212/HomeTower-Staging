@@ -36,8 +36,16 @@ quality of the answers.
   test, Form 8938 filing test, foreign tax credit limitation.
 - The intake still ASKS about all of these from day one; nothing is
   flagged not-yet-modelled for these categories any more. What remains
-  outside Phase 1 in this area: treaty-by-treaty detail and
+  outside Phase 1 in this area: treaties OTHER than US-Israel and
   multi-year equity scenario depth (the deferred Scenario Engines).
+- Treaties (owner decision 2026-11-07, later the same day): the US-Israel
+  treaty enters Phase 1 IN FULL - withholding caps (dividends 25% /
+  12.5% direct, interest 17.5% / 10% financial institutions / 0%
+  government-backed, royalties 10% copyright / 15% industrial), the
+  Article 6(3) saving clause and what survives it, Social Security and
+  pension taxing rights, relief via the foreign tax credit. Data lives in
+  the versioned treaty-us-il content pack, cross-checked against the IRS
+  treaty table. Other countries' treaties stay deferred.
 
 ## DEFERRED - re-examine at phase gates, do not delete
 - Full Retirement Scenario Engine (per-spouse, 10/12/15 years)
