@@ -4,6 +4,7 @@ import { NavigationContainer } from "@react-navigation/native";
 import { StatusBar } from "expo-status-bar";
 import React from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
+import AdBanner, { AD_BANNER_HEIGHT } from "./src/components/AdBanner.tsx";
 import DocumentsScreen from "./src/screens/DocumentsScreen.tsx";
 import HomeScreen, { NAVY, TEAL } from "./src/screens/HomeScreen.tsx";
 import IntakeScreen from "./src/screens/IntakeScreen.tsx";
@@ -37,6 +38,7 @@ function Shell() {
   if (!loaded) return null;
   if (!state.onboarded) return <OnboardingScreen />;
   return (
+    <View style={styles.root}>
     <NavigationContainer>
       <StatusBar style="light" />
       <Tab.Navigator
@@ -59,6 +61,10 @@ function Shell() {
         <Tab.Screen name="Intake" component={IntakeScreen} />
       </Tab.Navigator>
     </NavigationContainer>
+    <View style={styles.adOverlay}>
+      <AdBanner />
+    </View>
+    </View>
   );
 }
 
@@ -71,6 +77,8 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1 },
+  adOverlay: { position: "absolute", left: 0, right: 0, bottom: 68, height: AD_BANNER_HEIGHT },
   lockup: { flexDirection: "row", alignItems: "center", gap: 8 },
   logo: { width: 30, height: 30, borderRadius: 7 },
   wordmark: { color: "#FFFFFF", fontSize: 19, fontWeight: "800" },
