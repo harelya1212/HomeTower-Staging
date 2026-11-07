@@ -35,6 +35,19 @@ const TAB_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
   Intake: "person",
 };
 
+// QA round 3 root fix: the My House tab label shows the household name
+// (owner requirement), but it must NOT be an inline options value - an
+// inline options object that changes on every keystroke of the name
+// field can remount the screen on web and eat the typing, which made
+// the household name look uneditable. The label is a component that
+// reads the store itself; the renderer identity is stable.
+function MyHouseTabLabel({ color }: { color: string }) {
+  const { state } = useHousehold();
+  const label = state.intake.name ? state.intake.name.slice(0, 12) : "My House";
+  return <Text style={{ color, fontSize: 12, fontWeight: "700" }}>{label}</Text>;
+}
+const renderMyHouseLabel = ({ color }: { color: string }) => <MyHouseTabLabel color={color} />;
+
 function Shell() {
   const { state, loaded } = useHousehold();
   if (!loaded) return null;
@@ -62,7 +75,7 @@ function Shell() {
         <Tab.Screen
           name="MyHouse"
           component={MyHouseScreen}
-          options={{ tabBarLabel: state.intake.name ? state.intake.name.slice(0, 12) : "My House" }}
+          options={{ tabBarLabel: renderMyHouseLabel }}
         />
         <Tab.Screen name="Plan" component={PlanScreen} />
         <Tab.Screen name="Intake" component={IntakeScreen} />
