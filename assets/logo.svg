@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" fill="none">
+  <!-- HomeTower logo v1: a house that is also a control tower.
+       The radar arcs sit above the antenna; inside the house, a single
+       rising chart line. One deep color: night blue #0E2A47. -->
+  <g stroke="#0E2A47" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <!-- radar arcs -->
+    <path d="M94 26 A 30 30 0 0 1 146 26" fill="none"/>
+    <path d="M103 37 A 19 19 0 0 1 137 37" fill="none"/>
+    <!-- tower cab -->
+    <rect x="100" y="46" width="40" height="18" rx="4" fill="none"/>
+    <!-- tower column down to the roof peak -->
+    <line x1="111" y1="64" x2="114" y2="86"/>
+    <line x1="129" y1="64" x2="126" y2="86"/>
+    <!-- roof -->
+    <polyline points="28,130 120,76 212,130" fill="none"/>
+    <!-- walls and base -->
+    <line x1="50" y1="130" x2="50" y2="198"/>
+    <line x1="190" y1="130" x2="190" y2="198"/>
+    <line x1="40" y1="198" x2="200" y2="198"/>
+    <!-- rising chart line inside the house -->
+    <polyline points="68,178 96,160 122,168 150,142 176,128" fill="none"/>
+  </g>
+  <circle cx="120" cy="46" r="5" fill="#0E2A47"/>
+  <circle cx="176" cy="128" r="6" fill="#0E2A47"/>
+</svg>
