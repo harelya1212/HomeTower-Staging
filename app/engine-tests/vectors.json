@@ -1,0 +1,125 @@
+[
+ {
+  "id": "federal_mfj_200k",
+  "expect": {
+   "total_tax": 26340.0,
+   "taxable_income": 167800,
+   "marginal_rate": 0.22
+  }
+ },
+ {
+  "id": "federal_single_80k",
+  "expect": {
+   "total_tax": 8770.0
+  }
+ },
+ {
+  "id": "federal_mfj_ltcg",
+  "expect": {
+   "ltcg_tax": 7500.0,
+   "total_tax": 22840.0
+  }
+ },
+ {
+  "id": "niit",
+  "expect": {
+   "value": 760.0
+  }
+ },
+ {
+  "id": "az_gain",
+  "expect": {
+   "tax": 250.0
+  }
+ },
+ {
+  "id": "wash_sale",
+  "expect": {
+   "triggered": true,
+   "disallowed_loss": 1000.0,
+   "adjusted_basis_per_share": 175.0
+  }
+ },
+ {
+  "id": "taximpact_st",
+  "expect": {
+   "total_tax_impact": 735.0,
+   "savings_by_waiting": 210.0,
+   "days_until_long_term": 137
+  }
+ },
+ {
+  "id": "taximpact_carryforward",
+  "expect": {
+   "losses_applied": 1000,
+   "adjusted_gain": 2000.0
+  }
+ },
+ {
+  "id": "scenario_withholding",
+  "expect": {
+   "base_federal_tax": 21940.0,
+   "modified_federal_tax": 21940.0,
+   "federal_tax_delta": 0.0,
+   "base_refund_owe": 3060.0,
+   "modified_refund_owe": 5060.0,
+   "marginal_rate_pct": 22.0,
+   "action": "change_withholding",
+   "delta_amount": 2000
+  }
+ },
+ {
+  "id": "rsu_vest",
+  "expect": {
+   "ordinary_income": 50000.0,
+   "federal_withheld": 11000.0,
+   "projected_gap": 128.0
+  }
+ },
+ {
+  "id": "espp_disqual",
+  "expect": {
+   "ordinary_income_total": 1600.0,
+   "capital_gain_total": 1000.0,
+   "capital_is_long_term": false
+  }
+ },
+ {
+  "id": "espp_qual",
+  "expect": {
+   "ordinary_income_total": 600.0,
+   "capital_gain_total": 2000.0
+  }
+ },
+ {
+  "id": "fbar",
+  "expect": {
+   "required": true
+  }
+ },
+ {
+  "id": "f8938",
+  "expect": {
+   "required": true
+  }
+ },
+ {
+  "id": "ftc",
+  "expect": {
+   "credit_allowed": 3139.45,
+   "excess_credit": 1860.55
+  }
+ },
+ {
+  "id": "treaty_div",
+  "expect": {
+   "rate": 0.125
+  }
+ },
+ {
+  "id": "treaty_ss",
+  "expect": {
+   "overrides": false
+  }
+ }
+]
