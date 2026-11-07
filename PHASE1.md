@@ -21,6 +21,12 @@
 ## Success gate for Phase 1 (defined before code)
 Beta households that: complete intake, receive a projection against their target, and return in month 2 for the next snapshot. If that does not happen, the problem is the product, not the marketing.
 
+## Equity and foreign scope (decided 2026-11-07, on the owner's question)
+- Phase 1 TaxImpact models purchased lots. A post-vest RSU sale is modelled as a normal lot (basis = vest-date value, holding period from vest). ESPP shares after a disqualifying disposition likewise.
+- The intake ASKS about RSU, ESPP and non-US accounts/income from day one and flags them as not-yet-modelled - the app states the limit instead of estimating (accuracy rules).
+- Deferred to the Stock/Equity Scenario Engine phase: RSU vesting tracker with the 22% supplemental-withholding gap, ESPP qualifying/disqualifying disposition classification.
+- Deferred, separate module: foreign-source income and accounts (FBAR, Form 8938, foreign tax credit, treaties).
+
 ## DEFERRED - re-examine at phase gates, do not delete
 - Full Retirement Scenario Engine (per-spouse, 10/12/15 years)
 - Full Stock / Equity Scenario Engine
