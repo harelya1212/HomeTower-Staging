@@ -21,24 +21,24 @@ MFJ = "married_filing_jointly"
 
 
 def test_g1_federal_ordinary_mfj():
-    # gross 200,000 - std deduction 30,750 = taxable 169,250
-    # 24,450*.10 + 74,900*.12 + 69,900*.22 = 2,445 + 8,988 + 15,378 = 26,811
+    # Rev. Proc. 2025-32: gross 200,000 - std deduction 32,200 = taxable 167,800
+    # 24,800*.10 + 76,000*.12 + 67,000*.22 = 2,480 + 9,120 + 14,740 = 26,340
     r = compute_federal_tax(200_000, MFJ)
-    assert r.taxable_income == 169_250
-    assert r.total_tax == 26_811.0
+    assert r.taxable_income == 167_800
+    assert r.total_tax == 26_340.0
 
 
 def test_g2_ltcg_stacking():
-    # ordinary taxable 60,000; gain 50,000; 0% LTCG space to 99,100 = 39,100
-    # remaining 10,900 at 15% = 1,635
-    assert compute_ltcg_tax(50_000, 60_000, MFJ) == 1_635.0
+    # ordinary taxable 60,000; gain 50,000; 0% LTCG space to 98,900 = 38,900
+    # remaining 11,100 at 15% = 1,665
+    assert compute_ltcg_tax(50_000, 60_000, MFJ) == 1_665.0
 
 
 def test_g3_federal_single():
-    # gross 80,000 - 15,350 = 64,650
-    # 12,225*.10 + 37,450*.12 + 14,975*.22 = 1,222.50 + 4,494 + 3,294.50 = 9,011
+    # gross 80,000 - 16,100 = 63,900
+    # 12,400*.10 + 38,000*.12 + 13,500*.22 = 1,240 + 4,560 + 2,970 = 8,770
     r = compute_federal_tax(80_000, "single")
-    assert r.total_tax == 9_011.0
+    assert r.total_tax == 8_770.0
 
 
 def test_g4_wash_sale_triggered():
@@ -62,8 +62,8 @@ def test_g6_niit():
 
 def test_g7_regression_st_timing_comparison_no_crash():
     # The prototype crashed here (undefined magi_value). ST gain of 500:
-    # ordinary taxable = 120,000 - 30,750 = 89,250, marginal rate 12%;
-    # ST federal = 500 * 12% = 60; LT federal = 0 (0% bracket room to 99,100);
+    # ordinary taxable = 120,000 - 32,200 = 87,800, marginal rate 12%;
+    # ST federal = 500 * 12% = 60; LT federal = 0 (0% bracket room to 98,900);
     # state 2.5% both ways; waiting must save exactly the 60 difference.
     sale = SaleInput("ACME", "BrokerA", 10, 100.0, 150.0, date(2026, 1, 1), date(2026, 6, 1))
     ctx = SimulationContext(MFJ, 2026, "AZ", 120_000)
