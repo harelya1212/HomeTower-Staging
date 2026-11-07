@@ -42,8 +42,10 @@ Modelled:
   with the 0.80 confidence gate
 
 Not modelled yet (the engine says so rather than guessing):
-- Treaty-by-treaty foreign detail, multi-basket FTC, FTC carryback/
-  carryforward year modelling
+- Treaties other than US-Israel (which IS modelled, `treaty.py` +
+  treaty-us-il pack: withholding caps, saving clause, Social Security
+  and pension positions); multi-basket FTC, FTC carryback/carryforward
+  year modelling
 - Credits (child tax credit, AOTC), AMT, itemized-deduction detail
 
 ## Data status
