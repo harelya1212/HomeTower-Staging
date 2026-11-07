@@ -31,6 +31,7 @@ class DocumentRecord:
     status: str  # parsed | pending_verify | rejected
     confidence: float = 0.0
     captured_on: Optional[date] = None  # freshness is computed from this
+    fields: Optional[dict] = None  # extracted values kept so My House rows can pre-fill
 
 
 @dataclass
