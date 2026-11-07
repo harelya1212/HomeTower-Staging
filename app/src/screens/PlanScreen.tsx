@@ -6,6 +6,7 @@ import { fbarRequired, foreignTaxCredit, form8938Required } from "../../engine/f
 import { simulate } from "../../engine/taximpact.ts";
 import { treatyPosition, withholdingCap } from "../../engine/treaty.ts";
 import { useHousehold } from "../store.tsx";
+import AdSlot from "../components/AdSlot.tsx";
 import { money, NAVY, TEAL } from "./HomeScreen.tsx";
 
 type Tool = "sale" | "equity" | "foreign";
@@ -214,6 +215,7 @@ export default function PlanScreen() {
       {tool === "sale" && <SaleTool />}
       {tool === "equity" && <EquityTool />}
       {tool === "foreign" && <ForeignTool />}
+      <AdSlot />
     </ScrollView>
   );
 }

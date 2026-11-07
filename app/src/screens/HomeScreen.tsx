@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Image, ScrollView, StyleSheet, Text, View } from "react-native";
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const LOGO_MARK = require("../../assets/logo-mark.png");
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { predictionConfidence } from "../../engine/confidence.ts";
 import { householdFreshness, reminderCandidates } from "../../engine/freshness.ts";
 import { accuracyLevel } from "../../engine/intake.ts";
 import { computeHouseholdTax } from "../../engine/snapshot.ts";
+import AdSlot from "../components/AdSlot.tsx";
+import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
+import { goalPct, projectValue } from "../goals.ts";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { todayIso, useHousehold } from "../store.tsx";
 
@@ -18,27 +18,13 @@ export function money(x: number): string {
   return `${sign}$${Math.abs(Math.round(x)).toLocaleString("en-US")}`;
 }
 
-function Chip({ label, color }: { label: string; color: string }) {
-  return (
-    <View style={[styles.chip, { backgroundColor: color }]}>
-      <Text style={styles.chipText}>{label}</Text>
-    </View>
-  );
-}
-
 export default function HomeScreen() {
   const { state, loaded } = useHousehold();
   const [push, setPush] = useState<PushStatus | null>(null);
 
   const snap = useMemo(() => {
     try {
-      return computeHouseholdTax(
-        state.intake.filingStatus,
-        state.grossIncome,
-        state.federalWithholdingYtd,
-        state.stateWithholdingYtd,
-        state.ltcgIncome,
-      );
+      return computeHouseholdTax(state.intake.filingStatus, state.grossIncome, state.federalWithholdingYtd, state.stateWithholdingYtd, state.ltcgIncome);
     } catch {
       return null;
     }
@@ -47,9 +33,12 @@ export default function HomeScreen() {
   const today = todayIso();
   const findings = useMemo(() => householdFreshness(state.intake.documents, today), [state.intake.documents, today]);
   const candidates = useMemo(() => reminderCandidates(state.intake.documents, today), [state.intake.documents, today]);
-  const level = accuracyLevel(state.intake);
   const confidence = useMemo(() => predictionConfidence(state.intake, today), [state.intake, today]);
-  const bandColor = confidence.band === "High" ? "#1E8E3E" : confidence.band === "Moderate" ? "#E37400" : "#C5221F";
+  const level = accuracyLevel(state.intake);
+
+  const g = state.goals;
+  const retirementPct = goalPct(projectValue(g.retirementBalance, g.retirementMonthly, g.retirementYears, g.assumedReturnPct), g.retirementTarget);
+  const eduPct = goalPct(projectValue(g.eduBalance, g.eduMonthly, g.eduYears, g.assumedReturnPct), g.eduTarget);
 
   useEffect(() => {
     getPushStatus().then(setPush);
@@ -58,78 +47,69 @@ export default function HomeScreen() {
     if (loaded) syncStaleReminders(candidates, state.pushEnabled).then(() => getPushStatus().then(setPush));
   }, [loaded, candidates.length, state.pushEnabled]);
 
-  if (!loaded) return <View style={styles.screen}><Text>Loading...</Text></View>;
-  if (!snap) return <View style={styles.screen}><Text>Snapshot is available for Arizona in Phase 1.</Text></View>;
+  if (!loaded) return <View style={styles.screen}><Text style={styles.pad}>Loading...</Text></View>;
+  if (!snap) return <View style={styles.screen}><Text style={styles.pad}>Snapshot is available for Arizona in Phase 1.</Text></View>;
 
-  const refund = snap.federalRefundOwe;
-  const low = state.intake.refundTargetLow ?? 0;
-  const high = state.intake.refundTargetHigh ?? 0;
-  const inBand = refund >= low && refund <= high;
-  const targetColor = inBand ? "#1E8E3E" : refund < low ? "#C5221F" : "#E37400";
-  const targetLabel = inBand ? "GREEN - on target" : refund < low ? "RED - below target" : "YELLOW - over-withheld";
+  const fed = snap.federalRefundOwe;
+  const st = snap.stateRefundOwe;
+  const fedLow = state.intake.refundTargetLow ?? 0;
+  const fedHigh = state.intake.refundTargetHigh ?? 0;
+  const confColor = confidence.band === "High" ? GREEN : confidence.band === "Moderate" ? YELLOW : RED;
+  const ringColor = (pct: number | null) => (pct === null ? "#9DB2C3" : pct >= 80 ? GREEN : pct >= 50 ? YELLOW : RED);
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <View style={styles.brandRow}>
-        <Image source={LOGO_MARK} style={styles.logo} resizeMode="contain" />
-        <Text style={styles.brand}>HomeTower</Text>
-      </View>
-      <Text style={styles.title}>{state.intake.name || "Your household"}</Text>
+      <Text style={styles.household}>{state.intake.name || "Your household"}</Text>
       <Text style={styles.subtitle}>Where do we stand? - {today}</Text>
 
       <View style={styles.card}>
-        <Text style={styles.cardLabel}>Projected federal {refund >= 0 ? "refund" : "amount owed"}</Text>
-        <Text style={styles.bigNumber}>{money(refund)}</Text>
-        <Text style={styles.line}>Your target: {money(low)} - {money(high)}</Text>
-        <Chip label={targetLabel} color={targetColor} />
+        <View style={styles.cardHead}>
+          <Text style={styles.cardLabel}>🇺🇸 Federal refund projection</Text>
+          <Text style={[styles.bigValue, { color: fed >= fedLow && fed <= fedHigh ? GREEN : fed < fedLow ? RED : YELLOW }]}>{money(fed)}</Text>
+        </View>
+        <RefundGauge value={fed} low={fedLow} high={fedHigh} />
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.line}>Federal tax: {money(snap.federalTax)}</Text>
-        <Text style={styles.line}>Arizona tax: {money(snap.stateTax)}</Text>
-        <Text style={styles.line}>Total tax (incl. NIIT {money(snap.niit)}): {money(snap.totalTax)}</Text>
-        <Text style={styles.line}>Marginal rate: {(snap.marginalRate * 100).toFixed(0)}% - next bracket in {money(snap.distanceToNextBracket)}</Text>
-        <Text style={styles.line}>Accuracy level: {level} (derived from your documents)</Text>
+        <View style={styles.cardHead}>
+          <Text style={styles.cardLabel}>🌵 {state.intake.state} state refund projection</Text>
+          <Text style={[styles.bigValue, { color: st >= g.stateRefundTargetLow && st <= g.stateRefundTargetHigh ? GREEN : st < g.stateRefundTargetLow ? RED : YELLOW }]}>{money(st)}</Text>
+        </View>
+        <RefundGauge value={st} low={g.stateRefundTargetLow} high={g.stateRefundTargetHigh} />
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardLabel}>Prediction confidence</Text>
-        <View style={styles.confRow}>
-          <Text style={[styles.confScore, { color: bandColor }]}>{confidence.score}</Text>
-          <Chip label={confidence.band} color={bandColor} />
-        </View>
-        <View style={styles.barTrack}>
-          <View style={[styles.barFill, { width: `${confidence.score}%`, backgroundColor: bandColor }]} />
-        </View>
-        <Text style={styles.line}>Completeness {Math.round(confidence.completeness)}/35 - Freshness {Math.round(confidence.freshness)}/25 - Extraction {Math.round(confidence.extraction)}/10 - Coverage {Math.round(confidence.coverage)}/10 - Calibration {Math.round(confidence.calibration)}/20</Text>
-        {confidence.reasons.map((r) => (
-          <Text key={r} style={styles.line}>- {r}</Text>
-        ))}
-        <Text style={styles.note}>The score falls when documents age or stay missing, so a projection never looks fresher than its data.</Text>
+      <View style={styles.ringsRow}>
+        <RingGauge pct={confidence.score} label={`Prediction confidence (${confidence.band})`} color={confColor} />
+        <RingGauge pct={retirementPct ?? 0} label={retirementPct === null ? "Retirement - set a target" : `Retirement - ${g.retirementYears} yrs`} color={ringColor(retirementPct)} />
+        <RingGauge pct={eduPct ?? 0} label={eduPct === null ? "Education - set a target" : `Education savings`} color={ringColor(eduPct)} />
+      </View>
+      {(retirementPct !== null || eduPct !== null) && (
+        <Text style={styles.assumption}>Goal rings assume {g.assumedReturnPct}% yearly growth - an editable assumption in Intake, not a promise.</Text>
+      )}
+
+      <View style={styles.statsRow}>
+        <View style={styles.stat}><Text style={styles.statValue}>{(snap.marginalRate * 100).toFixed(0)}%</Text><Text style={styles.statLabel}>Marginal rate</Text></View>
+        <View style={styles.stat}><Text style={styles.statValue}>{money(snap.distanceToNextBracket)}</Text><Text style={styles.statLabel}>To next bracket</Text></View>
+        <View style={styles.stat}><Text style={styles.statValue}>{money(snap.totalTax)}</Text><Text style={styles.statLabel}>Total tax</Text></View>
+        <View style={styles.stat}><Text style={styles.statValue}>{level}</Text><Text style={styles.statLabel}>Accuracy level</Text></View>
       </View>
 
-      {candidates.length > 0 && (
+      {(candidates.length > 0 || confidence.calibrationMissing) && (
         <View style={styles.card}>
-          <Text style={styles.cardLabel}>Documents needing attention</Text>
+          <Text style={styles.cardLabel}>Needs attention</Text>
           {candidates.map((c) => (
             <Text key={c.docType} style={styles.line}>{c.status === "stale" ? "🔴" : "🟡"} {c.message}</Text>
           ))}
+          {confidence.calibrationMissing && <Text style={styles.line}>🟡 Last year's filed return is not verified yet - it calibrates every projection (Intake tab).</Text>}
+          {findings.length > 0 && candidates.length === 0 && <Text style={styles.line}>🟢 All documents are fresh.</Text>}
         </View>
       )}
-      {findings.length > 0 && candidates.length === 0 && (
-        <View style={styles.card}><Text style={styles.line}>🟢 All documents are fresh.</Text></View>
-      )}
 
-      <View style={styles.card}>
-        <Text style={styles.cardLabel}>Push reminders</Text>
-        <Text style={styles.line}>
-          {push && isPushEnabled(state.pushEnabled, push)
-            ? `On - token stored, ${push.scheduledCount} reminder(s) scheduled.`
-            : state.pushEnabled
-              ? "Setting is ON (default). Register from the Intake tab to store a push token - status counts only with a token."
-              : "Off in settings."}
-        </Text>
-      </View>
+      <Text style={styles.pushLine}>
+        Push: {push && isPushEnabled(state.pushEnabled, push) ? `on, ${push.scheduledCount} reminder(s) scheduled` : state.pushEnabled ? "on in settings - token registers in the native app" : "off"}
+      </Text>
+
+      <AdSlot />
     </ScrollView>
   );
 }
@@ -137,20 +117,19 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#F4F7FA" },
   content: { padding: 16, gap: 12 },
-  brandRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  logo: { width: 44, height: 44, borderRadius: 10 },
-  brand: { fontSize: 26, fontWeight: "800", color: NAVY },
-  title: { fontSize: 24, fontWeight: "700", color: NAVY },
-  subtitle: { fontSize: 14, color: "#5A6B7C", marginBottom: 4 },
-  card: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 16, gap: 6 },
-  cardLabel: { fontSize: 13, fontWeight: "600", color: TEAL, textTransform: "uppercase" },
-  bigNumber: { fontSize: 36, fontWeight: "800", color: NAVY },
-  line: { fontSize: 15, color: "#22303C" },
-  chip: { alignSelf: "flex-start", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, marginTop: 4 },
-  chipText: { color: "#FFFFFF", fontSize: 12, fontWeight: "700" },
-  confRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  confScore: { fontSize: 40, fontWeight: "800" },
-  barTrack: { height: 10, borderRadius: 999, backgroundColor: "#E3EAF1", overflow: "hidden" },
-  barFill: { height: 10, borderRadius: 999 },
-  note: { fontSize: 12, color: "#5A6B7C" },
+  pad: { padding: 16 },
+  household: { fontSize: 22, fontWeight: "800", color: NAVY },
+  subtitle: { fontSize: 13, color: "#5A6B7C" },
+  card: { backgroundColor: "#FFFFFF", borderRadius: 14, padding: 14, gap: 4 },
+  cardHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  cardLabel: { fontSize: 14, fontWeight: "700", color: NAVY },
+  bigValue: { fontSize: 26, fontWeight: "800" },
+  ringsRow: { flexDirection: "row", justifyContent: "space-between", backgroundColor: "#FFFFFF", borderRadius: 14, paddingVertical: 12, paddingHorizontal: 6 },
+  assumption: { fontSize: 11, color: "#5A6B7C", textAlign: "center" },
+  statsRow: { flexDirection: "row", gap: 8 },
+  stat: { flex: 1, backgroundColor: "#FFFFFF", borderRadius: 12, paddingVertical: 10, alignItems: "center" },
+  statValue: { fontSize: 16, fontWeight: "800", color: NAVY },
+  statLabel: { fontSize: 10, color: "#5A6B7C", textAlign: "center" },
+  line: { fontSize: 14, color: "#22303C" },
+  pushLine: { fontSize: 12, color: "#5A6B7C", textAlign: "center" },
 });

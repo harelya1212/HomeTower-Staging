@@ -26,7 +26,8 @@ function Toggle({ label, value, onChange }: { label: string; value: boolean; onC
 }
 
 export default function IntakeScreen() {
-  const { state, update, updateIntake } = useHousehold();
+  const { state, update, updateIntake, updateGoals } = useHousehold();
+  const goals = state.goals;
   const intake = state.intake;
   const errors = validateIntake(intake);
   const [push, setPush] = useState<PushStatus | null>(null);
@@ -88,6 +89,20 @@ export default function IntakeScreen() {
       <Field label="Federal withholding YTD ($)" value={String(state.federalWithholdingYtd || "")} numeric onChange={(v) => update({ federalWithholdingYtd: num(v) })} />
       <Field label="State withholding YTD ($)" value={String(state.stateWithholdingYtd || "")} numeric onChange={(v) => update({ stateWithholdingYtd: num(v) })} />
       <Field label="Long-term capital gains ($)" value={String(state.ltcgIncome || "")} numeric onChange={(v) => update({ ltcgIncome: num(v) })} />
+
+      <Text style={styles.section}>Where you want to go - goals</Text>
+      <Text style={styles.note}>These drive the Home dashboard gauges. The growth assumption is yours to set - it is an assumption, shown on the dashboard, never a promise.</Text>
+      <Field label="State refund target - low ($)" value={String(goals.stateRefundTargetLow || "")} numeric onChange={(v) => updateGoals({ stateRefundTargetLow: num(v) })} />
+      <Field label="State refund target - high ($)" value={String(goals.stateRefundTargetHigh || "")} numeric onChange={(v) => updateGoals({ stateRefundTargetHigh: num(v) })} />
+      <Field label="Retirement savings today ($)" value={String(goals.retirementBalance || "")} numeric onChange={(v) => updateGoals({ retirementBalance: num(v) })} />
+      <Field label="Retirement saving per month ($)" value={String(goals.retirementMonthly || "")} numeric onChange={(v) => updateGoals({ retirementMonthly: num(v) })} />
+      <Field label="Years until retirement" value={String(goals.retirementYears || "")} numeric onChange={(v) => updateGoals({ retirementYears: num(v) })} />
+      <Field label="Retirement target ($)" value={String(goals.retirementTarget || "")} numeric onChange={(v) => updateGoals({ retirementTarget: num(v) })} />
+      <Field label="Education savings today ($)" value={String(goals.eduBalance || "")} numeric onChange={(v) => updateGoals({ eduBalance: num(v) })} />
+      <Field label="Education saving per month ($)" value={String(goals.eduMonthly || "")} numeric onChange={(v) => updateGoals({ eduMonthly: num(v) })} />
+      <Field label="Years until education money is needed" value={String(goals.eduYears || "")} numeric onChange={(v) => updateGoals({ eduYears: num(v) })} />
+      <Field label="Education target ($)" value={String(goals.eduTarget || "")} numeric onChange={(v) => updateGoals({ eduTarget: num(v) })} />
+      <Field label="Assumed yearly growth (%)" value={String(goals.assumedReturnPct || "")} numeric onChange={(v) => updateGoals({ assumedReturnPct: num(v) })} />
 
       <Text style={styles.section}>Calibration - last year's filed return</Text>
       <Text style={styles.note}>
