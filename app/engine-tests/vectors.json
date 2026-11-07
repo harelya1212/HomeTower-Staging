@@ -128,5 +128,23 @@
    "status": "stale",
    "age_days": 37
   }
+ },
+ {
+  "id": "confidence_perfect",
+  "expect": {
+   "score": 100
+  }
+ },
+ {
+  "id": "confidence_stale",
+  "expect": {
+   "score": 34
+  }
+ },
+ {
+  "id": "confidence_empty",
+  "expect": {
+   "score": 10
+  }
  }
 ]

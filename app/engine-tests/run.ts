@@ -12,6 +12,8 @@ import { esppDisposition, rsuVest } from "../engine/equity.ts";
 import { fbarRequired, foreignTaxCredit, form8938Required } from "../engine/foreign.ts";
 import { treatyPosition, withholdingCap } from "../engine/treaty.ts";
 import { documentFreshness } from "../engine/freshness.ts";
+import { predictionConfidence } from "../engine/confidence.ts";
+import type { HouseholdIntake } from "../engine/intake.ts";
 
 const MFJ = "married_filing_jointly";
 const vectors = JSON.parse(readFileSync(new URL("./vectors.json", import.meta.url), "utf-8"));
@@ -36,6 +38,9 @@ function compute(id: string): Record<string, unknown> {
     case "treaty_div": return { rate: withholdingCap("dividends", { corporate10pct: true }).treatyCapRate };
     case "treaty_ss": return { overrides: treatyPosition("social_security_benefits", true).savingClauseOverrides };
     case "freshness_payslip_stale": { const f = documentFreshness({ docType: "payslip", status: "parsed", confidence: 0.9, capturedOn: "2026-10-01" }, "2026-11-07"); return { status: f.status, age_days: f.ageDays }; }
+    case "confidence_perfect": { const h: HouseholdIntake = { name: "T", state: "AZ", filingStatus: MFJ, members: [{ name: "A", role: "adult" }], documents: ["payslip", "prior_return", "w2", "401k_statement", "hsa_statement", "529_statement", "brokerage_statement"].map((t) => ({ docType: t, status: "parsed", confidence: 1, capturedOn: "2026-11-07" })), calibration: { taxYear: 2025, federalFiled: true, stateFiled: true, actualFederalRefundOwe: 2400, actualStateRefundOwe: 1100, outcomeVerified: true } }; return { score: predictionConfidence(h, "2026-11-07").score }; }
+    case "confidence_stale": { const h: HouseholdIntake = { name: "T", state: "AZ", filingStatus: MFJ, members: [{ name: "A", role: "adult" }], documents: [{ docType: "payslip", status: "parsed", confidence: 0.9, capturedOn: "2026-10-01" }] }; return { score: predictionConfidence(h, "2026-11-07").score }; }
+    case "confidence_empty": { const h: HouseholdIntake = { name: "T", state: "AZ", filingStatus: MFJ, members: [{ name: "A", role: "adult" }], documents: [] }; return { score: predictionConfidence(h, "2026-11-07").score }; }
     default: throw new Error(`unknown vector ${id}`);
   }
 }
