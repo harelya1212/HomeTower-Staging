@@ -153,3 +153,30 @@ def test_freshness_windows():
     cands = reminder_candidates([DocumentRecord("payslip", "parsed", 0.9, _date(2026, 10, 1)),
                                  DocumentRecord("401k_statement", "parsed", 0.9, _date(2026, 9, 18))], today)
     assert [c.doc_type for c in cands] == ["payslip"]
+
+
+# ---------- prediction confidence ----------
+
+def test_confidence_scores():
+    from datetime import date as _date
+    from hometower_engine.confidence import prediction_confidence
+    from hometower_engine.intake import CalibrationRecord
+    today = _date(2026, 11, 7)
+
+    empty = _household()
+    r = prediction_confidence(empty, today)
+    assert r.score == 10 and r.band == "Low" and r.calibration_missing is True
+
+    full = _household(documents=[
+        DocumentRecord(t, "parsed", 1.0, today) for t in
+        ("payslip", "prior_return", "w2", "401k_statement", "hsa_statement", "529_statement", "brokerage_statement")],
+        calibration=CalibrationRecord(2025, True, True, 2400.0, 1100.0, True))
+    r = prediction_confidence(full, today)
+    assert r.score == 100 and r.band == "High" and r.calibration_missing is False
+
+    stale = _household(documents=[DocumentRecord("payslip", "parsed", 0.9, _date(2026, 10, 1))])
+    r = prediction_confidence(stale, today)
+    assert r.score == 34 and r.per_document[0].counts == "barely"
+
+    rsu = _household(has_rsu=True)
+    assert prediction_confidence(rsu, today).coverage == 6.0
