@@ -6,6 +6,7 @@ import { extractFields, type ExtractionResult } from "../../engine/extract.ts";
 import { householdFreshness } from "../../engine/freshness.ts";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
+import { classifyDocument, type Classification } from "../../engine/classify.ts";
 import { pickDocumentFile, pickImageUri, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
 import { extractPdfText } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
@@ -32,6 +33,9 @@ export default function DocumentsScreen() {
   const [ocrNote, setOcrNote] = useState<string | null>(null);
   const [extraction, setExtraction] = useState<ExtractionResult | null>(null);
   const [extractionType, setExtractionType] = useState("payslip");
+  const [detection, setDetection] = useState<Classification | null>(null);
+  const [pendingText, setPendingText] = useState<string | null>(null);
+  const [autoPaste, setAutoPaste] = useState("");
   const [expandedReq, setExpandedReq] = useState<string | null>(null);
   const requests = useMemo(
     () => documentRequests(state.intake, buildProfileExtras(state), today),
@@ -49,7 +53,11 @@ export default function DocumentsScreen() {
     setPayNote(r.reason);
   };
 
-  const runExtraction = (text: string, docType: string = selectedType) => {
+  // One pipeline for every capture path (owner requirement, 2026-11-07):
+  // the app ALWAYS classifies what it read. With a named type it verifies
+  // the name against the content; without one, the detected type is used.
+  // Either way the user sees the reading and confirms before saving.
+  const runExtraction = (text: string, namedType?: string) => {
     try {
       const raw = textToRawFields(text);
       if (!raw.length) {
@@ -57,8 +65,12 @@ export default function DocumentsScreen() {
         setExtraction(null);
         return;
       }
-      setExtraction(extractFields(raw, docType));
-      setExtractionType(docType);
+      const detected = classifyDocument(raw, text);
+      const useType = namedType ?? detected.docType;
+      setDetection(detected);
+      setPendingText(text);
+      setExtraction(extractFields(raw, useType));
+      setExtractionType(useType);
       setOcrNote(null);
     } catch (e) {
       setOcrNote(e instanceof Error ? e.message : String(e));
@@ -66,21 +78,31 @@ export default function DocumentsScreen() {
     }
   };
 
-  const scanPhoto = async (source: "upload" | "camera", docType: string = selectedType) => {
+  const reextractAs = (docType: string) => {
+    if (pendingText === null) return;
+    try {
+      setExtraction(extractFields(textToRawFields(pendingText), docType));
+      setExtractionType(docType);
+    } catch (e) {
+      setOcrNote(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const scanPhoto = async (source: "upload" | "camera", namedType?: string) => {
     setOcrNote(null);
     const { uri, error } = source === "camera" ? await takePhotoUri() : await pickImageUri();
     if (error) { setOcrNote(error); return; }
     if (!uri) return;
     const outcome = await recognizeOnDevice(uri);
     if (outcome.error) { setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
-    runExtraction(outcome.text, docType);
+    runExtraction(outcome.text, namedType);
   };
 
   // Owner QA round 6: a real FILE upload. The image picker greys PDFs
   // out; tax documents are PDFs. PDFs are read through their text layer
   // (web), images through the OCR path, anything else gets a plain
   // explanation plus the manual-register option below.
-  const uploadFile = async (docType: string = selectedType) => {
+  const uploadFile = async (namedType?: string) => {
     setOcrNote(null);
     const picked = await pickDocumentFile();
     if (picked.error) { setOcrNote(picked.error); return; }
@@ -89,13 +111,13 @@ export default function DocumentsScreen() {
     if (isPdf) {
       const outcome = await extractPdfText(picked.uri);
       if (outcome.error) { setOcrNote(`PDF stage: ${outcome.error}`); return; }
-      runExtraction(outcome.text, docType);
+      runExtraction(outcome.text, namedType);
       return;
     }
     if ((picked.mimeType ?? "").startsWith("image/")) {
       const outcome = await recognizeOnDevice(picked.uri);
       if (outcome.error) { setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
-      runExtraction(outcome.text, docType);
+      runExtraction(outcome.text, namedType);
       return;
     }
     setOcrNote(`That file type (${picked.mimeType ?? "unknown"}) cannot be read yet. PDFs and photos work; anything else can be registered manually below.`);
@@ -120,7 +142,10 @@ export default function DocumentsScreen() {
     updateIntake({ documents: [...docs, record] });
     if (extractionType === "payslip") update({ payrollCheck: { lastConfirmedOn: null, consecutive: 0 } });
     setExtraction(null);
+    setDetection(null);
+    setPendingText(null);
     setPasteText("");
+    setAutoPaste("");
     setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).`);
   };
 
@@ -155,6 +180,31 @@ export default function DocumentsScreen() {
           </View>
         );
       })}
+
+      <Text style={styles.section}>Upload any document</Text>
+      <Text style={styles.note}>
+        No need to say what it is: the app reads it, identifies the type, and shows you its reading for approval
+        before anything is saved. If you do pick a type below, the app still verifies it against the content.
+      </Text>
+      <Pressable style={styles.button} onPress={() => uploadFile()}>
+        <Text style={styles.buttonText}>Upload a PDF or file - the app identifies it</Text>
+      </Pressable>
+      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload")}>
+        <Text style={styles.buttonText}>Upload a photo - the app identifies it</Text>
+      </Pressable>
+      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera")}>
+        <Text style={styles.buttonText}>Take a photo - the app identifies it</Text>
+      </Pressable>
+      <TextInput
+        style={styles.pasteBox}
+        multiline
+        placeholder="...or paste any document text here and let the app identify it"
+        value={autoPaste}
+        onChangeText={setAutoPaste}
+      />
+      <Pressable style={styles.buttonAlt} onPress={() => runExtraction(autoPaste)}>
+        <Text style={styles.buttonText}>Read and identify pasted text</Text>
+      </Pressable>
 
       <Text style={styles.section}>What your household needs</Text>
       <Text style={styles.note}>
@@ -247,13 +297,13 @@ export default function DocumentsScreen() {
           </Pressable>
         ))}
       </View>
-      <Pressable style={styles.button} onPress={() => uploadFile()}>
+      <Pressable style={styles.button} onPress={() => uploadFile(selectedType)}>
         <Text style={styles.buttonText}>Upload a PDF or file of the {selectedType}</Text>
       </Pressable>
-      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload")}>
+      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload", selectedType)}>
         <Text style={styles.buttonText}>Upload a photo of the {selectedType}</Text>
       </Pressable>
-      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera")}>
+      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera", selectedType)}>
         <Text style={styles.buttonText}>Take a photo of the {selectedType}</Text>
       </Pressable>
       <TextInput
@@ -263,15 +313,41 @@ export default function DocumentsScreen() {
         value={pasteText}
         onChangeText={setPasteText}
       />
-      <Pressable style={styles.buttonAlt} onPress={() => runExtraction(pasteText)}>
+      <Pressable style={styles.buttonAlt} onPress={() => runExtraction(pasteText, selectedType)}>
         <Text style={styles.buttonText}>Extract fields from pasted text</Text>
       </Pressable>
       {ocrNote && <Text style={styles.note}>{ocrNote}</Text>}
 
       {extraction && (
         <View style={styles.confirmCard}>
-          <Text style={styles.section}>Confirm extracted fields</Text>
-          <Text style={styles.line}>Confidence: {extraction.confidence} - status if saved: {extraction.status}</Text>
+          <Text style={styles.section}>Confirm the app's reading</Text>
+          {detection && detection.level !== "unknown" && (
+            <Text style={styles.line}>
+              This looks like a {detection.docType} ({detection.level} match) - signals: {detection.signals.join(", ")}.
+            </Text>
+          )}
+          {detection && detection.level === "unknown" && (
+            <Text style={styles.line}>The app could not identify this document from its content - pick the type below.</Text>
+          )}
+          {detection && detection.level !== "unknown" && detection.docType !== extractionType && (
+            <View style={styles.mismatch}>
+              <Text style={styles.line}>
+                Heads up: it will be saved as {extractionType}, but the content looks like a {detection.docType}.
+              </Text>
+              <Pressable style={styles.button} onPress={() => reextractAs(detection.docType)}>
+                <Text style={styles.buttonText}>Save as {detection.docType} instead</Text>
+              </Pressable>
+            </View>
+          )}
+          <Text style={styles.line}>Saving as: {extractionType} - Confidence: {extraction.confidence} - status if saved: {extraction.status}</Text>
+          <Text style={styles.line}>Wrong type? Tap the right one - the fields are re-read:</Text>
+          <View style={styles.chips}>
+            {[...DOCUMENT_TYPES].map((t) => (
+              <Pressable key={t} style={[styles.chip, extractionType === t && styles.chipSelected]} onPress={() => reextractAs(t)}>
+                <Text style={extractionType === t ? styles.chipTextSelected : styles.chipText}>{t}</Text>
+              </Pressable>
+            ))}
+          </View>
           {Object.entries(extraction.fields).map(([k, v]) => (
             <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
           ))}
@@ -279,9 +355,9 @@ export default function DocumentsScreen() {
             <Text style={styles.line}>No known fields matched this document type. You can still save it as a register entry.</Text>
           )}
           <Pressable style={styles.button} onPress={confirmExtraction}>
-            <Text style={styles.buttonText}>Confirm and save document</Text>
+            <Text style={styles.buttonText}>Confirm and save as {extractionType}</Text>
           </Pressable>
-          <Pressable onPress={() => setExtraction(null)}>
+          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); }}>
             <Text style={styles.remove}>Discard</Text>
           </Pressable>
         </View>
@@ -317,5 +393,6 @@ const styles = StyleSheet.create({
   buttonText: { color: "#FFFFFF", fontWeight: "700" },
   pasteBox: { backgroundColor: "#FFFFFF", borderRadius: 8, padding: 12, minHeight: 90, textAlignVertical: "top", fontSize: 13 },
   confirmCard: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 14, gap: 6, borderWidth: 1, borderColor: TEAL },
+  mismatch: { backgroundColor: "#FEF7E0", borderRadius: 10, padding: 10, gap: 8 },
   manualLink: { color: TEAL, fontSize: 13, fontWeight: "600", marginTop: 6 },
 });
