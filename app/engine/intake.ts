@@ -8,7 +8,7 @@ export const DOCUMENT_TYPES = new Set(["w2", "payslip", "hsa_statement", "401k_s
 export const DOCUMENT_STATUSES = new Set(["parsed", "pending_verify", "rejected"]);
 
 export interface Member { name: string; role: string; dateOfBirth?: string | null; payFrequency?: string | null }
-export interface DocumentRecord { docType: string; status: string; confidence?: number }
+export interface DocumentRecord { docType: string; status: string; confidence?: number; capturedOn?: string | null }
 export interface HouseholdIntake {
   name: string; state: string; filingStatus: string; members: Member[];
   refundTargetLow?: number | null; refundTargetHigh?: number | null;
