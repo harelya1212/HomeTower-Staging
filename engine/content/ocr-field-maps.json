@@ -65,10 +65,21 @@
     "529_statement": {
       "ending balance": "ending_balance",
       "account value": "ending_balance"
-    }
+    },
+    "prior_return": {
+      "total income": "total_income",
+      "adjusted gross income": "adjusted_gross_income",
+      "taxable income": "taxable_income",
+      "total tax": "total_tax",
+      "total other payments and refundable credits": "total_payments",
+      "amount of refund": "refund",
+      "overpaid": "refund",
+      "amount you owe": "amount_owed"
+    },
+    "other": {}
   },
   "pack": "ocr-field-maps",
   "source": "hct prototype textract_service.py",
   "status": "Ported from the hct prototype textract_service.py FIELD_MAPS. Data only - the OCR engine that consumes these maps is chosen separately (local-first per VISION).",
-  "version": "1.1"
+  "version": "1.2"
 }
