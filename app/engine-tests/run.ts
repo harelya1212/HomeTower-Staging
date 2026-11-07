@@ -13,6 +13,7 @@ import { fbarRequired, foreignTaxCredit, form8938Required } from "../engine/fore
 import { treatyPosition, withholdingCap } from "../engine/treaty.ts";
 import { documentFreshness } from "../engine/freshness.ts";
 import { annualFocus, documentRequests, nextAction, nextPhaseStart, payrollShortcut } from "../engine/guidance.ts";
+import { classifyDocument } from "../engine/classify.ts";
 import { predictionConfidence } from "../engine/confidence.ts";
 import type { HouseholdIntake } from "../engine/intake.ts";
 
@@ -48,6 +49,12 @@ function compute(id: string): Record<string, unknown> {
     case "guidance_shortcut_due": { const r = payrollShortcut("no", "no", "no", 2); return { needs_document: r.needsDocument }; }
     case "guidance_shortcut_changed": { const r = payrollShortcut("yes", "no", "no", 0); return { needs_document: r.needsDocument, consecutive_after: r.consecutiveAfter }; }
     case "guidance_annual_nov": return { key: annualFocus(11).key };
+    case "classify_w2": { const c = classifyDocument(["Wages, tips, other compensation", "Social security wages", "Medicare wages and tips", "Federal income tax withheld"].map((k) => ({ key: k, value: "1", confidence: 0.9 }))); return { doc_type: c.docType, level: c.level, score: c.score }; }
+    case "classify_payslip": { const c = classifyDocument(["Gross pay", "Federal income tax", "State income tax", "Year to date"].map((k) => ({ key: k, value: "1", confidence: 0.9 }))); return { doc_type: c.docType, level: c.level, score: c.score }; }
+    case "classify_1099b": { const c = classifyDocument(["Proceeds", "Cost or other basis", "Gain or loss"].map((k) => ({ key: k, value: "1", confidence: 0.9 }))); return { doc_type: c.docType, level: c.level, score: c.score }; }
+    case "classify_prior_return": { const c = classifyDocument(["Adjusted gross income", "Taxable income", "Total tax"].map((k) => ({ key: k, value: "1", confidence: 0.9 })), "Form 1040 U.S. Individual Income Tax Return\nAdjusted gross income 185,000\nTaxable income 152,800\nTotal tax 24,310"); return { doc_type: c.docType, level: c.level, score: c.score }; }
+    case "classify_401k": { const c = classifyDocument(["Ending balance", "Vested balance", "Employee contributions", "Employer contributions"].map((k) => ({ key: k, value: "1", confidence: 0.9 }))); return { doc_type: c.docType, level: c.level, score: c.score }; }
+    case "classify_unknown": { const c = classifyDocument(["Banana bread recipe", "Preheat oven"].map((k) => ({ key: k, value: "1", confidence: 0.9 }))); return { doc_type: c.docType, level: c.level, score: c.score }; }
     case "guidance_annual_jun": return { key: annualFocus(6).key };
     case "guidance_next_phase_wrap": { const n = nextPhaseStart(12); return { month: n.month, title: n.title }; }
     case "guidance_action_calibration": { const a = nextAction({ calibrationMissing: true, verificationDue: false, confidenceBand: "High", confidenceScore: 85 }); return { confidence: a.confidence, has_return: a.action.includes("filed return") }; }

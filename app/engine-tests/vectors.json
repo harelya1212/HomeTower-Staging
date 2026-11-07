@@ -212,5 +212,53 @@
   "expect": {
    "why_has_amount": true
   }
+ },
+ {
+  "id": "classify_w2",
+  "expect": {
+   "doc_type": "w2",
+   "level": "strong",
+   "score": 14
+  }
+ },
+ {
+  "id": "classify_payslip",
+  "expect": {
+   "doc_type": "payslip",
+   "level": "strong",
+   "score": 14
+  }
+ },
+ {
+  "id": "classify_1099b",
+  "expect": {
+   "doc_type": "1099b",
+   "level": "strong",
+   "score": 11
+  }
+ },
+ {
+  "id": "classify_prior_return",
+  "expect": {
+   "doc_type": "prior_return",
+   "level": "strong",
+   "score": 13
+  }
+ },
+ {
+  "id": "classify_401k",
+  "expect": {
+   "doc_type": "401k_statement",
+   "level": "strong",
+   "score": 13
+  }
+ },
+ {
+  "id": "classify_unknown",
+  "expect": {
+   "doc_type": "other",
+   "level": "unknown",
+   "score": 0
+  }
  }
 ]
