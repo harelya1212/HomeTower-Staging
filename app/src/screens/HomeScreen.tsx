@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, ScrollView, StyleSheet, Text, View } from "react-native";
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const LOGO_MARK = require("../../assets/logo-mark.png");
 import { predictionConfidence } from "../../engine/confidence.ts";
 import { householdFreshness, reminderCandidates } from "../../engine/freshness.ts";
 import { accuracyLevel } from "../../engine/intake.ts";
@@ -67,6 +70,10 @@ export default function HomeScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <View style={styles.brandRow}>
+        <Image source={LOGO_MARK} style={styles.logo} resizeMode="contain" />
+        <Text style={styles.brand}>HomeTower</Text>
+      </View>
       <Text style={styles.title}>{state.intake.name || "Your household"}</Text>
       <Text style={styles.subtitle}>Where do we stand? - {today}</Text>
 
@@ -130,6 +137,9 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#F4F7FA" },
   content: { padding: 16, gap: 12 },
+  brandRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  logo: { width: 44, height: 44, borderRadius: 10 },
+  brand: { fontSize: 26, fontWeight: "800", color: NAVY },
   title: { fontSize: 24, fontWeight: "700", color: NAVY },
   subtitle: { fontSize: 14, color: "#5A6B7C", marginBottom: 4 },
   card: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 16, gap: 6 },
