@@ -25,6 +25,14 @@ export async function pickImageUri(): Promise<{ uri: string | null; error: strin
   return { uri: result.assets[0]?.uri ?? null, error: null };
 }
 
+export async function takePhotoUri(): Promise<{ uri: string | null; error: string | null }> {
+  const perm = await ImagePicker.requestCameraPermissionsAsync();
+  if (!perm.granted) return { uri: null, error: "Camera permission not granted." };
+  const result = await ImagePicker.launchCameraAsync({ quality: 0.9 });
+  if (result.canceled) return { uri: null, error: null };
+  return { uri: result.assets[0]?.uri ?? null, error: null };
+}
+
 export async function recognizeOnDevice(uri: string): Promise<OcrOutcome> {
   if (Platform.OS === "web") {
     return { stage: "web", text: "", error: "On-device OCR runs in the native app. On web, paste the statement text instead.", source: "none" };

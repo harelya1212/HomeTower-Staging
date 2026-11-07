@@ -20,6 +20,41 @@ export interface GoalInputs {
   stateRefundTargetHigh: number;
 }
 
+// The My House tables (owner QA round 2). The family basics also sync
+// into intake.members (the engine model); jobs and assets feed the
+// dashboard derivations (retirement years from ages, balances from the
+// assets table) so there is ONE place where the household is described.
+export interface UiMember {
+  id: string;
+  name: string;
+  role: "self" | "spouse" | "child" | "other";
+  dob: string; // YYYY-MM-DD or ""
+  retireAge: number; // adults: planned retirement age
+  studentNow: boolean; // children: currently in college
+  collegeStartYear: number; // children: 0 = unknown
+  yearsLeftInCollege: number; // children who are students now
+}
+
+export interface Job {
+  id: string;
+  memberName: string;
+  employer: string;
+  startDate: string; // YYYY-MM-DD or ""
+  endDate: string; // "" = current job
+  payFrequency: "weekly" | "biweekly" | "semimonthly" | "monthly";
+}
+
+export type AssetKind = "home" | "brokerage" | "401k" | "ira" | "hsa" | "529" | "bank" | "rental" | "other";
+
+export interface Asset {
+  id: string;
+  kind: AssetKind;
+  label: string;
+  ownerName: string; // for a 529: the child it belongs to
+  value: number;
+  monthly: number;
+}
+
 export interface HouseholdState {
   intake: HouseholdIntake;
   grossIncome: number;
@@ -29,6 +64,9 @@ export interface HouseholdState {
   pushEnabled: boolean; // default ON (owner requirement)
   goals: GoalInputs;
   onboarded: boolean;
+  family: UiMember[];
+  jobs: Job[];
+  assets: Asset[];
 }
 
 const STORAGE_KEY = "hometower.state.v1";
@@ -54,6 +92,9 @@ export function defaultState(): HouseholdState {
     stateWithholdingYtd: 0,
     ltcgIncome: 0,
     pushEnabled: true,
+    family: [],
+    jobs: [],
+    assets: [],
     goals: {
       retirementBalance: 0,
       retirementMonthly: 0,
@@ -95,6 +136,9 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
             ...parsed,
             intake: { ...defaultState().intake, ...parsed.intake },
             goals: { ...defaultState().goals, ...(parsed.goals ?? {}) },
+            family: parsed.family ?? [],
+            jobs: parsed.jobs ?? [],
+            assets: parsed.assets ?? [],
           });
         }
       })
