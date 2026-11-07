@@ -92,7 +92,7 @@ class SimulationResult:
 
 def _federal_tax_on_gain(gain: float, is_long_term: bool, ordinary_income: float,
                          filing_status: str, pack: dict) -> float:
-    std_deduction = pack["standard_deduction"].get(filing_status, 30_750)
+    std_deduction = pack["standard_deduction"].get(filing_status, 32_200)
     taxable_ordinary = max(0.0, ordinary_income - std_deduction)
     if is_long_term:
         return compute_ltcg_tax(max(0.0, gain), taxable_ordinary, filing_status, pack)
@@ -142,7 +142,7 @@ def simulate(sale: SaleInput, ctx: SimulationContext, pack: dict | None = None) 
     net_profit = adjusted_gain - total_tax
     after_tax_return = net_profit / (sale.cost_basis_per_share * sale.quantity) if sale.cost_basis_per_share > 0 else 0.0
 
-    std_ded = pack["standard_deduction"].get(ctx.filing_status, 30_750)
+    std_ded = pack["standard_deduction"].get(ctx.filing_status, 32_200)
     taxable_ordinary = max(0.0, ctx.estimated_ordinary_income - std_ded)
     m_rate = marginal_rate(taxable_ordinary, ctx.filing_status, pack)
     dist, next_rate = distance_to_next_bracket(taxable_ordinary, ctx.filing_status, pack)

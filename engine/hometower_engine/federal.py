@@ -87,7 +87,7 @@ class FederalTaxResult:
 def compute_federal_tax(gross_income: float, filing_status: str, ltcg_income: float = 0.0,
                         itemized_deductions: float = 0.0, pack: dict | None = None) -> FederalTaxResult:
     pack = pack or federal_pack()
-    std = pack["standard_deduction"].get(filing_status, 30_750)
+    std = pack["standard_deduction"].get(filing_status, 32_200)
     deduction = max(std, itemized_deductions)
     taxable_income = max(0.0, gross_income - deduction)
     ordinary_taxable = max(0.0, taxable_income - ltcg_income)
