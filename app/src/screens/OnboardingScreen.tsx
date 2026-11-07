@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
-import { todayIso, useHousehold } from "../store.tsx";
+import { useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -18,11 +18,16 @@ export default function OnboardingScreen() {
   const [fedHigh, setFedHigh] = useState("3000");
   const [retTarget, setRetTarget] = useState("");
   const [eduTarget, setEduTarget] = useState("");
+  const [selfDob, setSelfDob] = useState("");
+  const [spouseDob, setSpouseDob] = useState("");
+  const [childCount, setChildCount] = useState("");
   const num = (v: string) => Number(v) || 0;
+  const married = state.intake.filingStatus.startsWith("married");
 
   const finish = () => {
+    const householdName = name.trim() || state.intake.name;
     updateIntake({
-      name: name.trim() || state.intake.name,
+      name: householdName,
       refundTargetLow: num(fedLow),
       refundTargetHigh: num(fedHigh),
     });
@@ -30,6 +35,16 @@ export default function OnboardingScreen() {
       retirementTarget: num(retTarget),
       eduTarget: num(eduTarget),
     });
+    // Seed the My House family table from the quick start (only when the
+    // table is still empty - never overwrite a filled table).
+    if (state.family.length === 0 && (selfDob || spouseDob || num(childCount) > 0)) {
+      const fam = [];
+      if (selfDob || true) fam.push({ id: "ob-self", name: "", role: "self" as const, dob: selfDob, retireAge: 67, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 });
+      if (married) fam.push({ id: "ob-spouse", name: "", role: "spouse" as const, dob: spouseDob, retireAge: 67, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 });
+      for (let i = 0; i < Math.min(6, num(childCount)); i++) fam.push({ id: `ob-child-${i}`, name: "", role: "child" as const, dob: "", retireAge: 67, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 });
+      update({ family: fam });
+      updateIntake({ members: fam.filter((m) => m.dob).map((m) => ({ name: m.name, role: m.role, dateOfBirth: m.dob || null })) });
+    }
     update({ onboarded: true });
   };
   const skip = () => update({ onboarded: true });
@@ -53,8 +68,36 @@ export default function OnboardingScreen() {
 
       {step === 1 && (
         <View style={styles.block}>
-          <Text style={styles.h}>What do you have?</Text>
-          <Text style={styles.p}>Mark what the household holds. Documents themselves go in the Documents tab - a recent payslip is the single most valuable one.</Text>
+          <Text style={styles.h}>Your family</Text>
+          <Text style={styles.p}>Dates of birth drive the retirement and education timing. The full family table - children, jobs, assets - lives in the My House tab; this is the quick start.</Text>
+          <Text style={styles.label}>How do you file?</Text>
+          <View style={styles.chipWrap}>
+            {(
+              [
+                ["married_filing_jointly", "Married, jointly"],
+                ["married_filing_separately", "Married, separately"],
+                ["single", "Single"],
+                ["head_of_household", "Head of household"],
+              ] as const
+            ).map(([value, label]) => (
+              <Pressable key={value} onPress={() => updateIntake({ filingStatus: value })} style={[styles.chip, state.intake.filingStatus === value && styles.chipOn]}>
+                <Text style={[styles.chipText, state.intake.filingStatus === value && styles.chipTextOn]}>{label}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={styles.label}>State of residence (2 letters)</Text>
+          <TextInput style={styles.input} value={state.intake.state} autoCapitalize="characters" maxLength={2} onChangeText={(v) => updateIntake({ state: v.toUpperCase() })} />
+          <Text style={styles.label}>Your date of birth (YYYY-MM-DD)</Text>
+          <TextInput style={styles.input} value={selfDob} onChangeText={setSelfDob} placeholder="1985-03-04" />
+          {married && (
+            <>
+              <Text style={styles.label}>Spouse date of birth (YYYY-MM-DD)</Text>
+              <TextInput style={styles.input} value={spouseDob} onChangeText={setSpouseDob} placeholder="1987-06-19" />
+            </>
+          )}
+          <Text style={styles.label}>Children (how many)</Text>
+          <TextInput style={styles.input} value={childCount} onChangeText={setChildCount} keyboardType="numeric" placeholder="0" />
+          <Text style={styles.label}>Any of these in the household?</Text>
           {(
             [
               ["Employer stock units (RSU)", "hasRsu"],
@@ -67,7 +110,6 @@ export default function OnboardingScreen() {
               <Switch value={!!state.intake[key]} onValueChange={(v) => updateIntake({ [key]: v })} />
             </View>
           ))}
-          <Text style={styles.p}>Today is {todayIso()} - document dates drive your confidence score, so current documents matter.</Text>
         </View>
       )}
 
@@ -118,11 +160,16 @@ const styles = StyleSheet.create({
   logo: { width: 52, height: 52, borderRadius: 12 },
   brand: { fontSize: 30, fontWeight: "800", color: NAVY },
   stepLabel: { textAlign: "center", color: TEAL, fontWeight: "700", fontSize: 13 },
-  block: { backgroundColor: "#FFFFFF", borderRadius: 14, padding: 16, gap: 10 },
-  h: { fontSize: 20, fontWeight: "800", color: NAVY },
-  p: { fontSize: 15, color: "#22303C", lineHeight: 21 },
-  label: { fontSize: 13, fontWeight: "600", color: TEAL },
-  input: { backgroundColor: "#F4F7FA", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  block: { backgroundColor: "#FFFFFF", borderRadius: 14, padding: 18, gap: 11 },
+  h: { fontSize: 23, fontWeight: "800", color: NAVY },
+  p: { fontSize: 16.5, color: "#22303C", lineHeight: 24 },
+  label: { fontSize: 15, fontWeight: "700", color: TEAL },
+  input: { backgroundColor: "#F4F7FA", borderRadius: 10, paddingHorizontal: 13, paddingVertical: 12, fontSize: 17 },
+  chipWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  chip: { borderWidth: 1.5, borderColor: TEAL, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 9 },
+  chipOn: { backgroundColor: TEAL },
+  chipText: { color: TEAL, fontWeight: "700", fontSize: 15 },
+  chipTextOn: { color: "#FFFFFF" },
   toggleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   navRow: { flexDirection: "row", gap: 10 },
   button: { flex: 1, backgroundColor: TEAL, borderRadius: 10, paddingVertical: 14, alignItems: "center" },

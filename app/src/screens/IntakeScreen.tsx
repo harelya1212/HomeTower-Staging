@@ -96,7 +96,8 @@ export default function IntakeScreen() {
       <Field label="State refund target - high ($)" value={String(goals.stateRefundTargetHigh || "")} numeric onChange={(v) => updateGoals({ stateRefundTargetHigh: num(v) })} />
       <Field label="Retirement savings today ($)" value={String(goals.retirementBalance || "")} numeric onChange={(v) => updateGoals({ retirementBalance: num(v) })} />
       <Field label="Retirement saving per month ($)" value={String(goals.retirementMonthly || "")} numeric onChange={(v) => updateGoals({ retirementMonthly: num(v) })} />
-      <Field label="Years until retirement" value={String(goals.retirementYears || "")} numeric onChange={(v) => updateGoals({ retirementYears: num(v) })} />
+      <Text style={styles.note}>Years until retirement come from the My House family table (your date of birth and planned retirement age) once it is filled; until then the fallback below is used.</Text>
+      <Field label="Years until retirement (fallback)" value={String(goals.retirementYears || "")} numeric onChange={(v) => updateGoals({ retirementYears: num(v) })} />
       <Field label="Retirement target ($)" value={String(goals.retirementTarget || "")} numeric onChange={(v) => updateGoals({ retirementTarget: num(v) })} />
       <Field label="Education savings today ($)" value={String(goals.eduBalance || "")} numeric onChange={(v) => updateGoals({ eduBalance: num(v) })} />
       <Field label="Education saving per month ($)" value={String(goals.eduMonthly || "")} numeric onChange={(v) => updateGoals({ eduMonthly: num(v) })} />
@@ -153,8 +154,8 @@ const styles = StyleSheet.create({
   note: { fontSize: 13, color: "#5A6B7C" },
   section: { fontSize: 16, fontWeight: "700", color: NAVY, marginTop: 10 },
   field: { gap: 4 },
-  label: { fontSize: 13, fontWeight: "600", color: TEAL },
-  input: { backgroundColor: "#FFFFFF", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  label: { fontSize: 15, fontWeight: "700", color: TEAL },
+  input: { backgroundColor: "#FFFFFF", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 17 },
   toggleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "#FFFFFF", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
   memberRow: { flexDirection: "row", gap: 8, alignItems: "center" },
   remove: { color: "#C5221F", fontWeight: "600" },

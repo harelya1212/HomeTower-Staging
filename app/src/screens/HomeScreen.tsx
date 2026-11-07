@@ -6,7 +6,7 @@ import { accuracyLevel } from "../../engine/intake.ts";
 import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
-import { goalPct, projectValue } from "../goals.ts";
+import { ageOn, educationLine, goalPct, projectValue } from "../goals.ts";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { todayIso, useHousehold } from "../store.tsx";
 
@@ -37,8 +37,22 @@ export default function HomeScreen() {
   const level = accuracyLevel(state.intake);
 
   const g = state.goals;
-  const retirementPct = goalPct(projectValue(g.retirementBalance, g.retirementMonthly, g.retirementYears, g.assumedReturnPct), g.retirementTarget);
-  const eduPct = goalPct(projectValue(g.eduBalance, g.eduMonthly, g.eduYears, g.assumedReturnPct), g.eduTarget);
+  // Derivations (owner QA round 2): when the My House tables exist they
+  // win - retirement years come from the primary member's age and
+  // planned retirement age, balances from the assets table. The Intake
+  // goal fields stay as the fallback for households that skip My House.
+  const selfMember = state.family.find((m) => m.role === "self") ?? state.family.find((m) => m.role === "spouse");
+  const selfAge = selfMember ? ageOn(selfMember.dob, today) : null;
+  const yearsToRetire = selfAge !== null && selfMember ? Math.max(0, (selfMember.retireAge || 67) - selfAge) : g.retirementYears;
+  const retAssets = state.assets.filter((a) => a.kind === "401k" || a.kind === "ira");
+  const eduAssets = state.assets.filter((a) => a.kind === "529");
+  const retBalance = retAssets.length ? retAssets.reduce((s, a) => s + a.value, 0) : g.retirementBalance;
+  const retMonthly = retAssets.length ? retAssets.reduce((s, a) => s + a.monthly, 0) : g.retirementMonthly;
+  const eduBalance = eduAssets.length ? eduAssets.reduce((s, a) => s + a.value, 0) : g.eduBalance;
+  const eduMonthly = eduAssets.length ? eduAssets.reduce((s, a) => s + a.monthly, 0) : g.eduMonthly;
+  const retirementPct = goalPct(projectValue(retBalance, retMonthly, yearsToRetire, g.assumedReturnPct), g.retirementTarget);
+  const eduPct = goalPct(projectValue(eduBalance, eduMonthly, g.eduYears, g.assumedReturnPct), g.eduTarget);
+  const children = state.family.filter((m) => m.role === "child");
 
   useEffect(() => {
     getPushStatus().then(setPush);
@@ -83,11 +97,20 @@ export default function HomeScreen() {
 
       <View style={styles.ringsRow}>
         <RingGauge pct={confidence.score} label={`Prediction confidence (${confidence.band})`} color={confColor} />
-        <RingGauge pct={retirementPct ?? 0} label={retirementPct === null ? "Retirement - set a target" : `Retirement - ${g.retirementYears} yrs`} color={ringColor(retirementPct)} />
+        <RingGauge pct={retirementPct ?? 0} label={retirementPct === null ? "Retirement - set a target" : `Retirement - ${yearsToRetire} yrs`} color={ringColor(retirementPct)} />
         <RingGauge pct={eduPct ?? 0} label={eduPct === null ? "Education - set a target" : `Education savings`} color={ringColor(eduPct)} />
       </View>
       {(retirementPct !== null || eduPct !== null) && (
         <Text style={styles.assumption}>Goal rings assume {g.assumedReturnPct}% yearly growth - an editable assumption in Intake, not a promise.</Text>
+      )}
+
+      {children.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>Education timing</Text>
+          {children.map((c) => (
+            <Text key={c.id} style={styles.line}>🎓 {educationLine(c.name || "Child", c.dob, c.studentNow, c.collegeStartYear, c.yearsLeftInCollege, today)}</Text>
+          ))}
+        </View>
       )}
 
       <View style={styles.statsRow}>

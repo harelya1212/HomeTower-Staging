@@ -4,7 +4,7 @@ import { predictionConfidence } from "../../engine/confidence.ts";
 import { extractFields, type ExtractionResult } from "../../engine/extract.ts";
 import { householdFreshness } from "../../engine/freshness.ts";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
-import { pickImageUri, recognizeOnDevice, textToRawFields } from "../ocr.ts";
+import { pickImageUri, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
 import { todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -43,9 +43,9 @@ export default function DocumentsScreen() {
     }
   };
 
-  const scanPhoto = async () => {
+  const scanPhoto = async (source: "upload" | "camera") => {
     setOcrNote(null);
-    const { uri, error } = await pickImageUri();
+    const { uri, error } = source === "camera" ? await takePhotoUri() : await pickImageUri();
     if (error) { setOcrNote(error); return; }
     if (!uri) return;
     const outcome = await recognizeOnDevice(uri);
@@ -60,6 +60,7 @@ export default function DocumentsScreen() {
       status: extraction.status,
       confidence: extraction.confidence,
       capturedOn: today,
+      fields: Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)])),
     };
     updateIntake({ documents: [...docs, record] });
     setExtraction(null);
@@ -106,8 +107,11 @@ export default function DocumentsScreen() {
           </Pressable>
         ))}
       </View>
-      <Pressable style={styles.button} onPress={scanPhoto}>
-        <Text style={styles.buttonText}>Scan a photo of the {selectedType}</Text>
+      <Pressable style={styles.button} onPress={() => scanPhoto("upload")}>
+        <Text style={styles.buttonText}>Upload a photo or file of the {selectedType}</Text>
+      </Pressable>
+      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera")}>
+        <Text style={styles.buttonText}>Take a photo of the {selectedType}</Text>
       </Pressable>
       <TextInput
         style={styles.pasteBox}
@@ -150,10 +154,10 @@ export default function DocumentsScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#F4F7FA" },
   content: { padding: 16, paddingBottom: 74, gap: 10 },
-  title: { fontSize: 22, fontWeight: "700", color: NAVY },
-  note: { fontSize: 13, color: "#5A6B7C" },
-  section: { fontSize: 16, fontWeight: "700", color: NAVY, marginTop: 10 },
-  line: { fontSize: 13, color: "#22303C" },
+  title: { fontSize: 25, fontWeight: "800", color: NAVY },
+  note: { fontSize: 14.5, color: "#5A6B7C", lineHeight: 21 },
+  section: { fontSize: 19, fontWeight: "800", color: NAVY, marginTop: 10 },
+  line: { fontSize: 15.5, color: "#22303C", lineHeight: 22 },
   row: { backgroundColor: "#FFFFFF", borderRadius: 8, padding: 12, flexDirection: "row", gap: 8, alignItems: "flex-start" },
   docType: { fontSize: 15, fontWeight: "700", color: NAVY },
   remove: { color: "#C5221F", fontWeight: "600" },
