@@ -148,7 +148,7 @@ export default function IntakeScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#F4F7FA" },
-  content: { padding: 16, gap: 10 },
+  content: { padding: 16, paddingBottom: 74, gap: 10 },
   title: { fontSize: 22, fontWeight: "700", color: NAVY },
   note: { fontSize: 13, color: "#5A6B7C" },
   section: { fontSize: 16, fontWeight: "700", color: NAVY, marginTop: 10 },

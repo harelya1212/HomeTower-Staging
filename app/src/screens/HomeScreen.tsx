@@ -4,8 +4,8 @@ import { predictionConfidence } from "../../engine/confidence.ts";
 import { householdFreshness, reminderCandidates } from "../../engine/freshness.ts";
 import { accuracyLevel } from "../../engine/intake.ts";
 import { computeHouseholdTax } from "../../engine/snapshot.ts";
-import AdSlot from "../components/AdSlot.tsx";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
+import { StateFlag } from "../components/StateFlag.tsx";
 import { goalPct, projectValue } from "../goals.ts";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { todayIso, useHousehold } from "../store.tsx";
@@ -72,7 +72,10 @@ export default function HomeScreen() {
 
       <View style={styles.card}>
         <View style={styles.cardHead}>
-          <Text style={styles.cardLabel}>🌵 {state.intake.state} state refund projection</Text>
+          <View style={styles.labelRow}>
+            <StateFlag state={state.intake.state} />
+            <Text style={styles.cardLabel}>{state.intake.state} state refund projection</Text>
+          </View>
           <Text style={[styles.bigValue, { color: st >= g.stateRefundTargetLow && st <= g.stateRefundTargetHigh ? GREEN : st < g.stateRefundTargetLow ? RED : YELLOW }]}>{money(st)}</Text>
         </View>
         <RefundGauge value={st} low={g.stateRefundTargetLow} high={g.stateRefundTargetHigh} />
@@ -108,16 +111,15 @@ export default function HomeScreen() {
       <Text style={styles.pushLine}>
         Push: {push && isPushEnabled(state.pushEnabled, push) ? `on, ${push.scheduledCount} reminder(s) scheduled` : state.pushEnabled ? "on in settings - token registers in the native app" : "off"}
       </Text>
-
-      <AdSlot />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#F4F7FA" },
-  content: { padding: 16, gap: 12 },
+  content: { padding: 16, paddingBottom: 74, gap: 12 },
   pad: { padding: 16 },
+  labelRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   household: { fontSize: 22, fontWeight: "800", color: NAVY },
   subtitle: { fontSize: 13, color: "#5A6B7C" },
   card: { backgroundColor: "#FFFFFF", borderRadius: 14, padding: 14, gap: 4 },

@@ -5,7 +5,6 @@ import { extractFields, type ExtractionResult } from "../../engine/extract.ts";
 import { householdFreshness } from "../../engine/freshness.ts";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { pickImageUri, recognizeOnDevice, textToRawFields } from "../ocr.ts";
-import AdSlot from "../components/AdSlot.tsx";
 import { todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -144,14 +143,13 @@ export default function DocumentsScreen() {
       <Pressable onPress={addManual}>
         <Text style={styles.manualLink}>No text handy? Register {selectedType} manually (today, no extraction)</Text>
       </Pressable>
-      <AdSlot />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#F4F7FA" },
-  content: { padding: 16, gap: 10 },
+  content: { padding: 16, paddingBottom: 74, gap: 10 },
   title: { fontSize: 22, fontWeight: "700", color: NAVY },
   note: { fontSize: 13, color: "#5A6B7C" },
   section: { fontSize: 16, fontWeight: "700", color: NAVY, marginTop: 10 },
