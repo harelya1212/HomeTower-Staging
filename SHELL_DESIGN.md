@@ -59,4 +59,16 @@ competitor research warned about.
   export succeeds, and the exported bundle contains the screens, the
   engine data and the push strings. Device check still pending (owner's
   phone is the final word, per PROCESS).
-- Steps 3-5 pending: on-device OCR capture, planning screens, QA gate.
+- Step 3 DONE (2026-11-07): document capture - photo pick + ML Kit
+  on-device recognition on native, paste-text path on every platform,
+  both feeding the engine extractor behind a user-confirm screen; OCR
+  stage and errors are shown in the UI, never swallowed.
+- Step 4 DONE (2026-11-07): Plan tab with TaxImpact (incl. timing and
+  wash-sale output), RSU vesting gap, ESPP classification, FBAR / 8938 /
+  FTC, and the US-Israel treaty caps and positions - all computed from
+  the household numbers in Intake. Verified: tsc clean, web export
+  succeeds, all new feature strings present in the exported bundle.
+- Step 5 OPEN: the phase QA gate runs on the owner's device - screens
+  on the phone, and push proven by a stored token plus a delivered
+  staleness reminder. Until then the phase is built and bundle-verified,
+  not device-verified, and is reported as exactly that.
