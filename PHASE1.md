@@ -47,6 +47,39 @@ quality of the answers.
   the versioned treaty-us-il content pack, cross-checked against the IRS
   treaty table. Other countries' treaties stay deferred.
 
+## SPEC45 adoption + Phase 1 additions (owner decision 2026-11-07)
+SPEC45.md is the master product spec (all 45 sections, adopted 2026-11-07).
+This file still governs phasing. Four spec sections enter Phase 1 IN FULL,
+in this order:
+1. Sec. 16 - Smart Document Request Engine: the household profile
+   determines which documents the app asks for (W-2 employee / brokerage
+   investor / RSU employee / HSA household / college student / rental
+   owner). Documents asks for what THIS household needs - never the full
+   fixed set.
+2. Sec. 17 - Intelligent payroll shortcut: instead of demanding a new
+   payslip every cycle, ask 3 no-change questions (gross changed? net
+   deposit changed? benefit election changed?); all-unchanged marks the
+   payroll PROVISIONALLY unchanged and refreshes its freshness; a full
+   document verification is still required periodically (every 3rd
+   provisional cycle) and immediately when anything changed or is unsure.
+3. Sec. 39 + 42 - One NEXT ACTION on Home in the sec. 42 format:
+   RECOMMENDED / WHY / EXPECTED BENEFIT / TRADE-OFF / CONFIDENCE / WHAT
+   COULD CHANGE THE ANSWER. The approved dashboard gauges stay; the
+   action card sits above the attention list.
+4. Sec. 20 - Annual Planning Cycle as a reminder layer: January reset,
+   quarterly health check, June mid-year review, Sep/Oct landing
+   forecast, November final optimization window, December Final Tax
+   Lock. Home shows the current phase; push schedules a phase-start
+   reminder.
+
+## Phase 2 gate candidates (from SPEC45, decided at the gate)
+- Sec. 44 - Financial Health Score 0-100 with mandatory reason drivers.
+  NOT the confidence score: confidence measures data quality, health
+  measures financial state. Never merged.
+- Sec. 37 - Recommendation Tracker (owner / action / why / dollar
+  impact / due date / status / verification).
+- Sec. 23-24 - Retirement Scenario Engine + household scenarios.
+
 ## DEFERRED - re-examine at phase gates, do not delete
 - Full Retirement Scenario Engine (per-spouse, 10/12/15 years)
 - Full Stock / Equity Scenario Engine
