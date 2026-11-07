@@ -6,6 +6,7 @@ import { HouseholdProvider } from "./src/store.tsx";
 import DocumentsScreen from "./src/screens/DocumentsScreen.tsx";
 import HomeScreen, { NAVY, TEAL } from "./src/screens/HomeScreen.tsx";
 import IntakeScreen from "./src/screens/IntakeScreen.tsx";
+import PlanScreen from "./src/screens/PlanScreen.tsx";
 
 const Tab = createBottomTabNavigator();
 
@@ -24,6 +25,7 @@ export default function App() {
         >
           <Tab.Screen name="Home" component={HomeScreen} options={{ title: "HomeTower" }} />
           <Tab.Screen name="Documents" component={DocumentsScreen} />
+          <Tab.Screen name="Plan" component={PlanScreen} />
           <Tab.Screen name="Intake" component={IntakeScreen} />
         </Tab.Navigator>
       </NavigationContainer>
