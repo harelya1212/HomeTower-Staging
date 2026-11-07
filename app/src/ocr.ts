@@ -6,6 +6,7 @@
 // RETURNED and shown in the UI - never a silent catch that fakes a
 // status (TReps rule, PHASE1.md). Extraction itself is source-agnostic
 // (engine/extract.ts) and every field is user-confirmed before saving.
+import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { Platform } from "react-native";
 import type { RawField } from "../engine/extract.ts";
@@ -31,6 +32,19 @@ export async function takePhotoUri(): Promise<{ uri: string | null; error: strin
   const result = await ImagePicker.launchCameraAsync({ quality: 0.9 });
   if (result.canceled) return { uri: null, error: null };
   return { uri: result.assets[0]?.uri ?? null, error: null };
+}
+
+/** Pick ANY file (PDF, image, anything in Files) - owner QA round 6:
+ * the image picker greys PDFs out, and tax documents ARE PDFs. */
+export async function pickDocumentFile(): Promise<{ uri: string | null; name: string | null; mimeType: string | null; error: string | null }> {
+  try {
+    const result = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true });
+    if (result.canceled) return { uri: null, name: null, mimeType: null, error: null };
+    const a = result.assets[0];
+    return { uri: a?.uri ?? null, name: a?.name ?? null, mimeType: a?.mimeType ?? null, error: null };
+  } catch (e) {
+    return { uri: null, name: null, mimeType: null, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 export async function recognizeOnDevice(uri: string): Promise<OcrOutcome> {
