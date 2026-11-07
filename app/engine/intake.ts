@@ -8,6 +8,14 @@ export const DOCUMENT_TYPES = new Set(["w2", "payslip", "hsa_statement", "401k_s
 export const DOCUMENT_STATUSES = new Set(["parsed", "pending_verify", "rejected"]);
 
 export interface Member { name: string; role: string; dateOfBirth?: string | null; payFrequency?: string | null }
+export interface CalibrationRecord {
+  taxYear: number;
+  federalFiled?: boolean;
+  stateFiled?: boolean;
+  actualFederalRefundOwe?: number | null; // + refund, - owed
+  actualStateRefundOwe?: number | null;
+  outcomeVerified?: boolean; // checked against the IRS/state outcome
+}
 export interface DocumentRecord { docType: string; status: string; confidence?: number; capturedOn?: string | null }
 export interface HouseholdIntake {
   name: string; state: string; filingStatus: string; members: Member[];
@@ -15,6 +23,7 @@ export interface HouseholdIntake {
   documents: DocumentRecord[];
   hasRsu?: boolean; hasEspp?: boolean; hasForeignAccountsOrIncome?: boolean;
   ytdPayrollKnown?: boolean; capitalLossCarryforwardKnown?: boolean;
+  calibration?: CalibrationRecord | null;
 }
 
 export function validateIntake(h: HouseholdIntake): string[] {
