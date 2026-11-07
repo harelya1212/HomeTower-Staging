@@ -26,9 +26,9 @@ export function RefundGauge({ value, low, high }: { value: number; low: number; 
         <View style={[styles.marker, { left: pos(value), backgroundColor: color }]} />
       </View>
       <View style={styles.scaleRow}>
-        <Text style={styles.scaleText}>owe</Text>
-        <Text style={styles.scaleText}>$0 break-even</Text>
-        <Text style={styles.scaleText}>target {`$${low.toLocaleString()}`}-${`$${high.toLocaleString()}`}</Text>
+        <Text style={[styles.scaleText, { flex: 1, textAlign: "left" }]}>Owe</Text>
+        <Text style={[styles.scaleText, { flex: 1.4, textAlign: "center" }]}>$0 break-even</Text>
+        <Text style={[styles.scaleText, { flex: 1.6, textAlign: "right" }]}>{"Target $" + low.toLocaleString() + " - $" + high.toLocaleString()}</Text>
       </View>
     </View>
   );
@@ -37,8 +37,8 @@ export function RefundGauge({ value, low, high }: { value: number; low: number; 
 /** Circular percentage ring. pct may exceed 100 (shown capped visually,
  * number stays honest). */
 export function RingGauge({ pct, label, color }: { pct: number; label: string; color: string }) {
-  const size = 104;
-  const stroke = 11;
+  const size = 116;
+  const stroke = 12;
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const shown = Math.max(0, Math.min(100, pct));
@@ -72,9 +72,9 @@ const styles = StyleSheet.create({
   zeroTick: { position: "absolute", top: 0, bottom: 0, width: 2, backgroundColor: "#5A6B7C" },
   marker: { position: "absolute", top: 2, bottom: 2, width: 6, borderRadius: 3, marginLeft: -3 },
   scaleRow: { flexDirection: "row", justifyContent: "space-between" },
-  scaleText: { fontSize: 11, color: "#5A6B7C" },
-  ringWrap: { alignItems: "center", width: 112 },
-  ringCenter: { position: "absolute", top: 0, width: 104, height: 104, alignItems: "center", justifyContent: "center" },
-  ringValue: { fontSize: 24, fontWeight: "800" },
-  ringLabel: { fontSize: 12, fontWeight: "600", color: "#22303C", textAlign: "center", marginTop: 2 },
+  scaleText: { fontSize: 12, color: "#5A6B7C", fontWeight: "600" },
+  ringWrap: { alignItems: "center", width: 120 },
+  ringCenter: { position: "absolute", top: 0, width: 116, height: 116, alignItems: "center", justifyContent: "center" },
+  ringValue: { fontSize: 27, fontWeight: "800" },
+  ringLabel: { fontSize: 13.5, fontWeight: "700", color: "#22303C", textAlign: "center", marginTop: 3, lineHeight: 18 },
 });
