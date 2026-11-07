@@ -6,7 +6,8 @@ import { extractFields, type ExtractionResult } from "../../engine/extract.ts";
 import { householdFreshness } from "../../engine/freshness.ts";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
-import { pickImageUri, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
+import { pickDocumentFile, pickImageUri, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
+import { extractPdfText } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -73,6 +74,31 @@ export default function DocumentsScreen() {
     const outcome = await recognizeOnDevice(uri);
     if (outcome.error) { setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
     runExtraction(outcome.text, docType);
+  };
+
+  // Owner QA round 6: a real FILE upload. The image picker greys PDFs
+  // out; tax documents are PDFs. PDFs are read through their text layer
+  // (web), images through the OCR path, anything else gets a plain
+  // explanation plus the manual-register option below.
+  const uploadFile = async (docType: string = selectedType) => {
+    setOcrNote(null);
+    const picked = await pickDocumentFile();
+    if (picked.error) { setOcrNote(picked.error); return; }
+    if (!picked.uri) return;
+    const isPdf = picked.mimeType === "application/pdf" || /\.pdf$/i.test(picked.name ?? "");
+    if (isPdf) {
+      const outcome = await extractPdfText(picked.uri);
+      if (outcome.error) { setOcrNote(`PDF stage: ${outcome.error}`); return; }
+      runExtraction(outcome.text, docType);
+      return;
+    }
+    if ((picked.mimeType ?? "").startsWith("image/")) {
+      const outcome = await recognizeOnDevice(picked.uri);
+      if (outcome.error) { setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
+      runExtraction(outcome.text, docType);
+      return;
+    }
+    setOcrNote(`That file type (${picked.mimeType ?? "unknown"}) cannot be read yet. PDFs and photos work; anything else can be registered manually below.`);
   };
 
   useEffect(() => {
@@ -160,8 +186,11 @@ export default function DocumentsScreen() {
             )}
             {open && r.key !== "calibration_outcome" && (
               <View style={styles.reqActions}>
-                <Pressable style={styles.button} onPress={() => scanPhoto("upload", r.docType)}>
-                  <Text style={styles.buttonText}>Upload a photo or file of this document</Text>
+                <Pressable style={styles.button} onPress={() => uploadFile(r.docType)}>
+                  <Text style={styles.buttonText}>Upload a PDF or file of this document</Text>
+                </Pressable>
+                <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload", r.docType)}>
+                  <Text style={styles.buttonText}>Upload a photo of this document</Text>
                 </Pressable>
                 <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera", r.docType)}>
                   <Text style={styles.buttonText}>Take a photo of this document</Text>
@@ -218,8 +247,11 @@ export default function DocumentsScreen() {
           </Pressable>
         ))}
       </View>
-      <Pressable style={styles.button} onPress={() => scanPhoto("upload")}>
-        <Text style={styles.buttonText}>Upload a photo or file of the {selectedType}</Text>
+      <Pressable style={styles.button} onPress={() => uploadFile()}>
+        <Text style={styles.buttonText}>Upload a PDF or file of the {selectedType}</Text>
+      </Pressable>
+      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload")}>
+        <Text style={styles.buttonText}>Upload a photo of the {selectedType}</Text>
       </Pressable>
       <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera")}>
         <Text style={styles.buttonText}>Take a photo of the {selectedType}</Text>
