@@ -1,5 +1,6 @@
 import React from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { DateField, StatePicker, TextField } from "../components/Fields.tsx";
 import type { Asset, AssetKind, Job, UiMember } from "../store.tsx";
 import { todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
@@ -55,14 +56,14 @@ export default function MyHouseScreen() {
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.title}>{intake.name || "My House"}</Text>
-      <Text style={styles.intro}>Everyone and everything in the household, in one place. Edit anything, any time - the dashboard and the projections follow.</Text>
+      <Text style={styles.intro}>Everyone and everything in the household, in one place. Edit anything, any time - the dashboard and the projections follow. Everything saves automatically on this device as you type - there is no save button.</Text>
 
       <Text style={styles.section}>Household</Text>
       <View style={styles.card}>
-        <Text style={styles.label}>Household name</Text>
-        <TextInput style={styles.input} value={intake.name} onChangeText={(v) => updateIntake({ name: v })} placeholder="e.g. The Harel Family" />
-        <Text style={styles.label}>State of residence (2 letters)</Text>
-        <TextInput style={styles.input} value={intake.state} autoCapitalize="characters" maxLength={2} onChangeText={(v) => updateIntake({ state: v.toUpperCase() })} placeholder="AZ" />
+        <Text style={styles.label}>Household name (shown on the tab bar)</Text>
+        <TextField value={intake.name} onChange={(v) => updateIntake({ name: v })} placeholder="e.g. The Harel Family" />
+        <Text style={styles.label}>State of residence</Text>
+        <StatePicker value={intake.state} onChange={(v) => updateIntake({ state: v })} />
         {intake.state !== "AZ" && <Text style={styles.warn}>Phase 1 computes Arizona tax. Your state is recorded and its pack joins in a later phase - the federal picture already works.</Text>}
         <Text style={styles.label}>How do you file?</Text>
         <View style={styles.chipWrap}>
@@ -78,7 +79,7 @@ export default function MyHouseScreen() {
       <Text style={styles.intro}>Dates of birth drive the retirement timing and the education timing - no typing your age anywhere else.</Text>
       {family.map((m) => (
         <View key={m.id} style={styles.card}>
-          <TextInput style={styles.input} value={m.name} onChangeText={(v) => patchMember(m.id, { name: v })} placeholder="Full name" />
+          <TextField value={m.name} onChange={(v) => patchMember(m.id, { name: v })} placeholder="Full name" />
           <View style={styles.chipWrap}>
             {ROLES.map((r) => (
               <Pressable key={r} onPress={() => patchMember(m.id, { role: r })} style={[styles.chip, m.role === r && styles.chipOn]}>
@@ -86,8 +87,8 @@ export default function MyHouseScreen() {
               </Pressable>
             ))}
           </View>
-          <Text style={styles.label}>Date of birth (YYYY-MM-DD)</Text>
-          <TextInput style={styles.input} value={m.dob} onChangeText={(v) => patchMember(m.id, { dob: v })} placeholder="1990-05-17" />
+          <Text style={styles.label}>Date of birth</Text>
+          <DateField value={m.dob} onChange={(v) => patchMember(m.id, { dob: v })} />
           {(m.role === "self" || m.role === "spouse") && (
             <>
               <Text style={styles.label}>Planned retirement age</Text>
@@ -130,19 +131,19 @@ export default function MyHouseScreen() {
       {jobs.map((j) => (
         <View key={j.id} style={styles.card}>
           <Text style={styles.label}>Who works there (name from the family table)</Text>
-          <TextInput style={styles.input} value={j.memberName} onChangeText={(v) => patchJob(j.id, { memberName: v })} placeholder="Name" />
+          <TextField value={j.memberName} onChange={(v) => patchJob(j.id, { memberName: v })} placeholder="Name" />
           <Text style={styles.label}>Employer</Text>
-          <TextInput style={styles.input} value={j.employer} onChangeText={(v) => patchJob(j.id, { employer: v })} placeholder="Employer name" />
-          <Text style={styles.label}>Started (YYYY-MM-DD)</Text>
-          <TextInput style={styles.input} value={j.startDate} onChangeText={(v) => patchJob(j.id, { startDate: v })} placeholder="2024-01-15" />
+          <TextField value={j.employer} onChange={(v) => patchJob(j.id, { employer: v })} placeholder="Employer name" />
+          <Text style={styles.label}>Started</Text>
+          <DateField value={j.startDate} onChange={(v) => patchJob(j.id, { startDate: v })} />
           <View style={styles.toggleRow}>
             <Text style={styles.label}>Current job</Text>
             <Switch value={j.endDate === ""} onValueChange={(v) => patchJob(j.id, { endDate: v ? "" : todayIso() })} />
           </View>
           {j.endDate !== "" && (
             <>
-              <Text style={styles.label}>Last day (YYYY-MM-DD)</Text>
-              <TextInput style={styles.input} value={j.endDate} onChangeText={(v) => patchJob(j.id, { endDate: v })} />
+              <Text style={styles.label}>Last day</Text>
+              <DateField value={j.endDate} onChange={(v) => patchJob(j.id, { endDate: v })} />
             </>
           )}
           <Text style={styles.label}>Pay frequency</Text>
@@ -164,7 +165,7 @@ export default function MyHouseScreen() {
       <Text style={styles.intro}>Balances here feed the dashboard rings: 401(k) and IRA rows build the retirement ring, 529 rows build the education ring. For a 529, put the child's name as the owner.</Text>
       {assets.map((a) => (
         <View key={a.id} style={styles.card}>
-          <TextInput style={styles.input} value={a.label} onChangeText={(v) => patchAsset(a.id, { label: v })} placeholder="Label, e.g. Fidelity 401(k)" />
+          <TextField value={a.label} onChange={(v) => patchAsset(a.id, { label: v })} placeholder="Label, e.g. Fidelity 401(k)" />
           <View style={styles.chipWrap}>
             {KINDS.map((k) => (
               <Pressable key={k} onPress={() => patchAsset(a.id, { kind: k })} style={[styles.chip, a.kind === k && styles.chipOn]}>
@@ -173,7 +174,7 @@ export default function MyHouseScreen() {
             ))}
           </View>
           <Text style={styles.label}>Owner (for a 529: the child)</Text>
-          <TextInput style={styles.input} value={a.ownerName} onChangeText={(v) => patchAsset(a.id, { ownerName: v })} placeholder="Name" />
+          <TextField value={a.ownerName} onChange={(v) => patchAsset(a.id, { ownerName: v })} placeholder="Name" />
           <Text style={styles.label}>Value today ($)</Text>
           <TextInput style={styles.input} value={String(a.value || "")} keyboardType="numeric" onChangeText={(v) => patchAsset(a.id, { value: num(v) })} />
           <Text style={styles.label}>Added per month ($)</Text>

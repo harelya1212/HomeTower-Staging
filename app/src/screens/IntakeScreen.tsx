@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { accuracyLevel, validateIntake, type Member } from "../../engine/intake.ts";
+import { StatePicker, TextField } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, registerForPush, type PushStatus } from "../push.ts";
 import { useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
@@ -11,7 +12,7 @@ function Field({ label, value, onChange, numeric }: { label: string; value: stri
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
-      <TextInput style={styles.input} value={value} onChangeText={onChange} keyboardType={numeric ? "numeric" : "default"} />
+      <TextField value={value} onChange={onChange} keyboardType={numeric ? "numeric" : "default"} />
     </View>
   );
 }
@@ -48,7 +49,10 @@ export default function IntakeScreen() {
       <Text style={styles.note}>Living record: edit anything, any time - the snapshot and accuracy level update immediately. Accuracy now: {accuracyLevel(intake)}</Text>
 
       <Field label="Household name" value={intake.name} onChange={(v) => updateIntake({ name: v })} />
-      <Field label="State (2 letters)" value={intake.state} onChange={(v) => updateIntake({ state: v.toUpperCase().slice(0, 2) })} />
+      <View style={styles.field}>
+        <Text style={styles.label}>State of residence</Text>
+        <StatePicker value={intake.state} onChange={(v) => updateIntake({ state: v })} />
+      </View>
       <View style={styles.field}>
         <Text style={styles.label}>Filing status (tap to change)</Text>
         <Pressable

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { DateField, StatePicker } from "../components/Fields.tsx";
 import { useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -62,7 +63,7 @@ export default function OnboardingScreen() {
           <Text style={styles.h}>Welcome. Two minutes to set up your tower.</Text>
           <Text style={styles.p}>HomeTower keeps one clear, always-current picture of your household money: what you have, where you want to go, and what to do next. Everything stays on this device, and everything stays editable.</Text>
           <Text style={styles.label}>Household name</Text>
-          <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="e.g. The Harel Family" />
+          <TextInput style={styles.input} value={name} onChangeText={(v) => { setName(v); updateIntake({ name: v }); }} placeholder="e.g. The Harel Family" />
         </View>
       )}
 
@@ -85,14 +86,14 @@ export default function OnboardingScreen() {
               </Pressable>
             ))}
           </View>
-          <Text style={styles.label}>State of residence (2 letters)</Text>
-          <TextInput style={styles.input} value={state.intake.state} autoCapitalize="characters" maxLength={2} onChangeText={(v) => updateIntake({ state: v.toUpperCase() })} />
-          <Text style={styles.label}>Your date of birth (YYYY-MM-DD)</Text>
-          <TextInput style={styles.input} value={selfDob} onChangeText={setSelfDob} placeholder="1985-03-04" />
+          <Text style={styles.label}>State of residence</Text>
+          <StatePicker value={state.intake.state} onChange={(v) => updateIntake({ state: v })} />
+          <Text style={styles.label}>Your date of birth</Text>
+          <DateField value={selfDob} onChange={setSelfDob} />
           {married && (
             <>
-              <Text style={styles.label}>Spouse date of birth (YYYY-MM-DD)</Text>
-              <TextInput style={styles.input} value={spouseDob} onChangeText={setSpouseDob} placeholder="1987-06-19" />
+              <Text style={styles.label}>Spouse date of birth</Text>
+              <DateField value={spouseDob} onChange={setSpouseDob} />
             </>
           )}
           <Text style={styles.label}>Children (how many)</Text>

@@ -5,6 +5,7 @@ import { computeFederalTax } from "../../engine/federal.ts";
 import { fbarRequired, foreignTaxCredit, form8938Required } from "../../engine/foreign.ts";
 import { simulate } from "../../engine/taximpact.ts";
 import { treatyPosition, withholdingCap } from "../../engine/treaty.ts";
+import { DateField } from "../components/Fields.tsx";
 import { useHousehold } from "../store.tsx";
 import { money, NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -21,8 +22,8 @@ function Num({ label, value, onChange }: { label: string; value: string; onChang
 function Dat({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
     <View style={styles.field}>
-      <Text style={styles.label}>{label} (YYYY-MM-DD)</Text>
-      <TextInput style={styles.input} value={value} onChangeText={onChange} placeholder="2026-01-15" />
+      <Text style={styles.label}>{label}</Text>
+      <DateField value={value} onChange={onChange} />
     </View>
   );
 }
