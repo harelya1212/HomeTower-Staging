@@ -75,3 +75,21 @@ quality of the answers.
   diagnostics in the UI, never silently; the token record and the sender
   use the same identity key (TReps event push failed on exactly that
   mismatch).
+
+## Prediction confidence + calibration anchor (owner requirements, 2026-11-07)
+- PERSONAL CONFIDENCE FORMULA (engine confidence module, both languages):
+  a 0-100 score per household from five factors - document completeness
+  (35), freshness by document dates (25), extraction confidence (10),
+  portfolio coverage vs the holdings the household declared (10), and
+  calibration (20). Bands: High >= 80, Moderate 55-79, Low < 55. Shown
+  as a simple visual indicator on Home, with the top reasons in plain
+  words, and PER DOCUMENT on the Documents page (counts fully /
+  partially / barely). The falling score when data is not updated is
+  the honest cover: the projection never pretends to be fresher than
+  its data.
+- CALIBRATION ANCHOR: last year's return AS FILED to the IRS and the
+  state, verified against the actual outcome (actual refund received or
+  actual amount owed per the authority's response), is the calibration
+  point of the basic plan. The intake always asks for it; while it is
+  missing the confidence report names it as a detractor and the app
+  keeps asking.
