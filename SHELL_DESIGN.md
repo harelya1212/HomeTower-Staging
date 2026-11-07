@@ -1,0 +1,44 @@
+# HomeTower - Phase 1E Findings: App Shell
+
+Date: 2026-11-07. Status: findings and recommendation, awaiting owner approval
+before any build (per PROCESS.md).
+
+## The one hard problem
+The engine is Python. The product is a phone app that is local-first
+(VISION). Python does not run on the phone, and a server would break
+local-first, add hosting cost to an ads-only product, and put family tax
+documents on infrastructure we operate - the exact trust failure the
+competitor research warned about.
+
+## Findings
+1. **The engine is portable by construction.** All tax data already lives
+   in JSON content packs; the Python modules are pure functions over
+   dataclasses. A TypeScript port is a translation, not a redesign.
+2. **The stack the owner already runs is Expo / React Native** (TReps):
+   same toolchain, same GitHub Pages staging flow, same build lessons.
+   Nothing new to learn or maintain.
+3. **On-device OCR exists on both platforms** (Apple Vision, ML Kit text
+   recognition) and outputs text blocks - enough to build key-value pairs
+   for `extract`, which is already source-agnostic.
+4. **Cross-language drift is the real risk of a port.** Managed by keeping
+   the Python engine as the reference implementation and running the SAME
+   golden vectors against the TypeScript port in CI-style checks: one set
+   of expected numbers, two implementations, any drift fails the gate.
+
+## Recommendation
+- Expo / React Native app, TypeScript port of the engine, content packs
+  shared verbatim (the same JSON files ship in the app bundle and update
+  as content, per VISION).
+- Screens, one thing each (VISION): Home (monthly snapshot vs refund
+  target), Intake (the household page), Documents (upload + confirm),
+  TaxImpact (sale simulator), Equity (RSU/ESPP), Foreign (accounts and
+  income). Bottom tabs: Home, Documents, Plan (TaxImpact + Equity +
+  Foreign), Intake.
+- Local storage only in Phase 1 (on-device DB); no account, no server.
+  Family sync is a later phase decision, not a Phase 1 dependency.
+- Staging flow identical to TReps: web export to this repo's Pages for
+  device checks, live frozen until the owner's promotion order.
+- Build order inside 1E: (1) TS engine port + shared golden vectors,
+  (2) Home + Intake on the ported engine, (3) Documents + on-device OCR
+  into extract, (4) TaxImpact / Equity / Foreign screens, (5) phase QA
+  gate on device and in served bytes.
