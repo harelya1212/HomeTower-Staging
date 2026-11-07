@@ -1,0 +1,1 @@
+{"compilerOptions":{"allowImportingTsExtensions":true,"jsx":"react-native","module":"ESNext","moduleResolution":"bundler","noEmit":true,"skipLibCheck":true,"strict":false,"target":"ESNext"},"exclude":["node_modules","dist","engine-tests"],"extends":"expo/tsconfig.base","include":["**/*.ts","**/*.tsx"]}

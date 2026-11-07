@@ -14,5 +14,12 @@ Engine tests (no dependencies, Node >= 22):
 
     node engine-tests/run.ts
 
-The Expo shell (screens, navigation, on-device OCR) is built on top of
-this engine in Phase 1E steps 2-5 - see ../SHELL_DESIGN.md.
+The Expo shell is built on top of this engine in Phase 1E steps 2-5 -
+see ../SHELL_DESIGN.md. Step 2 (scaffold, Home / Documents / Intake
+screens, living-data store, push module with TReps lessons) is in:
+`npx tsc --noEmit` is clean and `npx expo export --platform web`
+produces a bundle verified to contain the screens and engine data.
+On-device OCR capture is step 3; planning screens are step 4.
+
+Note: package.json keeps "type": "module" for the Node engine-test
+runner, so the Babel config is babel.config.cjs.
