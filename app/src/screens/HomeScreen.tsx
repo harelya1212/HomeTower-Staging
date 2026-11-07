@@ -2,13 +2,14 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { predictionConfidence } from "../../engine/confidence.ts";
 import { householdFreshness, reminderCandidates } from "../../engine/freshness.ts";
+import { annualFocus, documentRequests, nextAction, nextPhaseStart } from "../../engine/guidance.ts";
 import { accuracyLevel } from "../../engine/intake.ts";
 import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
 import { ageOn, educationLine, goalPct, projectValue } from "../goals.ts";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
-import { todayIso, useHousehold } from "../store.tsx";
+import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 
 export const NAVY = "#0B2A4A";
 export const TEAL = "#0E7C86";
@@ -68,6 +69,30 @@ export default function HomeScreen() {
   const st = snap.stateRefundOwe;
   const fedLow = state.intake.refundTargetLow ?? 0;
   const fedHigh = state.intake.refundTargetHigh ?? 0;
+
+  // SPEC45 sec. 39+42: exactly one NEXT ACTION, computed by the engine
+  // guidance layer from the same numbers the dashboard shows.
+  const month = Number(today.slice(5, 7));
+  const phase = annualFocus(month);
+  const nextPhase = nextPhaseStart(month);
+  const requests = documentRequests(state.intake, buildProfileExtras(state), today);
+  const labelOf = (docType: string) => requests.find((r) => r.docType === docType)?.label ?? docType;
+  const payslipFinding = findings.find((f) => f.docType === "payslip");
+  const fedPosition = fed < fedLow ? "below" : fed > fedHigh ? "above" : "inside";
+  const action = nextAction({
+    calibrationMissing: confidence.calibrationMissing,
+    verificationDue:
+      state.payrollCheck.consecutive >= 2 && !!payslipFinding && payslipFinding.status !== "fresh",
+    staleDocs: findings.filter((f) => f.status === "stale").map((f) => labelOf(f.docType)),
+    agingDocs: findings.filter((f) => f.status === "aging").map((f) => labelOf(f.docType)),
+    missingRequestLabel: requests.find((r) => r.status === "missing")?.label ?? null,
+    federalPosition: fedPosition as "below" | "inside" | "above",
+    federalDelta: fedPosition === "below" ? fedLow - fed : fedPosition === "above" ? fed - fedHigh : 0,
+    annualPhaseTitle: phase.title,
+    confidenceBand: confidence.band,
+    confidenceScore: confidence.score,
+  });
+  const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   const confColor = confidence.band === "High" ? GREEN : confidence.band === "Moderate" ? YELLOW : RED;
   const ringColor = (pct: number | null) => (pct === null ? "#9DB2C3" : pct >= 80 ? GREEN : pct >= 50 ? YELLOW : RED);
 
@@ -75,6 +100,16 @@ export default function HomeScreen() {
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.household}>{state.intake.name || "Your household"}</Text>
       <Text style={styles.subtitle}>Where do we stand? - {today}</Text>
+
+      <View style={styles.actionCard}>
+        <Text style={styles.actionLabel}>NEXT ACTION</Text>
+        <Text style={styles.actionText}>{action.action}</Text>
+        <Text style={styles.actionRow}><Text style={styles.actionKey}>Why: </Text>{action.why}</Text>
+        <Text style={styles.actionRow}><Text style={styles.actionKey}>Expected benefit: </Text>{action.expectedBenefit}</Text>
+        <Text style={styles.actionRow}><Text style={styles.actionKey}>Trade-off: </Text>{action.tradeOff}</Text>
+        <Text style={styles.actionRow}><Text style={styles.actionKey}>Confidence: </Text>{action.confidence}</Text>
+        <Text style={styles.actionRow}><Text style={styles.actionKey}>What could change this: </Text>{action.whatCouldChange}</Text>
+      </View>
 
       <View style={styles.card}>
         <View style={styles.cardHead}>
@@ -131,6 +166,12 @@ export default function HomeScreen() {
         </View>
       )}
 
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>📅 {phase.title}</Text>
+        <Text style={styles.line}>This phase of the annual planning cycle: {phase.items.join(" · ")}</Text>
+        <Text style={styles.line}>Next: {nextPhase.title} (starts {MONTH_NAMES[nextPhase.month - 1]})</Text>
+      </View>
+
       <Text style={styles.pushLine}>
         Push: {push && isPushEnabled(state.pushEnabled, push) ? `on, ${push.scheduledCount} reminder(s) scheduled` : state.pushEnabled ? "on in settings - token registers in the native app" : "off"}
       </Text>
@@ -156,5 +197,10 @@ const styles = StyleSheet.create({
   statValue: { fontSize: 16, fontWeight: "800", color: NAVY },
   statLabel: { fontSize: 10, color: "#5A6B7C", textAlign: "center" },
   line: { fontSize: 14, color: "#22303C" },
+  actionCard: { backgroundColor: "#FFFFFF", borderRadius: 14, padding: 14, gap: 5, borderWidth: 2, borderColor: TEAL },
+  actionLabel: { fontSize: 12.5, fontWeight: "800", color: TEAL, letterSpacing: 1 },
+  actionText: { fontSize: 19, fontWeight: "800", color: NAVY, lineHeight: 25 },
+  actionRow: { fontSize: 14.5, color: "#22303C", lineHeight: 21 },
+  actionKey: { fontWeight: "700", color: NAVY },
   pushLine: { fontSize: 12, color: "#5A6B7C", textAlign: "center" },
 });

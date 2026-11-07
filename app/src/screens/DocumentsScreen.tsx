@@ -4,14 +4,15 @@ import { predictionConfidence } from "../../engine/confidence.ts";
 import { extractFields, type ExtractionResult } from "../../engine/extract.ts";
 import { householdFreshness } from "../../engine/freshness.ts";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
+import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { pickImageUri, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
-import { todayIso, useHousehold } from "../store.tsx";
+import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
 const BADGE: Record<string, string> = { fresh: "#1E8E3E", aging: "#E37400", stale: "#C5221F", unknown: "#5A6B7C" };
 
 export default function DocumentsScreen() {
-  const { state, updateIntake } = useHousehold();
+  const { state, update, updateIntake } = useHousehold();
   const docs = state.intake.documents;
   const today = todayIso();
   const findings = useMemo(() => householdFreshness(docs, today), [docs, today]);
@@ -26,6 +27,21 @@ export default function DocumentsScreen() {
   const [pasteText, setPasteText] = useState("");
   const [ocrNote, setOcrNote] = useState<string | null>(null);
   const [extraction, setExtraction] = useState<ExtractionResult | null>(null);
+  const requests = useMemo(
+    () => documentRequests(state.intake, buildProfileExtras(state), today),
+    [state.intake, state.assets, state.family, today],
+  );
+  const reqBadge = (s: string) =>
+    s === "satisfied" ? { t: "✓ Have it", c: "#1E8E3E" } : s === "stale" ? { t: "Stale - update", c: "#C5221F" } : { t: "Missing", c: "#E37400" };
+  const hasPayslip = docs.some((d) => d.docType === "payslip" && d.status === "parsed");
+  const [payAnswers, setPayAnswers] = useState({ gross: "no", net: "no", benefits: "no" });
+  const [payNote, setPayNote] = useState<string | null>(null);
+
+  const confirmPayrollCycle = () => {
+    const r = payrollShortcut(payAnswers.gross, payAnswers.net, payAnswers.benefits, state.payrollCheck.consecutive);
+    if (r.provisional) update({ payrollCheck: { lastConfirmedOn: today, consecutive: r.consecutiveAfter } });
+    setPayNote(r.reason);
+  };
 
   const runExtraction = (text: string) => {
     try {
@@ -63,6 +79,7 @@ export default function DocumentsScreen() {
       fields: Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)])),
     };
     updateIntake({ documents: [...docs, record] });
+    if (selectedType === "payslip") update({ payrollCheck: { lastConfirmedOn: null, consecutive: 0 } });
     setExtraction(null);
     setPasteText("");
     setOcrNote(`Saved ${selectedType} (${extraction.status}, confidence ${extraction.confidence}).`);
@@ -70,6 +87,7 @@ export default function DocumentsScreen() {
 
   const addManual = () => {
     updateIntake({ documents: [...docs, { docType: selectedType, status: "parsed", confidence: 1, capturedOn: today }] });
+    if (selectedType === "payslip") update({ payrollCheck: { lastConfirmedOn: null, consecutive: 0 } });
   };
   const removeDoc = (index: number) => updateIntake({ documents: docs.filter((_, i) => i !== index) });
 
@@ -98,6 +116,62 @@ export default function DocumentsScreen() {
           </View>
         );
       })}
+
+      <Text style={styles.section}>What your household needs</Text>
+      <Text style={styles.note}>
+        Your profile decides this list - the app never asks every household for every document (SPEC45, Smart Document Request Engine).
+        Tap an item to capture it below.
+      </Text>
+      {requests.map((r) => {
+        const b = reqBadge(r.status);
+        return (
+          <Pressable key={r.key} style={styles.row} onPress={() => setSelectedType(r.docType)}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.docType}>{r.label}</Text>
+              <Text style={styles.line}>{r.detail}</Text>
+            </View>
+            <Text style={{ color: b.c, fontWeight: "700", fontSize: 14 }}>{b.t}</Text>
+          </Pressable>
+        );
+      })}
+
+      {hasPayslip && (
+        <View style={styles.confirmCard}>
+          <Text style={styles.section}>Payroll check - the intelligent shortcut</Text>
+          <Text style={styles.line}>
+            Instead of uploading a new payslip every cycle: did anything change since the last one?
+          </Text>
+          {state.payrollCheck.lastConfirmedOn && (
+            <Text style={styles.line}>
+              Last confirmed unchanged: {state.payrollCheck.lastConfirmedOn} (provisional cycle {state.payrollCheck.consecutive} of 3 - the 3rd needs the document)
+            </Text>
+          )}
+          {([
+            ["gross", "Did gross pay change?"],
+            ["net", "Did the net deposit change?"],
+            ["benefits", "Did any benefit election change?"],
+          ] as const).map(([key, label]) => (
+            <View key={key}>
+              <Text style={styles.line}>{label}</Text>
+              <View style={styles.chips}>
+                {([["no", "No change"], ["yes", "Changed"], ["unsure", "Not sure"]] as const).map(([val, lab]) => (
+                  <Pressable
+                    key={val}
+                    style={[styles.chip, payAnswers[key] === val && styles.chipSelected]}
+                    onPress={() => setPayAnswers((a) => ({ ...a, [key]: val }))}
+                  >
+                    <Text style={payAnswers[key] === val ? styles.chipTextSelected : styles.chipText}>{lab}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          ))}
+          <Pressable style={styles.button} onPress={confirmPayrollCycle}>
+            <Text style={styles.buttonText}>Confirm this cycle</Text>
+          </Pressable>
+          {payNote && <Text style={styles.note}>{payNote}</Text>}
+        </View>
+      )}
 
       <Text style={styles.section}>Capture a document</Text>
       <View style={styles.chips}>
