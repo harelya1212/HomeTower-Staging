@@ -95,4 +95,5 @@ def test_content_packs_present_and_versioned():
         pack = json.loads((root / f"{name}.json").read_text())
         assert pack["version"], name
     maps = json.loads((root / "ocr-field-maps.json").read_text())["maps"]
-    assert set(maps) == {"w2", "payslip", "hsa_statement", "401k_statement", "1099b", "1098t", "1099q"}
+    assert set(maps) == {"w2", "payslip", "hsa_statement", "401k_statement", "1099b", "1098t", "1099q",
+                         "brokerage_statement", "529_statement"}
