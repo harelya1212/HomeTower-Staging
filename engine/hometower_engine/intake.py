@@ -30,6 +30,7 @@ class DocumentRecord:
     doc_type: str
     status: str  # parsed | pending_verify | rejected
     confidence: float = 0.0
+    captured_on: Optional[date] = None  # freshness is computed from this
 
 
 @dataclass
