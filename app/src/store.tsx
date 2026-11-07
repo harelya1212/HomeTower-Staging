@@ -55,6 +55,11 @@ export interface Asset {
   monthly: number;
 }
 
+export interface PayrollCheck {
+  lastConfirmedOn: string | null; // last provisional no-change confirmation
+  consecutive: number; // provisional cycles in a row (verification due at 2)
+}
+
 export interface HouseholdState {
   intake: HouseholdIntake;
   grossIncome: number;
@@ -67,6 +72,7 @@ export interface HouseholdState {
   family: UiMember[];
   jobs: Job[];
   assets: Asset[];
+  payrollCheck: PayrollCheck;
 }
 
 const STORAGE_KEY = "hometower.state.v1";
@@ -109,6 +115,18 @@ export function defaultState(): HouseholdState {
       stateRefundTargetHigh: 3000,
     },
     onboarded: false,
+    payrollCheck: { lastConfirmedOn: null, consecutive: 0 },
+  };
+}
+
+/** SPEC45 sec. 16 profile signals, derived from the My House tables. */
+export function buildProfileExtras(state: HouseholdState) {
+  return {
+    hasHsa: state.assets.some((a) => a.kind === "hsa"),
+    hasBrokerage: state.assets.some((a) => a.kind === "brokerage"),
+    hasRental: state.assets.some((a) => a.kind === "rental"),
+    hasCollegeStudent:
+      state.family.some((m) => m.role === "child" && m.studentNow) || state.assets.some((a) => a.kind === "529"),
   };
 }
 
@@ -139,6 +157,7 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
             family: parsed.family ?? [],
             jobs: parsed.jobs ?? [],
             assets: parsed.assets ?? [],
+            payrollCheck: parsed.payrollCheck ?? { lastConfirmedOn: null, consecutive: 0 },
           });
         }
       })

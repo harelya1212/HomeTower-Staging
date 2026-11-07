@@ -11,6 +11,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 import type { FreshnessFinding } from "../engine/freshness.ts";
+import { nextPhaseStart } from "../engine/guidance.ts";
 
 const TOKEN_KEY = "hometower.pushToken.v1";
 const SCHEDULED_KEY = "hometower.pushScheduled.v1";
@@ -97,6 +98,21 @@ export async function syncStaleReminders(candidates: FreshnessFinding[], setting
           body: c.message,
         },
         trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: when },
+      });
+      count++;
+    }
+    // SPEC45 sec. 20: one reminder at the start of the next annual
+    // planning phase (Jan reset, June review, November window, ...).
+    const phase = nextPhaseStart(now.getMonth() + 1);
+    const phaseYear = phase.month <= now.getMonth() + 1 ? now.getFullYear() + 1 : now.getFullYear();
+    const phaseDate = new Date(phaseYear, phase.month - 1, 1, 9, 0, 0);
+    if (phaseDate > now) {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "HomeTower - new planning phase",
+          body: `${phase.title} starts today. Open HomeTower to see this phase's checklist.`,
+        },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: phaseDate },
       });
       count++;
     }
