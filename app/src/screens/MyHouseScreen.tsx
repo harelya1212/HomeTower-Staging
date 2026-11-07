@@ -1,4 +1,5 @@
-import React from "react";
+import { useNavigation } from "@react-navigation/native";
+import React, { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { DateField, StatePicker, TextField } from "../components/Fields.tsx";
 import type { Asset, AssetKind, Job, UiMember } from "../store.tsx";
@@ -27,12 +28,38 @@ let seq = 0;
 const newId = () => `row-${Date.now()}-${seq++}`;
 const num = (v: string) => Number(v) || 0;
 
+// Pick a person from the family table instead of typing the name again
+// (owner QA round 4: "the user already typed the family members").
+function NamePicker({ options, value, onChange }: { options: string[]; value: string; onChange: (v: string) => void }) {
+  const all = value && !options.includes(value) ? [value, ...options] : options;
+  if (all.length === 0) return <TextField value={value} onChange={onChange} placeholder="Name" />;
+  return (
+    <View style={styles.chipWrap}>
+      {all.map((name) => (
+        <Pressable key={name} onPress={() => onChange(name)} style={[styles.chip, value === name && styles.chipOn]}>
+          <Text style={[styles.chipText, value === name && styles.chipTextOn]}>{name}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+const KIND_BY_DOC: Record<string, AssetKind> = {
+  "401k_statement": "401k",
+  hsa_statement: "hsa",
+  brokerage_statement: "brokerage",
+  "529_statement": "529",
+};
+
 export default function MyHouseScreen() {
   const { state, update, updateIntake } = useHousehold();
+  const navigation = useNavigation<any>();
   const intake = state.intake;
   const family = state.family;
   const jobs = state.jobs;
   const assets = state.assets;
+  const familyNames = family.map((m) => m.name.trim()).filter(Boolean);
+  const [pickedAssets, setPickedAssets] = useState<Set<string>>(new Set());
 
   const setFamily = (next: UiMember[]) => {
     update({ family: next });
@@ -52,6 +79,27 @@ export default function MyHouseScreen() {
     for (const [k, v] of Object.entries(payslip.fields)) if (/employ/i.test(k) && typeof v === "string" && v) payslipEmployer = v;
   }
   const employerKnown = payslipEmployer !== "" && jobs.some((j) => j.employer.toLowerCase() === payslipEmployer.toLowerCase());
+
+  // Asset rows proposed from parsed statements (owner QA round 4: a
+  // photo of a statement should generate the rows, with multi-select -
+  // not typing). A candidate disappears once an asset with the same
+  // kind and value exists, so nothing is offered twice.
+  interface AssetCandidate { key: string; kind: AssetKind; label: string; value: number }
+  const assetCandidates: AssetCandidate[] = [];
+  intake.documents.forEach((d, i) => {
+    const kind = KIND_BY_DOC[d.docType];
+    if (!kind || d.status !== "parsed" || !d.fields) return;
+    const bal = Number(d.fields["ending_balance"] ?? d.fields["vested_balance"]);
+    if (!bal || Number.isNaN(bal)) return;
+    if (assets.some((a) => a.kind === kind && a.value === bal)) return;
+    assetCandidates.push({ key: `doc-${i}`, kind, label: `${KIND_LABEL[kind]} - statement ${d.capturedOn ?? "undated"}`, value: bal });
+  });
+  const addPickedAssets = () => {
+    const chosen = assetCandidates.filter((c) => pickedAssets.has(c.key));
+    if (!chosen.length) return;
+    setAssets([...assets, ...chosen.map((c) => ({ id: newId(), kind: c.kind, label: c.label, ownerName: "", value: c.value, monthly: 0 }))]);
+    setPickedAssets(new Set());
+  };
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -130,8 +178,8 @@ export default function MyHouseScreen() {
       )}
       {jobs.map((j) => (
         <View key={j.id} style={styles.card}>
-          <Text style={styles.label}>Who works there (name from the family table)</Text>
-          <TextField value={j.memberName} onChange={(v) => patchJob(j.id, { memberName: v })} placeholder="Name" />
+          <Text style={styles.label}>Who works there</Text>
+          <NamePicker options={familyNames} value={j.memberName} onChange={(v) => patchJob(j.id, { memberName: v })} />
           <Text style={styles.label}>Employer</Text>
           <TextField value={j.employer} onChange={(v) => patchJob(j.id, { employer: v })} placeholder="Employer name" />
           <Text style={styles.label}>Started</Text>
@@ -163,6 +211,29 @@ export default function MyHouseScreen() {
 
       <Text style={styles.section}>Assets - what the household has</Text>
       <Text style={styles.intro}>Balances here feed the dashboard rings: 401(k) and IRA rows build the retirement ring, 529 rows build the education ring. For a 529, put the child's name as the owner.</Text>
+      {assetCandidates.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.label}>From your documents - tap to select, add them together</Text>
+          {assetCandidates.map((c) => {
+            const on = pickedAssets.has(c.key);
+            return (
+              <Pressable
+                key={c.key}
+                style={[styles.candidate, on && styles.candidateOn]}
+                onPress={() => setPickedAssets((prev) => { const next = new Set(prev); if (next.has(c.key)) next.delete(c.key); else next.add(c.key); return next; })}
+              >
+                <Text style={styles.candidateText}>{on ? "☑" : "☐"} {c.label} - ${c.value.toLocaleString("en-US")}</Text>
+              </Pressable>
+            );
+          })}
+          <Pressable style={styles.addButton} onPress={addPickedAssets}>
+            <Text style={styles.addText}>Add selected ({pickedAssets.size})</Text>
+          </Pressable>
+        </View>
+      )}
+      <Pressable style={styles.prefill} onPress={() => navigation.navigate("Documents")}>
+        <Text style={styles.prefillText}>📷 Photograph a statement instead of typing - rows are created here from what the photo reads</Text>
+      </Pressable>
       {assets.map((a) => (
         <View key={a.id} style={styles.card}>
           <TextField value={a.label} onChange={(v) => patchAsset(a.id, { label: v })} placeholder="Label, e.g. Fidelity 401(k)" />
@@ -174,7 +245,7 @@ export default function MyHouseScreen() {
             ))}
           </View>
           <Text style={styles.label}>Owner (for a 529: the child)</Text>
-          <TextField value={a.ownerName} onChange={(v) => patchAsset(a.id, { ownerName: v })} placeholder="Name" />
+          <NamePicker options={familyNames} value={a.ownerName} onChange={(v) => patchAsset(a.id, { ownerName: v })} />
           <Text style={styles.label}>Value today ($)</Text>
           <TextInput style={styles.input} value={String(a.value || "")} keyboardType="numeric" onChangeText={(v) => patchAsset(a.id, { value: num(v) })} />
           <Text style={styles.label}>Added per month ($)</Text>
@@ -215,4 +286,7 @@ const styles = StyleSheet.create({
   addText: { color: TEAL, fontWeight: "800", fontSize: 16 },
   prefill: { backgroundColor: "#E6F4F6", borderRadius: 12, padding: 14 },
   prefillText: { color: NAVY, fontWeight: "700", fontSize: 15.5 },
+  candidate: { borderWidth: 1.5, borderColor: "#C9D6E2", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
+  candidateOn: { borderColor: TEAL, backgroundColor: "#E6F4F6" },
+  candidateText: { fontSize: 15.5, color: NAVY, fontWeight: "600" },
 });

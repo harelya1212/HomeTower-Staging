@@ -5,7 +5,7 @@ import { computeFederalTax } from "../../engine/federal.ts";
 import { fbarRequired, foreignTaxCredit, form8938Required } from "../../engine/foreign.ts";
 import { simulate } from "../../engine/taximpact.ts";
 import { treatyPosition, withholdingCap } from "../../engine/treaty.ts";
-import { DateField } from "../components/Fields.tsx";
+import { DateField, usToIso } from "../components/Fields.tsx";
 import { useHousehold } from "../store.tsx";
 import { money, NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -46,6 +46,33 @@ function SaleTool() {
   const [price, setPrice] = useState("80");
   const [buy, setBuy] = useState("2025-06-01");
   const [sell, setSell] = useState("2026-01-15");
+  const [lotNote, setLotNote] = useState<string | null>(null);
+
+  // Owner QA round 4: the lot should come from a LIST - the household's
+  // own recorded sales (parsed 1099-B documents) - not from typing.
+  const recordedSales = state.intake.documents
+    .map((d, i) => ({ d, i }))
+    .filter(({ d }) => d.docType === "1099b" && d.status === "parsed" && d.fields);
+  const applySale = (fields: Record<string, string>, capturedOn?: string | null) => {
+    const q = Number(fields["quantity"]);
+    const proceeds = Number(fields["proceeds"]);
+    const basisTotal = Number(fields["cost_basis"]);
+    if (fields["description"]) setTicker(fields["description"].slice(0, 12).toUpperCase());
+    if (q > 0) {
+      setQty(String(q));
+      if (proceeds > 0) setPrice((proceeds / q).toFixed(2));
+      if (basisTotal > 0) setBasis((basisTotal / q).toFixed(2));
+    }
+    const acq = fields["date_acquired"] ? usToIso(fields["date_acquired"]) ?? (/^\d{4}-\d{2}-\d{2}$/.test(fields["date_acquired"]) ? fields["date_acquired"] : null) : null;
+    if (acq) setBuy(acq);
+    const sold = fields["date_sold"] ? usToIso(fields["date_sold"]) ?? (/^\d{4}-\d{2}-\d{2}$/.test(fields["date_sold"]) ? fields["date_sold"] : null) : null;
+    if (sold) setSell(sold);
+    setLotNote(
+      `Filled from your 1099-B${capturedOn ? ` (captured ${capturedOn})` : ""}: proceeds $${(proceeds || 0).toLocaleString("en-US")}, total basis $${(basisTotal || 0).toLocaleString("en-US")}` +
+      (q > 0 ? " - per-share values computed from the quantity." : " - add the quantity and the per-share values are computed for you.") +
+      " Check the fields below and adjust.",
+    );
+  };
   const result = useMemo(() => {
     if (!isDate(buy) || !isDate(sell)) return null;
     try {
@@ -59,6 +86,21 @@ function SaleTool() {
   }, [ticker, qty, basis, price, buy, sell, state]);
   return (
     <View style={styles.tool}>
+      {recordedSales.length > 0 ? (
+        <>
+          <Text style={styles.label}>Your recorded sales - tap one to fill the tool</Text>
+          {recordedSales.map(({ d, i }) => (
+            <Pressable key={i} style={styles.lotRow} onPress={() => applySale(d.fields as Record<string, string>, d.capturedOn)}>
+              <Text style={styles.lotText}>
+                1099-B{d.capturedOn ? ` - ${d.capturedOn}` : ""}: proceeds ${(Number(d.fields?.["proceeds"]) || 0).toLocaleString("en-US")} - basis ${(Number(d.fields?.["cost_basis"]) || 0).toLocaleString("en-US")} - gain/loss ${(Number(d.fields?.["gain_loss"]) || 0).toLocaleString("en-US")}
+              </Text>
+            </Pressable>
+          ))}
+        </>
+      ) : (
+        <Text style={styles.line}>No recorded sales yet. Upload a 1099-B in the Documents tab and your sales appear here as a list - no typing. The fields below stay as a manual fallback.</Text>
+      )}
+      {lotNote && <Text style={styles.line}>{lotNote}</Text>}
       <Txt label="Ticker" value={ticker} onChange={setTicker} />
       <Num label="Quantity" value={qty} onChange={setQty} />
       <Num label="Cost basis per share ($)" value={basis} onChange={setBasis} />
@@ -226,6 +268,8 @@ const styles = StyleSheet.create({
   note: { fontSize: 13, color: "#5A6B7C" },
   section: { fontSize: 16, fontWeight: "700", color: NAVY, marginTop: 12 },
   tool: { gap: 8 },
+  lotRow: { backgroundColor: "#E6F4F6", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 11 },
+  lotText: { fontSize: 15, color: NAVY, fontWeight: "600" },
   field: { gap: 4 },
   label: { fontSize: 13, fontWeight: "600", color: TEAL },
   input: { backgroundColor: "#FFFFFF", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
