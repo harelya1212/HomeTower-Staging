@@ -8,6 +8,7 @@ import AdBanner, { AD_BANNER_HEIGHT } from "./src/components/AdBanner.tsx";
 import DocumentsScreen from "./src/screens/DocumentsScreen.tsx";
 import HomeScreen, { NAVY, TEAL } from "./src/screens/HomeScreen.tsx";
 import IntakeScreen from "./src/screens/IntakeScreen.tsx";
+import MyHouseScreen from "./src/screens/MyHouseScreen.tsx";
 import OnboardingScreen from "./src/screens/OnboardingScreen.tsx";
 import PlanScreen from "./src/screens/PlanScreen.tsx";
 import { HouseholdProvider, useHousehold } from "./src/store.tsx";
@@ -29,6 +30,7 @@ function HeaderLockup() {
 const TAB_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
   Home: "home",
   Documents: "document-text",
+  MyHouse: "business",
   Plan: "analytics",
   Intake: "person",
 };
@@ -57,6 +59,11 @@ function Shell() {
       >
         <Tab.Screen name="Home" component={HomeScreen} />
         <Tab.Screen name="Documents" component={DocumentsScreen} />
+        <Tab.Screen
+          name="MyHouse"
+          component={MyHouseScreen}
+          options={{ tabBarLabel: state.intake.name ? state.intake.name.slice(0, 12) : "My House" }}
+        />
         <Tab.Screen name="Plan" component={PlanScreen} />
         <Tab.Screen name="Intake" component={IntakeScreen} />
       </Tab.Navigator>
