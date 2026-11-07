@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { predictionConfidence } from "../../engine/confidence.ts";
 import { extractFields, type ExtractionResult } from "../../engine/extract.ts";
 import { householdFreshness } from "../../engine/freshness.ts";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
@@ -18,6 +19,9 @@ export default function DocumentsScreen() {
     () => new Map(docs.map((d, i) => [i, findings.find((f) => f.docType === d.docType)])),
     [docs, findings],
   );
+  const indicators = useMemo(() => predictionConfidence(state.intake, today).perDocument, [state.intake, today]);
+  const countsLabel = (c: string) => (c === "fully" ? "● counts fully" : c === "partially" ? "◐ counts partially" : "○ counts barely");
+  const countsColor = (c: string) => (c === "fully" ? "#1E8E3E" : c === "partially" ? "#E37400" : "#C5221F");
   const [selectedType, setSelectedType] = useState("payslip");
   const [pasteText, setPasteText] = useState("");
   const [ocrNote, setOcrNote] = useState<string | null>(null);
@@ -85,6 +89,7 @@ export default function DocumentsScreen() {
               <Text style={styles.docType}>{d.docType}</Text>
               <Text style={styles.line}>Captured: {d.capturedOn ?? "unknown"} - status: {d.status}</Text>
               {f && <Text style={[styles.line, { color: BADGE[f.status] }]}>{f.status.toUpperCase()} - {f.message}</Text>}
+              {indicators[i] && <Text style={[styles.line, { color: countsColor(indicators[i].counts), fontWeight: "600" }]}>{countsLabel(indicators[i].counts)} toward prediction confidence</Text>}
             </View>
             <Pressable onPress={() => removeDoc(i)}>
               <Text style={styles.remove}>Remove</Text>

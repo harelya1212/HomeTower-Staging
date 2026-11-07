@@ -89,6 +89,19 @@ export default function IntakeScreen() {
       <Field label="State withholding YTD ($)" value={String(state.stateWithholdingYtd || "")} numeric onChange={(v) => update({ stateWithholdingYtd: num(v) })} />
       <Field label="Long-term capital gains ($)" value={String(state.ltcgIncome || "")} numeric onChange={(v) => update({ ltcgIncome: num(v) })} />
 
+      <Text style={styles.section}>Calibration - last year's filed return</Text>
+      <Text style={styles.note}>
+        The basic plan always asks for this: the return as filed to the IRS and the state, checked against what actually
+        happened (the refund you received or the amount you owed). It is the anchor that calibrates every projection.
+        {(!intake.calibration || !intake.calibration.outcomeVerified) ? " Not verified yet - the app will keep asking." : " Verified."}
+      </Text>
+      <Field label="Tax year filed" value={String(intake.calibration?.taxYear ?? new Date().getFullYear() - 1)} numeric onChange={(v) => updateIntake({ calibration: { ...intake.calibration, taxYear: num(v) } })} />
+      <Toggle label="Federal return filed" value={!!intake.calibration?.federalFiled} onChange={(v) => updateIntake({ calibration: { ...intake.calibration, taxYear: intake.calibration?.taxYear ?? new Date().getFullYear() - 1, federalFiled: v } })} />
+      <Toggle label="State return filed" value={!!intake.calibration?.stateFiled} onChange={(v) => updateIntake({ calibration: { ...intake.calibration, taxYear: intake.calibration?.taxYear ?? new Date().getFullYear() - 1, stateFiled: v } })} />
+      <Field label="Actual federal outcome ($, + refund / - owed)" value={String(intake.calibration?.actualFederalRefundOwe ?? "")} onChange={(v) => updateIntake({ calibration: { ...intake.calibration, taxYear: intake.calibration?.taxYear ?? new Date().getFullYear() - 1, actualFederalRefundOwe: v === "" ? null : Number(v) || 0 } })} />
+      <Field label="Actual state outcome ($, + refund / - owed)" value={String(intake.calibration?.actualStateRefundOwe ?? "")} onChange={(v) => updateIntake({ calibration: { ...intake.calibration, taxYear: intake.calibration?.taxYear ?? new Date().getFullYear() - 1, actualStateRefundOwe: v === "" ? null : Number(v) || 0 } })} />
+      <Toggle label="Outcome verified against the IRS/state response" value={!!intake.calibration?.outcomeVerified} onChange={(v) => updateIntake({ calibration: { ...intake.calibration, taxYear: intake.calibration?.taxYear ?? new Date().getFullYear() - 1, outcomeVerified: v } })} />
+
       <Text style={styles.section}>Push reminders</Text>
       <Toggle label="Push reminders (default ON)" value={state.pushEnabled} onChange={(v) => update({ pushEnabled: v })} />
       <Pressable

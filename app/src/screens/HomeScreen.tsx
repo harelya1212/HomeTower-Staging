@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { predictionConfidence } from "../../engine/confidence.ts";
 import { householdFreshness, reminderCandidates } from "../../engine/freshness.ts";
 import { accuracyLevel } from "../../engine/intake.ts";
 import { computeHouseholdTax } from "../../engine/snapshot.ts";
@@ -44,6 +45,8 @@ export default function HomeScreen() {
   const findings = useMemo(() => householdFreshness(state.intake.documents, today), [state.intake.documents, today]);
   const candidates = useMemo(() => reminderCandidates(state.intake.documents, today), [state.intake.documents, today]);
   const level = accuracyLevel(state.intake);
+  const confidence = useMemo(() => predictionConfidence(state.intake, today), [state.intake, today]);
+  const bandColor = confidence.band === "High" ? "#1E8E3E" : confidence.band === "Moderate" ? "#E37400" : "#C5221F";
 
   useEffect(() => {
     getPushStatus().then(setPush);
@@ -80,6 +83,22 @@ export default function HomeScreen() {
         <Text style={styles.line}>Total tax (incl. NIIT {money(snap.niit)}): {money(snap.totalTax)}</Text>
         <Text style={styles.line}>Marginal rate: {(snap.marginalRate * 100).toFixed(0)}% - next bracket in {money(snap.distanceToNextBracket)}</Text>
         <Text style={styles.line}>Accuracy level: {level} (derived from your documents)</Text>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>Prediction confidence</Text>
+        <View style={styles.confRow}>
+          <Text style={[styles.confScore, { color: bandColor }]}>{confidence.score}</Text>
+          <Chip label={confidence.band} color={bandColor} />
+        </View>
+        <View style={styles.barTrack}>
+          <View style={[styles.barFill, { width: `${confidence.score}%`, backgroundColor: bandColor }]} />
+        </View>
+        <Text style={styles.line}>Completeness {Math.round(confidence.completeness)}/35 - Freshness {Math.round(confidence.freshness)}/25 - Extraction {Math.round(confidence.extraction)}/10 - Coverage {Math.round(confidence.coverage)}/10 - Calibration {Math.round(confidence.calibration)}/20</Text>
+        {confidence.reasons.map((r) => (
+          <Text key={r} style={styles.line}>- {r}</Text>
+        ))}
+        <Text style={styles.note}>The score falls when documents age or stay missing, so a projection never looks fresher than its data.</Text>
       </View>
 
       {candidates.length > 0 && (
@@ -119,4 +138,9 @@ const styles = StyleSheet.create({
   line: { fontSize: 15, color: "#22303C" },
   chip: { alignSelf: "flex-start", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, marginTop: 4 },
   chipText: { color: "#FFFFFF", fontSize: 12, fontWeight: "700" },
+  confRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  confScore: { fontSize: 40, fontWeight: "800" },
+  barTrack: { height: 10, borderRadius: 999, backgroundColor: "#E3EAF1", overflow: "hidden" },
+  barFill: { height: 10, borderRadius: 999 },
+  note: { fontSize: 12, color: "#5A6B7C" },
 });
