@@ -1,7 +1,9 @@
 import React, { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { extractFields, type ExtractionResult } from "../../engine/extract.ts";
 import { householdFreshness } from "../../engine/freshness.ts";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
+import { pickImageUri, recognizeOnDevice, textToRawFields } from "../ocr.ts";
 import { todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -12,12 +14,57 @@ export default function DocumentsScreen() {
   const docs = state.intake.documents;
   const today = todayIso();
   const findings = useMemo(() => householdFreshness(docs, today), [docs, today]);
-  const byType = useMemo(() => new Map(findings.map((f) => [f.docType + "|" + (docs.find((d) => d.docType === f.docType)?.capturedOn ?? ""), f])), [findings, docs]);
+  const byKey = useMemo(
+    () => new Map(docs.map((d, i) => [i, findings.find((f) => f.docType === d.docType)])),
+    [docs, findings],
+  );
   const [selectedType, setSelectedType] = useState("payslip");
+  const [pasteText, setPasteText] = useState("");
+  const [ocrNote, setOcrNote] = useState<string | null>(null);
+  const [extraction, setExtraction] = useState<ExtractionResult | null>(null);
 
-  const addDoc = () => {
-    const record: DocumentRecord = { docType: selectedType, status: "parsed", confidence: 1, capturedOn: today };
+  const runExtraction = (text: string) => {
+    try {
+      const raw = textToRawFields(text);
+      if (!raw.length) {
+        setOcrNote("No label-value pairs found in that text. Check the text and try again.");
+        setExtraction(null);
+        return;
+      }
+      setExtraction(extractFields(raw, selectedType));
+      setOcrNote(null);
+    } catch (e) {
+      setOcrNote(e instanceof Error ? e.message : String(e));
+      setExtraction(null);
+    }
+  };
+
+  const scanPhoto = async () => {
+    setOcrNote(null);
+    const { uri, error } = await pickImageUri();
+    if (error) { setOcrNote(error); return; }
+    if (!uri) return;
+    const outcome = await recognizeOnDevice(uri);
+    if (outcome.error) { setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
+    runExtraction(outcome.text);
+  };
+
+  const confirmExtraction = () => {
+    if (!extraction) return;
+    const record: DocumentRecord = {
+      docType: selectedType,
+      status: extraction.status,
+      confidence: extraction.confidence,
+      capturedOn: today,
+    };
     updateIntake({ documents: [...docs, record] });
+    setExtraction(null);
+    setPasteText("");
+    setOcrNote(`Saved ${selectedType} (${extraction.status}, confidence ${extraction.confidence}).`);
+  };
+
+  const addManual = () => {
+    updateIntake({ documents: [...docs, { docType: selectedType, status: "parsed", confidence: 1, capturedOn: today }] });
   };
   const removeDoc = (index: number) => updateIntake({ documents: docs.filter((_, i) => i !== index) });
 
@@ -25,13 +72,13 @@ export default function DocumentsScreen() {
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Documents</Text>
       <Text style={styles.note}>
-        The register of what the household has provided. Freshness is computed per document type; stale documents flag here and by push.
-        Camera and on-device OCR capture arrive in the next step - for now, register documents manually.
+        The register of what the household has provided. Capture a document below: the text is read on this device,
+        fields are extracted, and you confirm before anything is saved. Freshness is computed per document type.
       </Text>
 
-      {docs.length === 0 && <Text style={styles.line}>No documents yet. Add the first one below.</Text>}
+      {docs.length === 0 && <Text style={styles.line}>No documents yet. Capture the first one below.</Text>}
       {docs.map((d, i) => {
-        const f = byType.get(d.docType + "|" + (d.capturedOn ?? ""));
+        const f = byKey.get(i);
         return (
           <View key={i} style={styles.row}>
             <View style={{ flex: 1 }}>
@@ -46,7 +93,7 @@ export default function DocumentsScreen() {
         );
       })}
 
-      <Text style={styles.section}>Add a document</Text>
+      <Text style={styles.section}>Capture a document</Text>
       <View style={styles.chips}>
         {[...DOCUMENT_TYPES].map((t) => (
           <Pressable key={t} style={[styles.chip, selectedType === t && styles.chipSelected]} onPress={() => setSelectedType(t)}>
@@ -54,8 +101,42 @@ export default function DocumentsScreen() {
           </Pressable>
         ))}
       </View>
-      <Pressable style={styles.button} onPress={addDoc}>
-        <Text style={styles.buttonText}>Add {selectedType} (today)</Text>
+      <Pressable style={styles.button} onPress={scanPhoto}>
+        <Text style={styles.buttonText}>Scan a photo of the {selectedType}</Text>
+      </Pressable>
+      <TextInput
+        style={styles.pasteBox}
+        multiline
+        placeholder="...or paste the document text here (works on every platform)"
+        value={pasteText}
+        onChangeText={setPasteText}
+      />
+      <Pressable style={styles.buttonAlt} onPress={() => runExtraction(pasteText)}>
+        <Text style={styles.buttonText}>Extract fields from pasted text</Text>
+      </Pressable>
+      {ocrNote && <Text style={styles.note}>{ocrNote}</Text>}
+
+      {extraction && (
+        <View style={styles.confirmCard}>
+          <Text style={styles.section}>Confirm extracted fields</Text>
+          <Text style={styles.line}>Confidence: {extraction.confidence} - status if saved: {extraction.status}</Text>
+          {Object.entries(extraction.fields).map(([k, v]) => (
+            <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
+          ))}
+          {Object.keys(extraction.fields).length === 0 && (
+            <Text style={styles.line}>No known fields matched this document type. You can still save it as a register entry.</Text>
+          )}
+          <Pressable style={styles.button} onPress={confirmExtraction}>
+            <Text style={styles.buttonText}>Confirm and save document</Text>
+          </Pressable>
+          <Pressable onPress={() => setExtraction(null)}>
+            <Text style={styles.remove}>Discard</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <Pressable onPress={addManual}>
+        <Text style={styles.manualLink}>No text handy? Register {selectedType} manually (today, no extraction)</Text>
       </Pressable>
     </ScrollView>
   );
@@ -77,5 +158,9 @@ const styles = StyleSheet.create({
   chipText: { color: TEAL, fontSize: 12, fontWeight: "600" },
   chipTextSelected: { color: "#FFFFFF", fontSize: 12, fontWeight: "600" },
   button: { backgroundColor: TEAL, borderRadius: 8, paddingVertical: 12, alignItems: "center" },
+  buttonAlt: { backgroundColor: NAVY, borderRadius: 8, paddingVertical: 12, alignItems: "center" },
   buttonText: { color: "#FFFFFF", fontWeight: "700" },
+  pasteBox: { backgroundColor: "#FFFFFF", borderRadius: 8, padding: 12, minHeight: 90, textAlignVertical: "top", fontSize: 13 },
+  confirmCard: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 14, gap: 6, borderWidth: 1, borderColor: TEAL },
+  manualLink: { color: TEAL, fontSize: 13, fontWeight: "600", marginTop: 6 },
 });
