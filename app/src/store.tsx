@@ -6,6 +6,20 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { DocumentRecord, HouseholdIntake, Member } from "../engine/intake.ts";
 
+export interface GoalInputs {
+  retirementBalance: number;
+  retirementMonthly: number;
+  retirementYears: number;
+  retirementTarget: number;
+  eduBalance: number;
+  eduMonthly: number;
+  eduYears: number;
+  eduTarget: number;
+  assumedReturnPct: number; // labelled assumption, editable - never hidden
+  stateRefundTargetLow: number;
+  stateRefundTargetHigh: number;
+}
+
 export interface HouseholdState {
   intake: HouseholdIntake;
   grossIncome: number;
@@ -13,6 +27,8 @@ export interface HouseholdState {
   stateWithholdingYtd: number;
   ltcgIncome: number;
   pushEnabled: boolean; // default ON (owner requirement)
+  goals: GoalInputs;
+  onboarded: boolean;
 }
 
 const STORAGE_KEY = "hometower.state.v1";
@@ -38,6 +54,20 @@ export function defaultState(): HouseholdState {
     stateWithholdingYtd: 0,
     ltcgIncome: 0,
     pushEnabled: true,
+    goals: {
+      retirementBalance: 0,
+      retirementMonthly: 0,
+      retirementYears: 10,
+      retirementTarget: 0,
+      eduBalance: 0,
+      eduMonthly: 0,
+      eduYears: 5,
+      eduTarget: 0,
+      assumedReturnPct: 6,
+      stateRefundTargetLow: 1000,
+      stateRefundTargetHigh: 3000,
+    },
+    onboarded: false,
   };
 }
 
@@ -46,6 +76,7 @@ interface Store {
   loaded: boolean;
   update: (patch: Partial<HouseholdState>) => void;
   updateIntake: (patch: Partial<HouseholdIntake>) => void;
+  updateGoals: (patch: Partial<GoalInputs>) => void;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -59,7 +90,12 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
       .then((raw) => {
         if (raw) {
           const parsed = JSON.parse(raw) as HouseholdState;
-          setState({ ...defaultState(), ...parsed, intake: { ...defaultState().intake, ...parsed.intake } });
+          setState({
+            ...defaultState(),
+            ...parsed,
+            intake: { ...defaultState().intake, ...parsed.intake },
+            goals: { ...defaultState().goals, ...(parsed.goals ?? {}) },
+          });
         }
       })
       .catch(() => {})
@@ -76,6 +112,7 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
       loaded,
       update: (patch) => setState((s) => ({ ...s, ...patch })),
       updateIntake: (patch) => setState((s) => ({ ...s, intake: { ...s.intake, ...patch } })),
+      updateGoals: (patch) => setState((s) => ({ ...s, goals: { ...s.goals, ...patch } })),
     }),
     [state, loaded],
   );
