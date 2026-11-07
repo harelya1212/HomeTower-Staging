@@ -16,7 +16,7 @@ export interface CalibrationRecord {
   actualStateRefundOwe?: number | null;
   outcomeVerified?: boolean; // checked against the IRS/state outcome
 }
-export interface DocumentRecord { docType: string; status: string; confidence?: number; capturedOn?: string | null }
+export interface DocumentRecord { docType: string; status: string; confidence?: number; capturedOn?: string | null; fields?: Record<string, string> }
 export interface HouseholdIntake {
   name: string; state: string; filingStatus: string; members: Member[];
   refundTargetLow?: number | null; refundTargetHigh?: number | null;
