@@ -11,6 +11,7 @@ import { simulateScenario } from "../engine/snapshot.ts";
 import { esppDisposition, rsuVest } from "../engine/equity.ts";
 import { fbarRequired, foreignTaxCredit, form8938Required } from "../engine/foreign.ts";
 import { treatyPosition, withholdingCap } from "../engine/treaty.ts";
+import { documentFreshness } from "../engine/freshness.ts";
 
 const MFJ = "married_filing_jointly";
 const vectors = JSON.parse(readFileSync(new URL("./vectors.json", import.meta.url), "utf-8"));
@@ -34,6 +35,7 @@ function compute(id: string): Record<string, unknown> {
     case "ftc": { const f = foreignTaxCredit(5000, 20000, 167800, 26340); return { credit_allowed: f.creditAllowed, excess_credit: f.excessCredit }; }
     case "treaty_div": return { rate: withholdingCap("dividends", { corporate10pct: true }).treatyCapRate };
     case "treaty_ss": return { overrides: treatyPosition("social_security_benefits", true).savingClauseOverrides };
+    case "freshness_payslip_stale": { const f = documentFreshness({ docType: "payslip", status: "parsed", confidence: 0.9, capturedOn: "2026-10-01" }, "2026-11-07"); return { status: f.status, age_days: f.ageDays }; }
     default: throw new Error(`unknown vector ${id}`);
   }
 }

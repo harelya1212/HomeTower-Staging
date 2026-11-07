@@ -121,5 +121,12 @@
   "expect": {
    "overrides": false
   }
+ },
+ {
+  "id": "freshness_payslip_stale",
+  "expect": {
+   "status": "stale",
+   "age_days": 37
+  }
  }
 ]
