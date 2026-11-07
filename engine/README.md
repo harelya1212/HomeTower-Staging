@@ -46,6 +46,11 @@ Modelled:
 - Guidance (`guidance.py`, SPEC45): sec. 16 profile-driven document
   requests, sec. 17 intelligent payroll shortcut, sec. 20 annual planning
   cycle, sec. 39+42 the one NEXT ACTION in the section 42 format
+- Classification (`classify.py`): the user uploads without naming the
+  document type - deterministic scoring (field-map matches x3 +
+  distinctive keywords) proposes the type with its signals; the user
+  confirms or overrides before saving; the same check verifies a type
+  the user did name
 
 Not modelled yet (the engine says so rather than guessing):
 - Treaties other than US-Israel (which IS modelled, `treaty.py` +
