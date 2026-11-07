@@ -29,16 +29,21 @@ Modelled:
 - Purchased brokerage lots: ST/LT, stacking, NIIT, state tax on the gain,
   capital-loss carryforward, wash sale (exact ticker, full disallowance)
 - Federal projection vs withholding (MFJ / single / HoH / MFS), AZ state
+- RSU vesting (`equity.py`): ordinary income at vest, 22% supplemental
+  withholding (37% above $1M), the projected gap inside the household
+  projection, post-vest lot basis and holding start
+- ESPP dispositions (`equity.py`): qualifying vs disqualifying
+  classification (2-year grant / 1-year purchase day counts), ordinary
+  income under each class, basis and capital result
+- Foreign (`foreign.py`): FBAR aggregate test, Form 8938 thresholds by
+  status and residence, foreign tax credit limitation (single basket)
+- Intake (`intake.py`) and extraction (`extract.py`): household model +
+  validation + derived accuracy level; source-agnostic field extraction
+  with the 0.80 confidence gate
 
 Not modelled yet (the engine says so rather than guessing):
-- RSU vesting events (ordinary income at vest, 22% supplemental withholding
-  gap) - a post-vest RSU sale IS modelled as a normal lot whose basis is
-  the vest-date value and whose holding period starts at vest
-- ESPP dispositions (qualifying vs disqualifying, discount as ordinary
-  income) - the sale of ESPP shares after a disqualifying disposition is
-  modelled as a normal lot; the disposition classification itself is not
-- Foreign-source income and foreign accounts (FBAR, Form 8938, foreign
-  tax credit, treaties) - not modelled at all in this phase
+- Treaty-by-treaty foreign detail, multi-basket FTC, FTC carryback/
+  carryforward year modelling
 - Credits (child tax credit, AOTC), AMT, itemized-deduction detail
 
 ## Data status
