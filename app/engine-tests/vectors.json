@@ -146,5 +146,71 @@
   "expect": {
    "score": 10
   }
+ },
+ {
+  "id": "guidance_requests_minimal",
+  "expect": {
+   "count": 4,
+   "first_key": "prior_return",
+   "payslip_status": "missing"
+  }
+ },
+ {
+  "id": "guidance_requests_full",
+  "expect": {
+   "count": 13
+  }
+ },
+ {
+  "id": "guidance_shortcut_ok",
+  "expect": {
+   "provisional": true,
+   "consecutive_after": 1
+  }
+ },
+ {
+  "id": "guidance_shortcut_due",
+  "expect": {
+   "needs_document": true
+  }
+ },
+ {
+  "id": "guidance_shortcut_changed",
+  "expect": {
+   "needs_document": true,
+   "consecutive_after": 0
+  }
+ },
+ {
+  "id": "guidance_annual_nov",
+  "expect": {
+   "key": "november_window"
+  }
+ },
+ {
+  "id": "guidance_annual_jun",
+  "expect": {
+   "key": "june_review"
+  }
+ },
+ {
+  "id": "guidance_next_phase_wrap",
+  "expect": {
+   "month": 1,
+   "title": "January - Financial Reset"
+  }
+ },
+ {
+  "id": "guidance_action_calibration",
+  "expect": {
+   "confidence": "High (85/100)",
+   "has_return": true
+  }
+ },
+ {
+  "id": "guidance_action_below",
+  "expect": {
+   "why_has_amount": true
+  }
  }
 ]

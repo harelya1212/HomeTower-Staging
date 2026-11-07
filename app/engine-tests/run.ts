@@ -12,6 +12,7 @@ import { esppDisposition, rsuVest } from "../engine/equity.ts";
 import { fbarRequired, foreignTaxCredit, form8938Required } from "../engine/foreign.ts";
 import { treatyPosition, withholdingCap } from "../engine/treaty.ts";
 import { documentFreshness } from "../engine/freshness.ts";
+import { annualFocus, documentRequests, nextAction, nextPhaseStart, payrollShortcut } from "../engine/guidance.ts";
 import { predictionConfidence } from "../engine/confidence.ts";
 import type { HouseholdIntake } from "../engine/intake.ts";
 
@@ -41,6 +42,16 @@ function compute(id: string): Record<string, unknown> {
     case "confidence_perfect": { const h: HouseholdIntake = { name: "T", state: "AZ", filingStatus: MFJ, members: [{ name: "A", role: "adult" }], documents: ["payslip", "prior_return", "w2", "401k_statement", "hsa_statement", "529_statement", "brokerage_statement"].map((t) => ({ docType: t, status: "parsed", confidence: 1, capturedOn: "2026-11-07" })), calibration: { taxYear: 2025, federalFiled: true, stateFiled: true, actualFederalRefundOwe: 2400, actualStateRefundOwe: 1100, outcomeVerified: true } }; return { score: predictionConfidence(h, "2026-11-07").score }; }
     case "confidence_stale": { const h: HouseholdIntake = { name: "T", state: "AZ", filingStatus: MFJ, members: [{ name: "A", role: "adult" }], documents: [{ docType: "payslip", status: "parsed", confidence: 0.9, capturedOn: "2026-10-01" }] }; return { score: predictionConfidence(h, "2026-11-07").score }; }
     case "confidence_empty": { const h: HouseholdIntake = { name: "T", state: "AZ", filingStatus: MFJ, members: [{ name: "A", role: "adult" }], documents: [] }; return { score: predictionConfidence(h, "2026-11-07").score }; }
+    case "guidance_requests_minimal": { const h: HouseholdIntake = { name: "T", state: "AZ", filingStatus: MFJ, members: [{ name: "A", role: "adult", payFrequency: "biweekly" }], documents: [] }; const r = documentRequests(h, {}, "2026-11-07"); return { count: r.length, first_key: r[0].key, payslip_status: r.find((x) => x.key === "payslip")?.status }; }
+    case "guidance_requests_full": { const h: HouseholdIntake = { name: "T", state: "AZ", filingStatus: MFJ, members: [{ name: "A", role: "adult" }], documents: [], hasRsu: true }; const r = documentRequests(h, { hasHsa: true, hasBrokerage: true, hasRental: true, hasCollegeStudent: true }, "2026-11-07"); return { count: r.length }; }
+    case "guidance_shortcut_ok": { const r = payrollShortcut("no", "no", "no", 0); return { provisional: r.provisional, consecutive_after: r.consecutiveAfter }; }
+    case "guidance_shortcut_due": { const r = payrollShortcut("no", "no", "no", 2); return { needs_document: r.needsDocument }; }
+    case "guidance_shortcut_changed": { const r = payrollShortcut("yes", "no", "no", 0); return { needs_document: r.needsDocument, consecutive_after: r.consecutiveAfter }; }
+    case "guidance_annual_nov": return { key: annualFocus(11).key };
+    case "guidance_annual_jun": return { key: annualFocus(6).key };
+    case "guidance_next_phase_wrap": { const n = nextPhaseStart(12); return { month: n.month, title: n.title }; }
+    case "guidance_action_calibration": { const a = nextAction({ calibrationMissing: true, verificationDue: false, confidenceBand: "High", confidenceScore: 85 }); return { confidence: a.confidence, has_return: a.action.includes("filed return") }; }
+    case "guidance_action_below": { const a = nextAction({ calibrationMissing: false, verificationDue: false, federalPosition: "below", federalDelta: 1234, confidenceBand: "Moderate", confidenceScore: 60 }); return { why_has_amount: a.why.includes("$1,234") }; }
     default: throw new Error(`unknown vector ${id}`);
   }
 }
