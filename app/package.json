@@ -1,0 +1,1 @@
+{"description":"HomeTower app. Phase 1E step 1: TypeScript engine port, verified against the Python reference engine by shared golden vectors (engine-tests/vectors.json). Expo shell follows in step 2.","name":"hometower-app","private":true,"scripts":{"test:engine":"node engine-tests/run.ts"},"type":"module","version":"0.1.0"}
