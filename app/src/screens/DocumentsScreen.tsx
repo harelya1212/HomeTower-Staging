@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import { useNavigation } from "@react-navigation/native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { predictionConfidence } from "../../engine/confidence.ts";
 import { extractFields, type ExtractionResult } from "../../engine/extract.ts";
@@ -13,6 +14,8 @@ const BADGE: Record<string, string> = { fresh: "#1E8E3E", aging: "#E37400", stal
 
 export default function DocumentsScreen() {
   const { state, update, updateIntake } = useHousehold();
+  const navigation = useNavigation<any>();
+  const scrollRef = useRef<ScrollView>(null);
   const docs = state.intake.documents;
   const today = todayIso();
   const findings = useMemo(() => householdFreshness(docs, today), [docs, today]);
@@ -27,6 +30,8 @@ export default function DocumentsScreen() {
   const [pasteText, setPasteText] = useState("");
   const [ocrNote, setOcrNote] = useState<string | null>(null);
   const [extraction, setExtraction] = useState<ExtractionResult | null>(null);
+  const [extractionType, setExtractionType] = useState("payslip");
+  const [expandedReq, setExpandedReq] = useState<string | null>(null);
   const requests = useMemo(
     () => documentRequests(state.intake, buildProfileExtras(state), today),
     [state.intake, state.assets, state.family, today],
@@ -43,7 +48,7 @@ export default function DocumentsScreen() {
     setPayNote(r.reason);
   };
 
-  const runExtraction = (text: string) => {
+  const runExtraction = (text: string, docType: string = selectedType) => {
     try {
       const raw = textToRawFields(text);
       if (!raw.length) {
@@ -51,7 +56,8 @@ export default function DocumentsScreen() {
         setExtraction(null);
         return;
       }
-      setExtraction(extractFields(raw, selectedType));
+      setExtraction(extractFields(raw, docType));
+      setExtractionType(docType);
       setOcrNote(null);
     } catch (e) {
       setOcrNote(e instanceof Error ? e.message : String(e));
@@ -59,30 +65,37 @@ export default function DocumentsScreen() {
     }
   };
 
-  const scanPhoto = async (source: "upload" | "camera") => {
+  const scanPhoto = async (source: "upload" | "camera", docType: string = selectedType) => {
     setOcrNote(null);
     const { uri, error } = source === "camera" ? await takePhotoUri() : await pickImageUri();
     if (error) { setOcrNote(error); return; }
     if (!uri) return;
     const outcome = await recognizeOnDevice(uri);
     if (outcome.error) { setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
-    runExtraction(outcome.text);
+    runExtraction(outcome.text, docType);
   };
+
+  useEffect(() => {
+    if (extraction) {
+      const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+      return () => clearTimeout(t);
+    }
+  }, [extraction]);
 
   const confirmExtraction = () => {
     if (!extraction) return;
     const record: DocumentRecord = {
-      docType: selectedType,
+      docType: extractionType,
       status: extraction.status,
       confidence: extraction.confidence,
       capturedOn: today,
       fields: Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)])),
     };
     updateIntake({ documents: [...docs, record] });
-    if (selectedType === "payslip") update({ payrollCheck: { lastConfirmedOn: null, consecutive: 0 } });
+    if (extractionType === "payslip") update({ payrollCheck: { lastConfirmedOn: null, consecutive: 0 } });
     setExtraction(null);
     setPasteText("");
-    setOcrNote(`Saved ${selectedType} (${extraction.status}, confidence ${extraction.confidence}).`);
+    setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).`);
   };
 
   const addManual = () => {
@@ -92,7 +105,7 @@ export default function DocumentsScreen() {
   const removeDoc = (index: number) => updateIntake({ documents: docs.filter((_, i) => i !== index) });
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+    <ScrollView ref={scrollRef} style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Documents</Text>
       <Text style={styles.note}>
         The register of what the household has provided. Capture a document below: the text is read on this device,
@@ -120,18 +133,42 @@ export default function DocumentsScreen() {
       <Text style={styles.section}>What your household needs</Text>
       <Text style={styles.note}>
         Your profile decides this list - the app never asks every household for every document (SPEC45, Smart Document Request Engine).
-        Tap an item to capture it below.
+        Tap an item to upload it right there.
       </Text>
       {requests.map((r) => {
         const b = reqBadge(r.status);
+        const open = expandedReq === r.key;
         return (
-          <Pressable key={r.key} style={styles.row} onPress={() => setSelectedType(r.docType)}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.docType}>{r.label}</Text>
-              <Text style={styles.line}>{r.detail}</Text>
-            </View>
-            <Text style={{ color: b.c, fontWeight: "700", fontSize: 14 }}>{b.t}</Text>
-          </Pressable>
+          <View key={r.key} style={styles.reqCard}>
+            <Pressable
+              style={styles.reqRow}
+              onPress={() => { setSelectedType(r.docType); setExpandedReq(open ? null : r.key); }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.docType}>{r.label}</Text>
+                <Text style={styles.line}>{r.detail}</Text>
+              </View>
+              <Text style={{ color: b.c, fontWeight: "700", fontSize: 14 }}>{b.t}</Text>
+            </Pressable>
+            {open && r.key === "calibration_outcome" && (
+              <View style={styles.reqActions}>
+                <Text style={styles.line}>This one is not a document - it is the number the IRS and the state actually confirmed. Record it once in the Intake tab and the confidence score uses it as the calibration anchor.</Text>
+                <Pressable style={styles.button} onPress={() => navigation.navigate("Intake")}>
+                  <Text style={styles.buttonText}>Open Intake to record the outcome</Text>
+                </Pressable>
+              </View>
+            )}
+            {open && r.key !== "calibration_outcome" && (
+              <View style={styles.reqActions}>
+                <Pressable style={styles.button} onPress={() => scanPhoto("upload", r.docType)}>
+                  <Text style={styles.buttonText}>Upload a photo or file of this document</Text>
+                </Pressable>
+                <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera", r.docType)}>
+                  <Text style={styles.buttonText}>Take a photo of this document</Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
         );
       })}
 
@@ -233,6 +270,9 @@ const styles = StyleSheet.create({
   section: { fontSize: 19, fontWeight: "800", color: NAVY, marginTop: 10 },
   line: { fontSize: 15.5, color: "#22303C", lineHeight: 22 },
   row: { backgroundColor: "#FFFFFF", borderRadius: 8, padding: 12, flexDirection: "row", gap: 8, alignItems: "flex-start" },
+  reqCard: { backgroundColor: "#FFFFFF", borderRadius: 8, padding: 12, gap: 10 },
+  reqRow: { flexDirection: "row", gap: 8, alignItems: "flex-start" },
+  reqActions: { gap: 8 },
   docType: { fontSize: 15, fontWeight: "700", color: NAVY },
   remove: { color: "#C5221F", fontWeight: "600" },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
