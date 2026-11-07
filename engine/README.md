@@ -40,6 +40,12 @@ Modelled:
 - Intake (`intake.py`) and extraction (`extract.py`): household model +
   validation + derived accuracy level; source-agnostic field extraction
   with the 0.80 confidence gate
+- Freshness (`freshness.py`), confidence (`confidence.py`): per-type
+  freshness windows and the 0-100 prediction-confidence formula with the
+  calibration anchor
+- Guidance (`guidance.py`, SPEC45): sec. 16 profile-driven document
+  requests, sec. 17 intelligent payroll shortcut, sec. 20 annual planning
+  cycle, sec. 39+42 the one NEXT ACTION in the section 42 format
 
 Not modelled yet (the engine says so rather than guessing):
 - Treaties other than US-Israel (which IS modelled, `treaty.py` +
