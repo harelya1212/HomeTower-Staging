@@ -57,3 +57,21 @@ quality of the answers.
 - All-50-states tax packs
 - Monetised partner links (activate in Phase 2, gated on proven retention, proven projection accuracy against filed returns, and disclosure in place; first vertical: filing services at the end of the projection cycle)
 - The two weak model assumptions under re-examination: ads-only revenue, viral growth
+
+## Living data, document freshness, push (owner requirements, 2026-11-07)
+- LIVING DATA: after the household defines what it has and its goals,
+  everything stays editable - update, add, remove - at any time, and
+  every change recomputes the snapshot and the accuracy level. Intake is
+  not a one-time wizard; it is the household's living record.
+- DOCUMENT FRESHNESS: every document type has a freshness window
+  (engine freshness module). Stale or about-to-expire documents are
+  flagged in the app, and the user gets a PUSH about old documents and
+  documents that need updating.
+- PUSH DEFAULTS ON. Push is built with the TReps lessons applied from
+  day one, not relearned: static imports only for the push module (a
+  dynamic import behind a silent catch is what faked "unsupported" in
+  TReps); "enabled" is claimed ONLY from a stored push token, never from
+  permission state or a button label; failures surface as visible stage
+  diagnostics in the UI, never silently; the token record and the sender
+  use the same identity key (TReps event push failed on exactly that
+  mismatch).
