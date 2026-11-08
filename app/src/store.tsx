@@ -62,6 +62,16 @@ export interface PayrollCheck {
   consecutive: number; // provisional cycles in a row (verification due at 2)
 }
 
+/** SPEC45 sec. 19 quarterly equity events - the Ongoing center's
+ * Bonuses & RSU/ESPP card keeps their timeline. */
+export interface EquityEvent {
+  id: string;
+  kind: "bonus" | "rsu_vest" | "espp_purchase";
+  date: string; // YYYY-MM-DD
+  amount: number;
+  note: string;
+}
+
 export interface HouseholdState {
   intake: HouseholdIntake;
   grossIncome: number;
@@ -75,6 +85,7 @@ export interface HouseholdState {
   jobs: Job[];
   assets: Asset[];
   payrollCheck: PayrollCheck;
+  events: EquityEvent[];
 }
 
 const STORAGE_KEY = "hometower.state.v1";
@@ -118,6 +129,7 @@ export function defaultState(): HouseholdState {
     },
     onboarded: false,
     payrollCheck: { lastConfirmedOn: null, consecutive: 0 },
+    events: [],
   };
 }
 
@@ -155,6 +167,7 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     jobs: parsed.jobs ?? [],
     assets: parsed.assets ?? [],
     payrollCheck: parsed.payrollCheck ?? { lastConfirmedOn: null, consecutive: 0 },
+    events: parsed.events ?? [],
   };
 }
 
