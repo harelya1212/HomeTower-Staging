@@ -24,7 +24,19 @@ export function textToRawFields(text: string, confidence = 0.9): RawField[] {
     }
     const m = line.match(/^(.*?)(\$?\(?-?[\d][\d,]*\.?\d*\)?)$/);
     if (m && m[1].trim().length >= 2 && /[A-Za-z]/.test(m[1])) {
-      fields.push({ key: m[1].trim(), value: m[2], confidence });
+      let key = m[1].trim();
+      let value = m[2];
+      // Two-column summary tables ("TOTAL BEGINNING VALUE $194,466.60
+      // $68,124.76" = this period | year-to-date): the end-anchored
+      // match swallows the FIRST amount into the label and pairs the
+      // second. The first amount is the primary one - re-split at it.
+      // Real E*TRADE statement rehearsal, 2026-11-07.
+      const embedded = key.match(/^(.*?)\s+(\(?-?\$[\d,]+(?:\.\d+)?\)?|\(?-?[\d,]+\.\d+\)?)$/);
+      if (embedded && embedded[1].trim().length >= 2 && /[A-Za-z]/.test(embedded[1])) {
+        key = embedded[1].trim();
+        value = embedded[2];
+      }
+      fields.push({ key, value, confidence });
       continue;
     }
     // Value-ABOVE-label: form layouts (8879 Part I, 1040) reconstruct
