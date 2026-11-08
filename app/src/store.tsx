@@ -166,9 +166,31 @@ interface Store {
 /** Merge a parsed object (storage load or a backup file) over the
  * defaults - the same tolerant shape for both, so a backup written by
  * any build restores into any later build. */
+/** Role vocabulary bridge (owner QA round 28). The My House family
+ * table speaks self/spouse/child/other; the engine intake model
+ * speaks adult/dependent/student. The sync once copied the UI words
+ * verbatim, so every member failed engine validation ("role must be
+ * one of adult, dependent, student") and the household's accuracy
+ * level was capped until fixed. Every family -> intake write goes
+ * through this mapping, and coerceState migrates older saves. */
+export function toEngineRole(uiRole: string, studentNow?: boolean): string {
+  switch (uiRole) {
+    case "self":
+    case "spouse":
+    case "adult":
+      return "adult";
+    case "student":
+      return "student";
+    case "child":
+      return studentNow ? "student" : "dependent";
+    default:
+      return "dependent";
+  }
+}
+
 export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
   const d = defaultState();
-  return {
+  const merged: HouseholdState = {
     ...d,
     ...parsed,
     intake: { ...d.intake, ...(parsed.intake ?? {}) },
@@ -180,6 +202,18 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     eduAssignChildId: parsed.eduAssignChildId ?? null,
     events: parsed.events ?? [],
   };
+  // Migrate legacy member roles saved before the vocabulary bridge:
+  // any role outside the engine's three words is mapped now, using
+  // the family table (matched by name) for the student flag.
+  merged.intake = {
+    ...merged.intake,
+    members: (merged.intake.members ?? []).map((m) => {
+      if (m.role === "adult" || m.role === "dependent" || m.role === "student") return m;
+      const ui = merged.family.find((f) => f.name.trim() && f.name.trim() === (m.name ?? "").trim());
+      return { ...m, role: toEngineRole(m.role, ui?.studentNow) as Member["role"] };
+    }),
+  };
+  return merged;
 }
 
 const Ctx = createContext<Store | null>(null);
