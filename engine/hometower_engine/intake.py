@@ -32,6 +32,7 @@ class DocumentRecord:
     confidence: float = 0.0
     captured_on: Optional[date] = None  # freshness is computed from this
     fields: Optional[dict] = None  # extracted values kept so My House rows can pre-fill
+    holdings: Optional[list] = None  # parsed positions (brokerage screenshots): ticker/qty/pricePaid/lastPrice dicts
 
 
 @dataclass
