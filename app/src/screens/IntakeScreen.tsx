@@ -5,6 +5,7 @@ import { StatePicker, TextField } from "../components/Fields.tsx";
 import { downloadBackup, pickAndRestore } from "../backup.ts";
 import { getPushStatus, isPushEnabled, registerForPush, type PushStatus } from "../push.ts";
 import { todayIso, useHousehold } from "../store.tsx";
+import { newDeviceSecret, syncMarketHoldings, withdrawMarketConsent } from "../marketSync.ts";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
 const FILING = ["married_filing_jointly", "single", "head_of_household", "married_filing_separately"];
@@ -34,6 +35,7 @@ export default function IntakeScreen() {
   const intake = state.intake;
   const errors = validateIntake(intake);
   const [push, setPush] = useState<PushStatus | null>(null);
+  const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
     getPushStatus().then(setPush);
@@ -149,6 +151,30 @@ export default function IntakeScreen() {
           ))}
         </View>
       )}
+
+      <Text style={styles.section}>Daily market-close push</Text>
+      <Text style={styles.line}>Every trading day, about 30 minutes after the US market closes (4:30 PM New York time), HomeTower can push you a short report: each of your stocks with its closing price and daily change, and an estimate of how your portfolio did that day - computed from the holdings you entered here.</Text>
+      <Text style={styles.line}>The sender is a server, and your holdings live only on this device - so this push works only if you agree to let HomeTower copy JUST this to the sender: your stock tickers and quantities, your cash total, and this device's push address. No names, no documents, no account numbers. Turn it off any time and the copy is deleted. Off by default.</Text>
+      <Toggle
+        label="I agree - send my holdings snapshot to the sender"
+        value={state.marketPush.consent}
+        onChange={async (v) => {
+          if (v) {
+            const secret = state.marketPush.deviceSecret ?? newDeviceSecret();
+            const next = { ...state, marketPush: { consent: true, deviceSecret: secret, syncedOn: null } };
+            update({ marketPush: next.marketPush });
+            const out = await syncMarketHoldings(next, push?.token ?? null);
+            if (out.ok) update({ marketPush: { consent: true, deviceSecret: secret, syncedOn: todayIso() } });
+            setNote(out.message);
+          } else {
+            const out = await withdrawMarketConsent(state);
+            update({ marketPush: { consent: false, deviceSecret: state.marketPush.deviceSecret, syncedOn: null } });
+            setNote(out.message);
+          }
+        }}
+      />
+      <Text style={styles.line}>Status: {state.marketPush.consent ? (state.marketPush.syncedOn ? `on - snapshot registered ${state.marketPush.syncedOn}` : "on - registration pending (sender connection)") : "off"}. The push itself arrives on the native app; on web, the same report is the Market close card on Home.</Text>
+      {note ? <Text style={styles.line}>{note}</Text> : null}
 
       <Text style={styles.section}>Your data - backup & restore</Text>
       <Text style={styles.note}>

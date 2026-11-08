@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { predictionConfidence } from "../../engine/confidence.ts";
 import { householdFreshness, reminderCandidates } from "../../engine/freshness.ts";
 import { annualFocus, documentRequests, nextAction, nextPhaseStart } from "../../engine/guidance.ts";
@@ -10,6 +10,8 @@ import { StateFlag } from "../components/StateFlag.tsx";
 import { ageOn, earliestAgeReaching, educationFunding, educationLine, projectValue, requiredMonthly, retirementNeedEstimate } from "../goals.ts";
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
+import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
+import { fetchQuotes, type QuotesOutcome } from "../quotes";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 
 export const NAVY = "#0B2A4A";
@@ -107,9 +109,25 @@ export default function HomeScreen() {
   useEffect(() => {
     getPushStatus().then(setPush);
   }, []);
+  const holdingsInfo = useMemo(() => deriveHoldings(state.intake.documents), [state.intake.documents]);
+  const [closeOutcome, setCloseOutcome] = useState<QuotesOutcome | null>(null);
+  const [closeReport, setCloseReport] = useState<CloseReport | null>(null);
+  const [closeBusy, setCloseBusy] = useState(false);
+  const loadClose = async () => {
+    if (holdingsInfo.positions.length === 0) return;
+    setCloseBusy(true);
+    const outcome = await fetchQuotes(holdingsInfo.positions.map((p) => p.ticker));
+    setCloseOutcome(outcome);
+    setCloseReport(Object.keys(outcome.quotes).length > 0 ? composeCloseReport(holdingsInfo.positions, holdingsInfo.cash, outcome.quotes) : null);
+    setCloseBusy(false);
+  };
   useEffect(() => {
-    if (loaded) syncStaleReminders(candidates, state.pushEnabled).then(() => getPushStatus().then(setPush));
-  }, [loaded, candidates.length, state.pushEnabled]);
+    if (loaded && holdingsInfo.positions.length > 0) void loadClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, holdingsInfo.positions.length]);
+  useEffect(() => {
+    if (loaded) syncStaleReminders(candidates, state.pushEnabled, holdingsInfo.positions.length > 0).then(() => getPushStatus().then(setPush));
+  }, [loaded, candidates.length, state.pushEnabled, holdingsInfo.positions.length]);
 
   if (!loaded) return <View style={styles.screen}><Text style={styles.pad}>Loading...</Text></View>;
   if (!snap) return <View style={styles.screen}><Text style={styles.pad}>Snapshot is available for Arizona in Phase 1.</Text></View>;
@@ -274,6 +292,29 @@ export default function HomeScreen() {
         <Text style={styles.line}>Next: {nextPhase.title} (starts {MONTH_NAMES[nextPhase.month - 1]})</Text>
       </View>
 
+      {holdingsInfo.positions.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>📈 Market close{closeOutcome?.asOf ? ` - ${isoToUs(closeOutcome.asOf)}` : ""}</Text>
+          {closeBusy && <Text style={styles.line}>Loading closing prices...</Text>}
+          {!closeBusy && closeOutcome?.notConnected && (
+            <Text style={styles.line}>Live prices load through the HomeTower sender, which is not connected yet - and in the native app. Your holdings basis for the report: {holdingsInfo.positions.map((p) => `${p.ticker} x${p.quantity}`).join(", ")}{holdingsInfo.cash !== null ? `, cash $${holdingsInfo.cash.toLocaleString("en-US")}` : ""} (as last entered{holdingsInfo.basisDate ? ` ${isoToUs(holdingsInfo.basisDate)}` : ""}).</Text>
+          )}
+          {!closeBusy && closeOutcome?.error && <Text style={styles.line}>{closeOutcome.error}</Text>}
+          {!closeBusy && closeReport && (
+            <>
+              {closeReport.lines.map((l) => (
+                <Text key={l.ticker} style={styles.line}>{l.alert ? "⚠️ " : ""}{l.ticker}: ${l.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, {l.changePct >= 0 ? "+" : "-"}{Math.abs(l.changePct).toFixed(2)}%</Text>
+              ))}
+              <Text style={styles.line}>Estimated today: {closeReport.gainUsd >= 0 ? "+" : "-"}${Math.abs(Math.round(closeReport.gainUsd)).toLocaleString("en-US")} on your holdings{closeReport.pctHoldings !== null ? ` (${closeReport.pctHoldings >= 0 ? "+" : "-" }${Math.abs(closeReport.pctHoldings).toFixed(1)}%)` : ""}{closeReport.pctWithCash !== null ? `, ${closeReport.pctWithCash >= 0 ? "+" : "-"}${Math.abs(closeReport.pctWithCash).toFixed(1)}% including cash` : ""}. Quantities as last entered{holdingsInfo.basisDate ? ` ${isoToUs(holdingsInfo.basisDate)}` : ""}; prices: Yahoo Finance{closeOutcome?.asOf ? `, close of ${isoToUs(closeOutcome.asOf)}` : ""}.</Text>
+              {closeReport.missing.length > 0 && <Text style={styles.line}>No price loaded for: {closeReport.missing.join(", ")} - excluded from the totals, not estimated.</Text>}
+            </>
+          )}
+          <Pressable onPress={() => void loadClose()}>
+            <Text style={styles.manualLink}>Refresh closing prices</Text>
+          </Pressable>
+        </View>
+      )}
+
       <Text style={styles.pushLine}>
         Push: {push && isPushEnabled(state.pushEnabled, push) ? `on, ${push.scheduledCount} reminder(s) scheduled` : state.pushEnabled ? "on (Intake tab) - token registers in the native app" : "off - turn it on in the Intake tab"}
       </Text>
@@ -310,4 +351,5 @@ const styles = StyleSheet.create({
   actionRow: { fontSize: 14.5, color: "#22303C", lineHeight: 21 },
   actionKey: { fontWeight: "700", color: NAVY },
   pushLine: { fontSize: 12, color: "#5A6B7C", textAlign: "center" },
+  manualLink: { color: "#0f766e", fontSize: 15, fontWeight: "700", marginTop: 4 },
 });

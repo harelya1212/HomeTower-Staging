@@ -304,6 +304,14 @@ export default function DocumentsScreen() {
     if (extractionType === "brokerage_statement" && pendingPlan) {
       savedFields["account_ticker"] = pendingPlan.ticker;
       if (pendingPlan.company) savedFields["account_company"] = pendingPlan.company;
+      // Vested share count, derived from the vested balance and the
+      // plan's own last price (780.0 shares exactly on the owner's
+      // INTC plan) - the market-close report counts vested shares
+      // only, and this is where the count comes from.
+      const vested = Number(extraction.fields["vested_balance"]);
+      if (Number.isFinite(vested) && vested > 0 && pendingPlan.lastPrice && pendingPlan.lastPrice > 0) {
+        savedFields["plan_shares"] = String(Math.round((vested / pendingPlan.lastPrice) * 1000) / 1000);
+      }
     }
     const record: DocumentRecord = {
       docType: extractionType,
