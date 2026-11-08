@@ -182,7 +182,7 @@ export default function HomeScreen() {
       </View>
 
       <Text style={styles.pushLine}>
-        Push: {push && isPushEnabled(state.pushEnabled, push) ? `on, ${push.scheduledCount} reminder(s) scheduled` : state.pushEnabled ? "on in settings - token registers in the native app" : "off"}
+        Push: {push && isPushEnabled(state.pushEnabled, push) ? `on, ${push.scheduledCount} reminder(s) scheduled` : state.pushEnabled ? "on (Intake tab) - token registers in the native app" : "off - turn it on in the Intake tab"}
       </Text>
     </ScrollView>
   );
