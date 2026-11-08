@@ -59,7 +59,7 @@ export default function DocumentsScreen() {
   // the app ALWAYS classifies what it read. With a named type it verifies
   // the name against the content; without one, the detected type is used.
   // Either way the user sees the reading and confirms before saving.
-  const runExtraction = (text: string, namedType?: string) => {
+  const runExtraction = (text: string, namedType?: string, pages?: string[]) => {
     try {
       const raw = textToRawFields(text);
       if (!raw.length) {
@@ -71,7 +71,23 @@ export default function DocumentsScreen() {
       const useType = namedType ?? detected.docType;
       setDetection(detected);
       setPendingText(text);
-      setExtraction(extractFields(raw, useType));
+      let result = extractFields(raw, useType);
+      // Prior-return scoping (real-file rehearsal, 2026-11-07): a full
+      // client copy runs 100+ pages of schedules whose repeated labels
+      // pollute whole-document extraction. The return's own figures
+      // live on the Form 1040 pages - when the PDF gave us pages,
+      // extract from those two pages and prefer them when they yield
+      // at least two figures.
+      if (useType === "prior_return" && pages && pages.length > 2) {
+        const idx = pages.findIndex((p) => /u\.s\. individual income tax return/i.test(p));
+        if (idx >= 0) {
+          const scopedRaw = textToRawFields(pages.slice(idx, idx + 2).join("\n"));
+          const scoped = extractFields(scopedRaw, "prior_return");
+          const numeric = Object.values(scoped.fields).filter((v) => typeof v === "number").length;
+          if (numeric >= 2) result = scoped;
+        }
+      }
+      setExtraction(result);
       setExtractionType(useType);
       setOcrNote(null);
     } catch (e) {
@@ -125,7 +141,7 @@ export default function DocumentsScreen() {
           const outcome = await extractPdfTextFromBuffer(await f.arrayBuffer());
           if (outcome.error) { setFlowNote(`Could not read ${f.name}: ${outcome.error}`); return; }
           setFlowNote(null);
-          runExtraction(outcome.text, namedType);
+          runExtraction(outcome.text, namedType, outcome.pages);
           return;
         }
         if (f.type.startsWith("image/")) {
@@ -144,7 +160,7 @@ export default function DocumentsScreen() {
         const outcome = await extractPdfText(uri);
         if (outcome.error) { setFlowNote(`PDF stage: ${outcome.error}`); return; }
         setFlowNote(null);
-        runExtraction(outcome.text, namedType);
+        runExtraction(outcome.text, namedType, outcome.pages);
         return;
       }
       const outcome = await recognizeOnDevice(uri);
