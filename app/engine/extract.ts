@@ -48,9 +48,13 @@ export function extractFields(rawFields: RawField[], documentType: string, pack:
     const existing = result.fields[fieldName];
     // First PARSED amount wins (mirror of extract.py): an early clean
     // figure is never overwritten by later prose; prose is replaced as
-    // soon as a real amount for the field appears.
+    // soon as a real amount for the field appears. One exception: a
+    // parsed ZERO is provisional - state forms print furniture like
+    // "Arizona Adjusted Gross Income ~ 00" ahead of the real federal
+    // figure, so a later non-zero amount replaces a zero (real packet
+    // rehearsal, 2026-11-07).
     if (amount !== null) {
-      if (existing === undefined || typeof existing === "string") {
+      if (existing === undefined || typeof existing === "string" || (existing === 0 && amount !== 0)) {
         result.fields[fieldName] = amount;
         result.fieldConfidence[fieldName] = raw.confidence;
         confidences.push(raw.confidence);
