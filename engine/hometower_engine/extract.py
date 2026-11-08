@@ -60,12 +60,24 @@ def extract_fields(raw_fields: list[RawField], document_type: str,
         field_name = field_map.get(normalized)
         if not field_name:
             for map_key, map_field in field_map.items():
-                if map_key in normalized or normalized in map_key:
+                # Fuzzy containment only when the shorter side is a
+                # substantial phrase - a bare "refund" key must not
+                # claim "total other payments and refundable credits"
+                # (real-file rehearsal, 2026-11-07).
+                if min(len(map_key), len(normalized)) >= 12 and (map_key in normalized or normalized in map_key):
                     field_name = map_field
                     break
         if not field_name:
             continue
+        # Pure punctuation ("~~~~~~~", "----") is form furniture,
+        # never a value.
+        if not re.search(r"[A-Za-z0-9]", raw.value):
+            continue
         amount = _extract_amount(raw.value)
+        # Household documents do not carry nine-figure amounts; a
+        # digit string that large is a routing/account fragment.
+        if amount is not None and abs(amount) >= 100_000_000:
+            continue
         existing = result.fields.get(field_name)
         # First PARSED amount wins (real-file rehearsal, 2026-11-07):
         # long documents repeat labels in schedules and prose; an early
