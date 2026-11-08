@@ -77,14 +77,24 @@ sender can only work with what it is given, therefore:
   DeviceNotRegistered; if no fresh quotes come back - holiday or
   outage - it sends nothing rather than a stale report).
 
-## Remaining activation step (one guided session)
+## Activation status
 
-1. Create the Firebase project for HomeTower (owner's Google
-   account, Blaze plan like TReps) and `firebase deploy` from
-   functions/ - deploys all three functions + the rules.
-2. Put the functions base URL into app/src/config.ts
-   (MARKET_API_BASE) and redeploy the web app - the web close
-   card and the sync light up.
-3. The remote push itself fires once the native app issues Expo
-   push tokens (the native milestone in NATIVE.md); the token
-   attaches to the subscription on the next sync.
+DONE 2026-11-08 (owner-guided session):
+1. Firebase project "hometower" (ID exactly "hometower", number
+   70421220342) created under the owner's Google account, Blaze
+   plan on the existing "Firebase Payment" billing account with a
+   $5 budget alert; Firestore (default) created in production mode
+   at nam5. No Analytics, no Gemini.
+2. Functions deployed from functions/ (all three + the rules).
+   NOTE: Node 20 was decommissioned 2026-10-30 - the runtime is
+   Node 22 in BOTH functions/package.json engines AND the
+   firebase.json codebase "runtime" field (the firebase.json value
+   wins; a mismatch cost one failed deploy).
+3. MARKET_API_BASE set in app/src/config.ts and the web app
+   redeployed - quotes verified live through the endpoint
+   (INTC 56.28 +7.713% for the 2026-11-06 close), consent upsert
+   and delete both verified against the deployed function.
+
+REMAINING: the remote push itself fires once the native app issues
+Expo push tokens (the native milestone in NATIVE.md); the token
+attaches to the subscription on the next sync.
