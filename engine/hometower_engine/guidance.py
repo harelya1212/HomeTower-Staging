@@ -240,7 +240,7 @@ def next_action(i: NextActionInput) -> NextAction:
             "Add last year's filed return and its actual outcome",
             "Calibration is the anchor of the whole forecast: what you filed last year and what the IRS and state actually did with it.",
             "The single largest confidence gain available - worth up to 20 of the 100 confidence points.",
-            "One-time effort; the app asks only until it is recorded.",
+            "One-time effort; HomeTower asks only until it is recorded.",
             conf,
             "Once recorded, the top action moves to whatever is stale or off-target.")
     if i.stale_docs:
