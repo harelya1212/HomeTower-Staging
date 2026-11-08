@@ -95,6 +95,11 @@ export interface HouseholdState {
   payrollCheck: PayrollCheck;
   eduAssignChildId: string | null; // transient: My House child card -> Documents 529 assignment
   events: EquityEvent[];
+  // Daily market-close push (owner, 2026-11-07): OFF until the user
+  // explicitly consents - only then may the holdings snapshot
+  // (tickers, quantities, cash total) leave the device, to the
+  // HomeTower sender, under the device secret. See MARKET_PUSH.md.
+  marketPush: { consent: boolean; deviceSecret: string | null; syncedOn: string | null };
 }
 
 const STORAGE_KEY = "hometower.state.v1";
@@ -138,6 +143,7 @@ export function defaultState(): HouseholdState {
     },
     onboarded: false,
     payrollCheck: { lastConfirmedOn: null, consecutive: 0 },
+    marketPush: { consent: false, deviceSecret: null, syncedOn: null },
     eduAssignChildId: null,
     events: [],
   };
@@ -199,6 +205,7 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     jobs: parsed.jobs ?? [],
     assets: parsed.assets ?? [],
     payrollCheck: parsed.payrollCheck ?? { lastConfirmedOn: null, consecutive: 0 },
+    marketPush: parsed.marketPush ?? { consent: false, deviceSecret: null, syncedOn: null },
     eduAssignChildId: parsed.eduAssignChildId ?? null,
     events: parsed.events ?? [],
   };

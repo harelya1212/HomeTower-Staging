@@ -19,6 +19,17 @@ export interface HoldingsParse {
 export interface PlanAccount {
   ticker: string;
   company: string | null;
+  /** The plan's own last price, when the overview shows one - used
+   * at save time to derive the vested share count. */
+  lastPrice: number | null;
+}
+
+/** First money token of a line as a number, or null. */
+function firstMoney(line: string): number | null {
+  const m = line.match(/\$([\d,]+\.?\d*)/);
+  if (!m) return null;
+  const v = Number(m[1].replace(/,/g, ""));
+  return Number.isFinite(v) ? v : null;
 }
 
 /** A stock-plan overview names its security OUTSIDE the position
@@ -30,15 +41,22 @@ export interface PlanAccount {
  * "Restricted Stock (RS)") must never match. */
 export function parsePlanAccount(text: string): PlanAccount | null {
   const lines = text.split("\n").map((l) => l.trim());
+  let lastPrice: number | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^last price/i.test(lines[i]) && i + 1 < lines.length) {
+      lastPrice = firstMoney(lines[i + 1]);
+      if (lastPrice !== null) break;
+    }
+  }
   for (const line of lines) {
     const m = line.match(/^([A-Z][A-Z0-9 .,&'()-]*?)\s*\(([A-Z]{1,5})\)$/);
     if (m && m[1].trim().length >= 4 && !/^(LAST|TOTAL|TODAY)/.test(m[1])) {
-      return { ticker: m[2], company: m[1].trim() };
+      return { ticker: m[2], company: m[1].trim(), lastPrice };
     }
   }
   for (const line of lines) {
     const m = line.match(/stock plan\s*\(([A-Z]{1,5})\)/i);
-    if (m) return { ticker: m[1].toUpperCase(), company: null };
+    if (m) return { ticker: m[1].toUpperCase(), company: null, lastPrice };
   }
   return null;
 }

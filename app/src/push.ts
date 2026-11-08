@@ -80,8 +80,43 @@ export async function registerForPush(): Promise<PushStatus> {
   return status;
 }
 
+/** The next `count` US market closes: 16:30 America/New_York on a
+ * weekday (Mon-Fri ET), as device-local Dates. Computed by guessing
+ * a UTC instant and correcting against the ET wall clock (two
+ * passes converge across DST). The remote sender fires precisely
+ * at 16:30 ET; these local reminders use the same instants so the
+ * in-app close card is fresh when the user opens it. */
+export function nextMarketCloses(count: number, from: Date = new Date()): Date[] {
+  const parts = (d: Date) =>
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, weekday: "short" }).formatToParts(d);
+  const etNow = parts(from);
+  const get = (ps: Intl.DateTimeFormatPart[], t: string) => ps.find((p) => p.type === t)?.value ?? "";
+  const startY = Number(get(etNow, "year"));
+  const startM = Number(get(etNow, "month"));
+  const startD = Number(get(etNow, "day"));
+  const out: Date[] = [];
+  for (let add = 0; add < 12 && out.length < count; add++) {
+    // Target: ET wall clock 16:30 on (ET today + add days).
+    const base = new Date(Date.UTC(startY, startM - 1, startD + add, 0, 0));
+    let guess = new Date(base.getTime() + 20.5 * 3600_000); // 16:30 EST = 21:30 UTC; EDT = 20:30 UTC
+    for (let i = 0; i < 2; i++) {
+      const ps = parts(guess);
+      const hh = Number(get(ps, "hour")) % 24;
+      const mm = Number(get(ps, "minute"));
+      const diffMin = 16 * 60 + 30 - (hh * 60 + mm);
+      if (diffMin === 0) break;
+      guess = new Date(guess.getTime() + diffMin * 60_000);
+    }
+    const wd = get(parts(guess), "weekday");
+    if (wd === "Sat" || wd === "Sun") continue;
+    if (guess.getTime() <= from.getTime() + 5 * 60_000) continue;
+    out.push(guess);
+  }
+  return out;
+}
+
 /** (Re)schedule one local reminder per stale/aging document, next 9:00 AM. */
-export async function syncStaleReminders(candidates: FreshnessFinding[], settingOn: boolean): Promise<number> {
+export async function syncStaleReminders(candidates: FreshnessFinding[], settingOn: boolean, marketClose: boolean = false): Promise<number> {
   try {
     await Notifications.cancelAllScheduledNotificationsAsync();
     if (!settingOn) {
@@ -115,6 +150,23 @@ export async function syncStaleReminders(candidates: FreshnessFinding[], setting
         trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: phaseDate },
       });
       count++;
+    }
+    // Daily market close (owner, 2026-11-07): on trading days, half
+    // an hour after the close (16:30 ET), remind the user their
+    // close report is ready. The remote push carries the live
+    // numbers (native milestone); this local reminder carries the
+    // user to the in-app card, which computes them live.
+    if (marketClose) {
+      for (const closeAt of nextMarketCloses(5, now)) {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: "HomeTower - market close",
+            body: "Today's close report is ready - open HomeTower to see how your holdings did today.",
+          },
+          trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: closeAt },
+        });
+        count++;
+      }
     }
     await AsyncStorage.setItem(SCHEDULED_KEY, String(count));
     return count;
