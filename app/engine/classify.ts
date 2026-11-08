@@ -18,7 +18,7 @@ const KEYWORDS: Record<string, string[]> = {
   hsa_statement: ["health savings account", "hsa"],
   "401k_statement": ["401(k)", "401k", "vested balance", "retirement savings plan"],
   "529_statement": ["529 plan", "college savings plan", "education account"],
-  brokerage_statement: ["brokerage", "securities account", "portfolio value", "holdings"],
+  brokerage_statement: ["brokerage", "securities account", "portfolio value", "holdings", "client statement", "account summary", "asset allocation", "total ending value", "ending total value"],
   pension_statement: ["pension", "defined benefit", "monthly benefit", "retirement benefit"],
   prior_return: ["1040", "adjusted gross income", "taxable income", "internal revenue service", "u.s. individual income tax return"],
 };
