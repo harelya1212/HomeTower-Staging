@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>OCR diag 2</title></head>
+<body>
+<div id="status">starting</div>
+<pre id="out" style="white-space:pre-wrap;font-size:11px"></pre>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/tesseract.min.js"></script>
+<script>
+const status = (m) => { document.getElementById('status').textContent = m; };
+(async () => {
+  const t0 = Date.now();
+  try {
+    const worker = await Tesseract.createWorker('eng', 1, {
+      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/worker.min.js',
+      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.0.0/tesseract-core-simd.wasm.js',
+      langPath: 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0',
+      logger: (m) => status(m.status + ' ' + Math.round((m.progress || 0) * 100) + '%'),
+    });
+    const { data } = await worker.recognize('diag-shot2.jpg');
+    await worker.terminate();
+    status('DONE in ' + Math.round((Date.now() - t0) / 1000) + 's');
+    document.getElementById('out').textContent = data.text;
+  } catch (e) {
+    status('FAILED: ' + (e && e.message ? e.message : String(e)));
+  }
+})();
+</script>
+</body></html>
