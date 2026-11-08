@@ -3,7 +3,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { predictionConfidence } from "../../engine/confidence.ts";
 import { extractFields, type ExtractionResult } from "../../engine/extract.ts";
-import { householdFreshness } from "../../engine/freshness.ts";
+import { documentFreshness, FRESHNESS_WINDOW_DAYS, householdFreshness } from "../../engine/freshness.ts";
+import { DateField, TextField, isoToUs } from "../components/Fields.tsx";
+import type { EquityEvent } from "../store.tsx";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { classifyDocument, type Classification } from "../../engine/classify.ts";
@@ -48,6 +50,14 @@ export default function DocumentsScreen() {
   const hasPayslip = docs.some((d) => d.docType === "payslip" && d.status === "parsed");
   const [payAnswers, setPayAnswers] = useState({ gross: "no", net: "no", benefits: "no" });
   const [payNote, setPayNote] = useState<string | null>(null);
+  // Ongoing center (owner-approved sketch, 2026-11-07)
+  const [expandedCat, setExpandedCat] = useState<string | null>(null);
+  const [showShortcut, setShowShortcut] = useState(false);
+  const [showEventForm, setShowEventForm] = useState(false);
+  const [evKind, setEvKind] = useState<EquityEvent["kind"]>("bonus");
+  const [evDate, setEvDate] = useState(today);
+  const [evAmount, setEvAmount] = useState("");
+  const [evNote, setEvNote] = useState("");
 
   const confirmPayrollCycle = () => {
     const r = payrollShortcut(payAnswers.gross, payAnswers.net, payAnswers.benefits, state.payrollCheck.consecutive);
@@ -210,6 +220,45 @@ export default function DocumentsScreen() {
   };
   const removeDoc = (index: number) => updateIntake({ documents: docs.filter((_, i) => i !== index) });
 
+  // --- Ongoing center model -------------------------------------------
+  const payCycleDays = (() => {
+    const f = state.jobs.find((j) => !j.endDate)?.payFrequency ?? state.intake.members[0]?.payFrequency ?? "biweekly";
+    return f === "weekly" ? 7 : f === "semimonthly" ? 15 : f === "monthly" ? 30 : 14;
+  })();
+  interface CatDef { key: string; icon: string; name: string; docType: string; cadence: string; extra?: string }
+  const CATS: CatDef[] = [
+    { key: "payslip", icon: "🧾", name: "Payslips", docType: "payslip", cadence: `every ~${payCycleDays} days (pay cycle)` },
+    { key: "brokerage", icon: "📈", name: "Stocks & brokerage", docType: "brokerage_statement", cadence: "monthly", extra: "Needed for concentration + TaxImpact" },
+    { key: "401k", icon: "🏦", name: "401(k)", docType: "401k_statement", cadence: "every ~90 days" },
+    { key: "pension", icon: "🏛️", name: "Pension", docType: "pension_statement", cadence: "yearly" },
+    { key: "hsa", icon: "🩺", name: "HSA", docType: "hsa_statement", cadence: "every ~90 days" },
+    { key: "529", icon: "🎓", name: "529 education", docType: "529_statement", cadence: "every ~90 days" },
+  ];
+  const catInfo = (c: CatDef) => {
+    const ofType = docs.filter((d) => d.docType === c.docType);
+    const latest = ofType.length ? [...ofType].sort((a, b) => (b.capturedOn ?? "").localeCompare(a.capturedOn ?? ""))[0] : null;
+    const f = latest ? documentFreshness(latest, today) : null;
+    const status = !latest ? "missing" : f!.status === "unknown" ? "missing" : f!.status;
+    const window = FRESHNESS_WINDOW_DAYS[c.docType] ?? 180;
+    const overdue = status === "stale" && f?.ageDays != null ? f.ageDays - window : 0;
+    const rank = status === "stale" ? 0 : status === "missing" ? 1 : status === "aging" ? 2 : 3;
+    return { ofType, latest, status, overdue, rank };
+  };
+  const chipFor = (s: string) =>
+    s === "stale" ? { t: "STALE - update", bg: "#FDE3DF", fg: "#A02C1D" }
+    : s === "aging" ? { t: "AGING", bg: "#FDF0DA", fg: "#8A5A00" }
+    : s === "missing" ? { t: "MISSING", bg: "#E5EBF1", fg: "#44566B" }
+    : { t: "UP TO DATE", bg: "#DDF3E8", fg: "#0C6B4A" };
+  const EVENT_LABEL: Record<EquityEvent["kind"], string> = { bonus: "Bonus", rsu_vest: "RSU vest", espp_purchase: "ESPP purchase" };
+  const lastEvent = state.events.length ? [...state.events].sort((a, b) => b.date.localeCompare(a.date))[0] : null;
+  const saveEvent = () => {
+    const amount = Number(evAmount.replace(/[$,]/g, "")) || 0;
+    update({ events: [...state.events, { id: `ev-${Date.now()}`, kind: evKind, date: evDate, amount, note: evNote.trim() }] });
+    setShowEventForm(false);
+    setEvAmount("");
+    setEvNote("");
+  };
+
   return (
     <ScrollView ref={scrollRef} style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Documents</Text>
@@ -235,6 +284,150 @@ export default function DocumentsScreen() {
           </View>
         );
       })}
+
+      <Text style={styles.section}>Ongoing center</Text>
+      <Text style={styles.note}>
+        Everything that repeats - payslips, statements, events. Sorted by urgency: what needs you first is on top. Upload straight from each row.
+      </Text>
+      {[...CATS]
+        .map((c) => ({ c, info: catInfo(c) }))
+        .sort((a, b) => a.info.rank - b.info.rank)
+        .map(({ c, info }) => {
+          const chip = chipFor(info.status);
+          return (
+            <View key={c.key} style={styles.catCard}>
+              <View style={styles.catHead}>
+                <Text style={styles.catName}>{c.icon} {c.name}</Text>
+                <View style={[styles.statusChip, { backgroundColor: chip.bg }]}>
+                  <Text style={[styles.statusChipText, { color: chip.fg }]}>{chip.t}</Text>
+                </View>
+              </View>
+              <Text style={styles.line}>
+                {info.latest
+                  ? `Last: ${info.latest.capturedOn ? isoToUs(info.latest.capturedOn) : "date unknown"} · Expected ${c.cadence}${info.overdue > 0 ? ` · ${info.overdue} days overdue` : ""}`
+                  : `No document yet · Expected ${c.cadence}`}
+                {c.extra ? `\n${c.extra}` : ""}
+              </Text>
+              <View style={styles.catActions}>
+                <Pressable style={[styles.button, { flex: 1 }]} onPress={() => uploadFile(c.docType)}>
+                  <Text style={styles.buttonText}>Upload {c.key === "payslip" ? "a payslip" : "a statement"}</Text>
+                </Pressable>
+                {c.key === "payslip" ? (
+                  <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => setShowShortcut((s) => !s)}>
+                    <Text style={styles.buttonText}>No change</Text>
+                  </Pressable>
+                ) : (
+                  <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => setExpandedCat(expandedCat === c.key ? null : c.key)}>
+                    <Text style={styles.buttonText}>History ({info.ofType.length})</Text>
+                  </Pressable>
+                )}
+              </View>
+              {c.key === "payslip" && showShortcut && (
+                hasPayslip ? (
+                  <View style={styles.shortcutBox}>
+                    <Text style={styles.line}>Instead of uploading a new payslip every cycle: did anything change since the last one?</Text>
+                    {state.payrollCheck.lastConfirmedOn && (
+                      <Text style={styles.line}>
+                        Last confirmed unchanged: {isoToUs(state.payrollCheck.lastConfirmedOn)} (provisional cycle {state.payrollCheck.consecutive} of 3 - the 3rd needs the document)
+                      </Text>
+                    )}
+                    {([
+                      ["gross", "Did gross pay change?"],
+                      ["net", "Did the net deposit change?"],
+                      ["benefits", "Did any benefit election change?"],
+                    ] as const).map(([key, label]) => (
+                      <View key={key}>
+                        <Text style={styles.line}>{label}</Text>
+                        <View style={styles.chips}>
+                          {([["no", "No change"], ["yes", "Changed"], ["unsure", "Not sure"]] as const).map(([val, lab]) => (
+                            <Pressable
+                              key={val}
+                              style={[styles.chip, payAnswers[key] === val && styles.chipSelected]}
+                              onPress={() => setPayAnswers((a) => ({ ...a, [key]: val }))}
+                            >
+                              <Text style={payAnswers[key] === val ? styles.chipTextSelected : styles.chipText}>{lab}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+                    ))}
+                    <Pressable style={styles.button} onPress={confirmPayrollCycle}>
+                      <Text style={styles.buttonText}>Confirm this cycle</Text>
+                    </Pressable>
+                    {payNote && <Text style={styles.note}>{payNote}</Text>}
+                  </View>
+                ) : (
+                  <Text style={styles.note}>Upload one payslip first - then this shortcut unlocks for the cycles after it.</Text>
+                )
+              )}
+              {expandedCat === c.key && (
+                <View style={styles.shortcutBox}>
+                  {info.ofType.length === 0 && <Text style={styles.line}>No documents of this type yet.</Text>}
+                  {info.ofType.map((d, i) => (
+                    <Text key={i} style={styles.line}>
+                      {d.capturedOn ? isoToUs(d.capturedOn) : "date unknown"} - {d.status} - confidence {d.confidence}
+                    </Text>
+                  ))}
+                </View>
+              )}
+            </View>
+          );
+        })}
+
+      <View style={styles.catCard}>
+        <View style={styles.catHead}>
+          <Text style={styles.catName}>🎁 Bonuses & RSU / ESPP</Text>
+          <View style={[styles.statusChip, { backgroundColor: "#D9F0EC" }]}>
+            <Text style={[styles.statusChipText, { color: "#0B5A52" }]}>EVENTS</Text>
+          </View>
+        </View>
+        <Text style={styles.line}>
+          {lastEvent
+            ? `Last event: ${EVENT_LABEL[lastEvent.kind]} - ${isoToUs(lastEvent.date)}${lastEvent.amount > 0 ? ` - $${lastEvent.amount.toLocaleString()}` : ""}${lastEvent.note ? ` - ${lastEvent.note}` : ""} · ${state.events.length} event${state.events.length === 1 ? "" : "s"} recorded`
+            : "No events recorded yet. Bonuses also appear inside payslips - events keep their own timeline."}
+        </Text>
+        <View style={styles.catActions}>
+          <Pressable style={[styles.button, { flex: 1 }]} onPress={() => setShowEventForm((s) => !s)}>
+            <Text style={styles.buttonText}>Add an event</Text>
+          </Pressable>
+          <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => uploadFile()}>
+            <Text style={styles.buttonText}>Upload plan doc</Text>
+          </Pressable>
+        </View>
+        {showEventForm && (
+          <View style={styles.shortcutBox}>
+            <View style={styles.chips}>
+              {(Object.keys(EVENT_LABEL) as EquityEvent["kind"][]).map((k) => (
+                <Pressable key={k} style={[styles.chip, evKind === k && styles.chipSelected]} onPress={() => setEvKind(k)}>
+                  <Text style={evKind === k ? styles.chipTextSelected : styles.chipText}>{EVENT_LABEL[k]}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <Text style={styles.line}>Date</Text>
+            <DateField value={evDate} onChange={setEvDate} />
+            <Text style={styles.line}>Amount ($)</Text>
+            <TextField value={evAmount} onChange={setEvAmount} keyboardType="numeric" placeholder="e.g. 12500" />
+            <Text style={styles.line}>Note (optional)</Text>
+            <TextField value={evNote} onChange={setEvNote} placeholder="e.g. Q4 bonus, Intel" />
+            <Pressable style={styles.button} onPress={saveEvent}>
+              <Text style={styles.buttonText}>Save event</Text>
+            </Pressable>
+            {state.events.length > 0 && (
+              <>
+                <Text style={styles.line}>Recorded:</Text>
+                {[...state.events].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5).map((e) => (
+                  <View key={e.id} style={styles.catHead}>
+                    <Text style={styles.line}>{EVENT_LABEL[e.kind]} - {isoToUs(e.date)}{e.amount > 0 ? ` - $${e.amount.toLocaleString()}` : ""}</Text>
+                    <Pressable onPress={() => update({ events: state.events.filter((x) => x.id !== e.id) })}>
+                      <Text style={styles.remove}>Remove</Text>
+                    </Pressable>
+                  </View>
+                ))}
+              </>
+            )}
+          </View>
+        )}
+      </View>
 
       <Text style={styles.section}>Upload any document</Text>
       <Text style={styles.note}>
@@ -307,43 +500,6 @@ export default function DocumentsScreen() {
         );
       })}
 
-      {hasPayslip && (
-        <View style={styles.confirmCard}>
-          <Text style={styles.section}>Payroll check - the intelligent shortcut</Text>
-          <Text style={styles.line}>
-            Instead of uploading a new payslip every cycle: did anything change since the last one?
-          </Text>
-          {state.payrollCheck.lastConfirmedOn && (
-            <Text style={styles.line}>
-              Last confirmed unchanged: {state.payrollCheck.lastConfirmedOn} (provisional cycle {state.payrollCheck.consecutive} of 3 - the 3rd needs the document)
-            </Text>
-          )}
-          {([
-            ["gross", "Did gross pay change?"],
-            ["net", "Did the net deposit change?"],
-            ["benefits", "Did any benefit election change?"],
-          ] as const).map(([key, label]) => (
-            <View key={key}>
-              <Text style={styles.line}>{label}</Text>
-              <View style={styles.chips}>
-                {([["no", "No change"], ["yes", "Changed"], ["unsure", "Not sure"]] as const).map(([val, lab]) => (
-                  <Pressable
-                    key={val}
-                    style={[styles.chip, payAnswers[key] === val && styles.chipSelected]}
-                    onPress={() => setPayAnswers((a) => ({ ...a, [key]: val }))}
-                  >
-                    <Text style={payAnswers[key] === val ? styles.chipTextSelected : styles.chipText}>{lab}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          ))}
-          <Pressable style={styles.button} onPress={confirmPayrollCycle}>
-            <Text style={styles.buttonText}>Confirm this cycle</Text>
-          </Pressable>
-          {payNote && <Text style={styles.note}>{payNote}</Text>}
-        </View>
-      )}
 
       <Text style={styles.section}>Capture a document</Text>
       <View style={styles.chips}>
@@ -452,4 +608,11 @@ const styles = StyleSheet.create({
   confirmCard: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 14, gap: 6, borderWidth: 1, borderColor: TEAL },
   mismatch: { backgroundColor: "#FEF7E0", borderRadius: 10, padding: 10, gap: 8 },
   manualLink: { color: TEAL, fontSize: 13, fontWeight: "600", marginTop: 6 },
+  catCard: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 13, gap: 8, borderWidth: 1, borderColor: "#D7E0E8" },
+  catHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 },
+  catName: { fontSize: 17.5, fontWeight: "700", color: NAVY },
+  catActions: { flexDirection: "row", gap: 8 },
+  statusChip: { borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 },
+  statusChipText: { fontSize: 12, fontWeight: "700" },
+  shortcutBox: { gap: 8, borderTopWidth: 1, borderTopColor: "#E3EAF0", paddingTop: 10 },
 });
