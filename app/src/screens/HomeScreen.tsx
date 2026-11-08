@@ -7,7 +7,8 @@ import { accuracyLevel } from "../../engine/intake.ts";
 import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
-import { ageOn, educationLine, goalPct, projectValue } from "../goals.ts";
+import { ageOn, earliestAgeReaching, educationFunding, educationLine, projectValue, requiredMonthly, retirementNeedEstimate } from "../goals.ts";
+import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 
@@ -60,9 +61,48 @@ export default function HomeScreen() {
   const eduTargetSum = state.family
     .filter((m) => m.role === "child")
     .reduce((s, m) => s + (m.eduTarget || 0), 0);
-  const retirementPct = goalPct(projectValue(retBalance, retMonthly, yearsToRetire, g.assumedReturnPct), retireTargetSum > 0 ? retireTargetSum : g.retirementTarget);
-  const eduPct = goalPct(projectValue(eduBalance, eduMonthly, g.eduYears, g.assumedReturnPct), eduTargetSum > 0 ? eduTargetSum : g.eduTarget);
   const children = state.family.filter((m) => m.role === "child");
+  const hasIncome = state.grossIncome > 0;
+
+  // Retirement outlook per adult (owner QA round 18): not a ring - an
+  // answer. Can this person retire at the age they chose, at today's
+  // pace? If not, at what age does the money work, or what monthly
+  // contribution makes the chosen age work?
+  const adults = state.family.filter((m) => m.role === "self" || m.role === "spouse");
+  const householdNeed = retirementNeedEstimate(state.grossIncome);
+  const adultOutlook = adults.map((m) => {
+    const age = ageOn(m.dob, today);
+    const owned = state.assets.filter((a) => (a.kind === "401k" || a.kind === "ira") && m.name.trim() !== "" && a.ownerName.trim().toLowerCase() === m.name.trim().toLowerCase());
+    const bal = owned.length ? owned.reduce((s, a) => s + a.value, 0) : m.role === "self" ? retBalance : 0;
+    const mo = owned.length ? owned.reduce((s, a) => s + a.monthly, 0) : m.role === "self" ? retMonthly : 0;
+    const need = m.retireTarget > 0 ? m.retireTarget : householdNeed > 0 ? Math.round(householdNeed / Math.max(1, adults.length)) : 0;
+    if (age === null) return { m, age, bal, mo, need, years: 0, projected: 0, onTrack: false, realisticAge: null as number | null, reqMo: 0 };
+    const years = Math.max(0, (m.retireAge || 67) - age);
+    const projected = projectValue(bal, mo, years, g.assumedReturnPct);
+    const onTrack = need > 0 && projected >= need;
+    const realisticAge = need > 0 && !onTrack ? earliestAgeReaching(bal, mo, need, g.assumedReturnPct, age, m.retireAge || 67) : null;
+    const reqMo = need > 0 && years > 0 ? Math.round(requiredMonthly(bal, need, years, g.assumedReturnPct)) : 0;
+    return { m, age, bal, mo, need, years, projected, onTrack, realisticAge, reqMo };
+  });
+
+  // Education funding per child (owner QA round 18, SPEC45 sec. 32):
+  // saved vs the real cost path - per child, with their own dates.
+  const thisYear = Number(today.slice(0, 4));
+  const eduOutlook = children.map((c) => {
+    const age = ageOn(c.dob, today);
+    let yearsToStart = 0;
+    if (!c.studentNow && c.collegeStartYear > 0) yearsToStart = Math.max(0, c.collegeStartYear - thisYear);
+    else if (!c.studentNow && age !== null) yearsToStart = Math.max(0, 18 - age);
+    const duration = c.studentNow && c.yearsLeftInCollege > 0 ? c.yearsLeftInCollege : c.eduDurationYears || 4;
+    const funding = educationFunding(c.eduBalance || 0, c.eduMonthly || 0, yearsToStart, duration, c.eduAnnualCost || 0, c.eduScholarshipYear || 0, g.assumedReturnPct);
+    return { c, yearsToStart, duration, funding };
+  });
+  const retireScored = adultOutlook.filter((a) => a.need > 0 && a.age !== null);
+  const retireTile = retireScored.length === 0 ? "Not scored yet" : retireScored.every((a) => a.onTrack) ? "On track" : (() => { const ages = retireScored.filter((a) => !a.onTrack).map((a) => a.realisticAge); return ages.some((x) => x === null) ? "Not by 80" : `Ready at ${Math.max(...(ages as number[]))}`; })();
+  const eduScored = eduOutlook.filter((e) => e.funding.pctFunded !== null);
+  const eduGapTotal = eduScored.reduce((s, e) => s + e.funding.gap, 0);
+  const eduTile = eduScored.length === 0 ? "Set a cost" : eduGapTotal <= 0 ? "Covered" : `${money(eduGapTotal)} gap`;
+  const LEVEL_WORDS: Record<string, string> = { "X": "rough estimate", "X+": "planning grade", "X++": "decision grade", "X+++": "filing grade" };
 
   useEffect(() => {
     getPushStatus().then(setPush);
@@ -108,7 +148,7 @@ export default function HomeScreen() {
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.household}>{state.intake.name || "Your household"}</Text>
-      <Text style={styles.subtitle}>Where do we stand? - {today}</Text>
+      <Text style={styles.subtitle}>Where do we stand? - {isoToUs(today)}</Text>
 
       <View style={styles.actionCard}>
         <Text style={styles.actionLabel}>NEXT ACTION</Text>
@@ -123,9 +163,13 @@ export default function HomeScreen() {
       <View style={styles.card}>
         <View style={styles.cardHead}>
           <Text style={styles.cardLabel}>🇺🇸 Federal refund projection</Text>
-          <Text style={[styles.bigValue, { color: fed >= fedLow && fed <= fedHigh ? GREEN : fed < fedLow ? RED : YELLOW }]}>{money(fed)}</Text>
+          {hasIncome && <Text style={[styles.bigValue, { color: fed >= fedLow && fed <= fedHigh ? GREEN : fed < fedLow ? RED : YELLOW }]}>{money(fed)}</Text>}
         </View>
-        <RefundGauge value={fed} low={fedLow} high={fedHigh} />
+        {hasIncome ? (
+          <RefundGauge value={fed} low={fedLow} high={fedHigh} />
+        ) : (
+          <Text style={styles.line}>No income added yet - this is not a $0 refund, it is a blank. Upload a payslip in Documents and HomeTower projects your refund against your {money(fedLow)} - {money(fedHigh)} target.</Text>
+        )}
       </View>
 
       <View style={styles.card}>
@@ -134,35 +178,84 @@ export default function HomeScreen() {
             <StateFlag state={state.intake.state} />
             <Text style={styles.cardLabel}>{state.intake.state} state refund projection</Text>
           </View>
-          <Text style={[styles.bigValue, { color: st >= g.stateRefundTargetLow && st <= g.stateRefundTargetHigh ? GREEN : st < g.stateRefundTargetLow ? RED : YELLOW }]}>{money(st)}</Text>
+          {hasIncome && <Text style={[styles.bigValue, { color: st >= g.stateRefundTargetLow && st <= g.stateRefundTargetHigh ? GREEN : st < g.stateRefundTargetLow ? RED : YELLOW }]}>{money(st)}</Text>}
         </View>
-        <RefundGauge value={st} low={g.stateRefundTargetLow} high={g.stateRefundTargetHigh} />
+        {hasIncome ? (
+          <RefundGauge value={st} low={g.stateRefundTargetLow} high={g.stateRefundTargetHigh} />
+        ) : (
+          <Text style={styles.line}>Same story on the state side: no income yet, so no projection. Your state target stays {money(g.stateRefundTargetLow)} - {money(g.stateRefundTargetHigh)}.</Text>
+        )}
       </View>
 
       <View style={styles.ringsRow}>
         <RingGauge pct={confidence.score} label={`Prediction confidence (${confidence.band})`} color={confColor} />
-        <RingGauge pct={retirementPct ?? 0} label={retirementPct === null ? "Retirement - set a target" : `Retirement - ${yearsToRetire} yrs`} color={ringColor(retirementPct)} />
-        <RingGauge pct={eduPct ?? 0} label={eduPct === null ? "Education - set a target" : `Education savings`} color={ringColor(eduPct)} />
+        <View style={styles.goalTiles}>
+          <View style={styles.goalTile}>
+            <Text style={styles.dualValue}>{retireTile}</Text>
+            <Text style={styles.statLabel}>Retirement at the ages you picked</Text>
+          </View>
+          <View style={styles.goalTile}>
+            <Text style={styles.dualValue}>{eduTile}</Text>
+            <Text style={styles.statLabel}>College funding, all children</Text>
+          </View>
+        </View>
       </View>
-      {(retirementPct !== null || eduPct !== null) && (
-        <Text style={styles.assumption}>Goal rings assume {g.assumedReturnPct}% yearly growth - an editable assumption in Intake, not a promise.</Text>
-      )}
+      <Text style={styles.assumption}>Outlooks below assume {g.assumedReturnPct}% yearly growth - an editable assumption in Intake, not a promise.</Text>
 
-      {children.length > 0 && (
+      {adults.length > 0 && (
         <View style={styles.card}>
-          <Text style={styles.cardLabel}>Education timing</Text>
-          {children.map((c) => (
-            <Text key={c.id} style={styles.line}>🎓 {educationLine(c.name || "Child", c.dob, c.studentNow, c.collegeStartYear, c.yearsLeftInCollege, today)}</Text>
+          <Text style={styles.cardLabel}>Retirement outlook - per person</Text>
+          {adultOutlook.map(({ m, age, need, years, projected, onTrack, realisticAge, reqMo, mo }) => (
+            <View key={m.id} style={styles.personBlock}>
+              <Text style={styles.personName}>{m.name || (m.role === "self" ? "You" : "Spouse")} - retire at {m.retireAge || 67}</Text>
+              {age === null ? (
+                <Text style={styles.line}>Add a date of birth in the {state.intake.name || "My House"} tab and HomeTower can time this.</Text>
+              ) : need <= 0 ? (
+                <Text style={styles.line}>Age {age}, {years} years to go. Add household income (or a personal target in the {state.intake.name || "My House"} tab) so HomeTower can estimate how much is enough.</Text>
+              ) : onTrack ? (
+                <Text style={styles.line}>🟢 On track: projected {money(projected)} by age {m.retireAge || 67} against about {money(need)} needed.</Text>
+              ) : (
+                <Text style={styles.line}>🔴 Not yet: projected {money(projected)} by age {m.retireAge || 67} against about {money(need)} needed. {realisticAge !== null ? `At today's pace the money is ready at ${realisticAge}.` : "At today's pace it is not ready even by 80."} Or save {money(reqMo)}/mo instead of {money(mo)}/mo to retire at {m.retireAge || 67}.</Text>
+              )}
+            </View>
           ))}
         </View>
       )}
 
-      <View style={styles.statsRow}>
-        <View style={styles.stat}><Text style={styles.statValue}>{(snap.marginalRate * 100).toFixed(0)}%</Text><Text style={styles.statLabel}>Marginal rate</Text></View>
-        <View style={styles.stat}><Text style={styles.statValue}>{money(snap.distanceToNextBracket)}</Text><Text style={styles.statLabel}>To next bracket</Text></View>
-        <View style={styles.stat}><Text style={styles.statValue}>{money(snap.totalTax)}</Text><Text style={styles.statLabel}>Total tax</Text></View>
-        <View style={styles.stat}><Text style={styles.statValue}>{level}</Text><Text style={styles.statLabel}>Accuracy level</Text></View>
-      </View>
+      {children.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>Education - timing and funding, per child</Text>
+          {eduOutlook.map(({ c, yearsToStart, duration, funding }) => (
+            <View key={c.id} style={styles.personBlock}>
+              <Text style={styles.line}>🎓 {educationLine(c.name || "Child", c.dob, c.studentNow, c.collegeStartYear, c.yearsLeftInCollege, today)}</Text>
+              {funding.pctFunded === null ? (
+                <Text style={styles.line}>Set the expected cost per year for {c.name || "this child"} in the {state.intake.name || "My House"} tab (in-state or out-of-state, with or without room & board) and HomeTower shows whether the savings cover it.</Text>
+              ) : (
+                <>
+                  <Text style={styles.line}>{funding.gap <= 0 ? "🟢" : funding.pctFunded >= 70 ? "🟡" : "🔴"} {duration} years at {money(c.eduAnnualCost || 0)}/yr{c.eduScholarshipYear ? ` minus ${money(c.eduScholarshipYear)}/yr scholarship` : ""} ({c.eduInState ? "in-state" : "out-of-state"}{c.eduRoomBoard ? ", with room & board" : ", no room & board"}): needs about {money(funding.needAtStart)} by the start{yearsToStart > 0 ? ` (${yearsToStart} yrs away)` : ""}.</Text>
+                  <Text style={styles.line}>Saved {money(c.eduBalance || 0)} + {money(c.eduMonthly || 0)}/mo projects to {money(funding.projectedAtStart)} - {funding.pctFunded}% funded{funding.gap > 0 ? `, a ${money(funding.gap)} gap` : ""}.</Text>
+                  {funding.gap > 0 && yearsToStart > 0 && <Text style={styles.line}>To close it: save {money(funding.requiredMonthly)}/mo instead of {money(c.eduMonthly || 0)}/mo.</Text>}
+                  {funding.gap > 0 && yearsToStart === 0 && <Text style={styles.line}>College is here - the gap has to come from cash flow, loans, or a cheaper plan.</Text>}
+                </>
+              )}
+            </View>
+          ))}
+        </View>
+      )}
+
+      {!hasIncome ? (
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>Your tax picture - waiting for income</Text>
+          <Text style={styles.line}>Once income is in, four numbers appear here in plain words: your top tax rate, how much room is left in that bracket, your projected total tax, and how solid these numbers are. Right now there is no income, so HomeTower shows nothing rather than a meaningless bracket.</Text>
+        </View>
+      ) : (
+        <View style={styles.statsRow}>
+          <View style={styles.stat}><Text style={styles.statValue}>{(snap.marginalRate * 100).toFixed(0)}%</Text><Text style={styles.statLabel}>Your top tax rate - each extra $1 of income is taxed at this rate</Text></View>
+          <View style={styles.stat}><Text style={styles.statValue}>{money(snap.distanceToNextBracket)}</Text><Text style={styles.statLabel}>Room left in this bracket before the rate goes up</Text></View>
+          <View style={styles.stat}><Text style={styles.statValue}>{money(snap.totalTax)}</Text><Text style={styles.statLabel}>Projected federal tax for the year</Text></View>
+          <View style={styles.stat}><Text style={styles.statValue}>{level}</Text><Text style={styles.statLabel}>How solid these numbers are: {LEVEL_WORDS[level] ?? level}</Text></View>
+        </View>
+      )}
 
       {(candidates.length > 0 || confidence.calibrationMissing) && (
         <View style={styles.card}>
@@ -199,7 +292,12 @@ const styles = StyleSheet.create({
   cardHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   cardLabel: { fontSize: 14, fontWeight: "700", color: NAVY },
   bigValue: { fontSize: 26, fontWeight: "800" },
-  ringsRow: { flexDirection: "row", justifyContent: "space-between", backgroundColor: "#FFFFFF", borderRadius: 14, paddingVertical: 12, paddingHorizontal: 6 },
+  ringsRow: { flexDirection: "row", justifyContent: "space-between", backgroundColor: "#FFFFFF", borderRadius: 14, paddingVertical: 12, paddingHorizontal: 6, gap: 8 },
+  goalTiles: { flex: 1, gap: 8, justifyContent: "center" },
+  goalTile: { backgroundColor: "#F4F7FA", borderRadius: 12, paddingVertical: 10, paddingHorizontal: 8, alignItems: "center" },
+  dualValue: { fontSize: 17, fontWeight: "800", color: NAVY, textAlign: "center" },
+  personBlock: { gap: 2, paddingTop: 6 },
+  personName: { fontSize: 15, fontWeight: "800", color: NAVY },
   assumption: { fontSize: 11, color: "#5A6B7C", textAlign: "center" },
   statsRow: { flexDirection: "row", gap: 8 },
   stat: { flex: 1, backgroundColor: "#FFFFFF", borderRadius: 12, paddingVertical: 10, alignItems: "center" },
