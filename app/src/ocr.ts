@@ -26,6 +26,18 @@ export async function pickImageUri(): Promise<{ uri: string | null; error: strin
   return { uri: result.assets[0]?.uri ?? null, error: null };
 }
 
+/** Multi-photo pick (owner request, 2026-11-07): several screenshots
+ * in one selection - e.g. the scrolling shots of one portfolio. Each
+ * is still read and confirmed ONE at a time (the confirm-per-reading
+ * rule); the app just walks the queue so the user picks once. */
+export async function pickImageUris(): Promise<{ uris: string[]; error: string | null }> {
+  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!perm.granted) return { uris: [], error: "Photo library permission not granted." };
+  const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.9, allowsMultipleSelection: true, selectionLimit: 10 });
+  if (result.canceled) return { uris: [], error: null };
+  return { uris: (result.assets ?? []).map((a) => a.uri).filter(Boolean), error: null };
+}
+
 export async function takePhotoUri(): Promise<{ uri: string | null; error: string | null }> {
   const perm = await ImagePicker.requestCameraPermissionsAsync();
   if (!perm.granted) return { uri: null, error: "Camera permission not granted." };
