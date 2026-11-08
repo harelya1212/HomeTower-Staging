@@ -10,6 +10,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { Platform } from "react-native";
 import type { RawField } from "../engine/extract.ts";
+import { recognizeWithWebOcr } from "./webOcr.ts";
 
 export interface OcrOutcome {
   stage: string;
@@ -61,7 +62,7 @@ export async function pickDocumentFile(): Promise<{ uri: string | null; name: st
 
 export async function recognizeOnDevice(uri: string): Promise<OcrOutcome> {
   if (Platform.OS === "web") {
-    return { stage: "web", text: "", error: "On-device OCR runs in the native app. On web, paste the statement text instead.", source: "none" };
+    return { stage: "web", text: "", error: "On-device OCR runs in the native app. On web, use a photo upload (web OCR) or paste the statement text instead.", source: "none" };
   }
   try {
     // Capability probe: result AND error both surface to the caller/UI.
@@ -74,6 +75,18 @@ export async function recognizeOnDevice(uri: string): Promise<OcrOutcome> {
   } catch (e) {
     return { stage: "mlkit-load", text: "", error: e instanceof Error ? e.message : String(e), source: "none" };
   }
+}
+
+/** Read text from a picked image FILE. Web: tesseract.js in the
+ * browser (src/webOcr.ts - the screenshot is read locally, nothing
+ * is uploaded). Native photo flows use URIs + ML Kit instead; this
+ * entry exists for the web file-input path. */
+export async function recognizeImageFile(file: File, onProgress?: (pct: number) => void): Promise<OcrOutcome> {
+  if (Platform.OS !== "web") {
+    return { stage: "file", text: "", error: "Image files are read on web; the native app reads photos from the library or camera.", source: "none" };
+  }
+  const r = await recognizeWithWebOcr(file, onProgress);
+  return { stage: r.stage, text: r.text, error: r.error, source: r.error ? "none" : "paste" };
 }
 
 export { textToRawFields } from "./textFields.ts";
