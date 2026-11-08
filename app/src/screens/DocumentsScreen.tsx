@@ -10,6 +10,7 @@ import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { classifyDocument, type Classification } from "../../engine/classify.ts";
 import { pickImageUri, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
+import type { RawField } from "../../engine/extract.ts";
 import { pickFile } from "../filePick";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
@@ -51,6 +52,7 @@ export default function DocumentsScreen() {
   const [extractionType, setExtractionType] = useState("payslip");
   const [detection, setDetection] = useState<Classification | null>(null);
   const [pendingText, setPendingText] = useState<string | null>(null);
+  const [pendingColumns, setPendingColumns] = useState<RawField[][] | null>(null);
   const [autoPaste, setAutoPaste] = useState("");
   const [expandedReq, setExpandedReq] = useState<string | null>(null);
   const requests = useMemo(
@@ -81,18 +83,24 @@ export default function DocumentsScreen() {
   // the app ALWAYS classifies what it read. With a named type it verifies
   // the name against the content; without one, the detected type is used.
   // Either way the user sees the reading and confirms before saving.
-  const runExtraction = (text: string, namedType?: string, pages?: string[]) => {
+  const runExtraction = (text: string, namedType?: string, pages?: string[], columnByPage?: RawField[][]) => {
     try {
-      const raw = textToRawFields(text);
-      if (!raw.length) {
+      const textRaw = textToRawFields(text);
+      if (!textRaw.length) {
         setOcrNote("No label-value pairs found in that text. Check the text and try again.");
         setExtraction(null);
         return;
       }
-      const detected = classifyDocument(raw, text);
+      const detected = classifyDocument(textRaw, text);
       const useType = namedType ?? detected.docType;
       setDetection(detected);
       setPendingText(text);
+      setPendingColumns(columnByPage ?? null);
+      // Column-aware pairs (form PDFs) ride along AFTER the text pairs
+      // in the general read - they fill what line pairing missed and
+      // never override a figure the text already paired.
+      const colFlat = columnByPage ? columnByPage.flat() : [];
+      const raw = [...textRaw, ...colFlat];
       let result = extractFields(raw, useType);
       // Prior-return scoping (real-file rehearsal, 2026-11-07): a full
       // client copy runs 100+ pages of schedules whose repeated labels
@@ -103,7 +111,16 @@ export default function DocumentsScreen() {
       if (useType === "prior_return" && pages && pages.length > 2) {
         const idx = pages.findIndex((p) => /u\.s\. individual income tax return/i.test(p));
         if (idx >= 0) {
-          const scopedRaw = textToRawFields(pages.slice(idx, idx + 2).join("\n"));
+          // On the 1040 pages the column pairs LEAD: the form prints
+          // its values in a right-hand column detached from the label
+          // rows, so geometry is the only reliable pairing there
+          // (column-aware round, 2026-11-07 - all five headline
+          // figures exact on a real client copy).
+          const scopedRaw = [
+            ...(columnByPage?.[idx] ?? []),
+            ...(columnByPage?.[idx + 1] ?? []),
+            ...textToRawFields(pages.slice(idx, idx + 2).join("\n")),
+          ];
           const scoped = extractFields(scopedRaw, "prior_return");
           // Prefer the scoped read only when its anchors beat the
           // whole-document read: schedule noise can fake figures, so
@@ -127,7 +144,8 @@ export default function DocumentsScreen() {
   const reextractAs = (docType: string) => {
     if (pendingText === null) return;
     try {
-      setExtraction(extractFields(textToRawFields(pendingText), docType));
+      const colFlat = pendingColumns ? pendingColumns.flat() : [];
+      setExtraction(extractFields([...textToRawFields(pendingText), ...colFlat], docType));
       setExtractionType(docType);
     } catch (e) {
       setOcrNote(e instanceof Error ? e.message : String(e));
@@ -169,7 +187,7 @@ export default function DocumentsScreen() {
           const outcome = await extractPdfTextFromBuffer(await f.arrayBuffer());
           if (outcome.error) { setFlowNote(`Could not read ${f.name}: ${outcome.error}`); return; }
           setFlowNote(null);
-          runExtraction(outcome.text, namedType, outcome.pages);
+          runExtraction(outcome.text, namedType, outcome.pages, outcome.columnByPage);
           return;
         }
         if (f.type.startsWith("image/")) {
@@ -188,7 +206,7 @@ export default function DocumentsScreen() {
         const outcome = await extractPdfText(uri);
         if (outcome.error) { setFlowNote(`PDF stage: ${outcome.error}`); return; }
         setFlowNote(null);
-        runExtraction(outcome.text, namedType, outcome.pages);
+        runExtraction(outcome.text, namedType, outcome.pages, outcome.columnByPage);
         return;
       }
       const outcome = await recognizeOnDevice(uri);
