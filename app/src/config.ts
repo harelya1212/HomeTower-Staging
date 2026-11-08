@@ -1,9 +1,9 @@
 // App configuration constants.
 // MARKET_API_BASE: the HomeTower backend (Firebase Cloud Functions -
-// see functions/ and MARKET_PUSH.md). Empty until the Firebase
-// project is created and the functions are deployed (one guided
-// step). While empty, web quote fetching reports "not connected"
-// honestly; the native app fetches quotes directly and the remote
-// market-close push activates when the backend + a native push
-// token exist.
-export const MARKET_API_BASE = "";
+// see functions/ and MARKET_PUSH.md). Project "hometower" created and
+// functions deployed 2026-11-08 (owner-guided session): quotes,
+// syncMarketHoldings and marketClosePush live in us-central1 on
+// Node 22. Web quote fetching goes through this base; the consent
+// sync posts here too. The remote market-close push still needs a
+// native push token (issued by the native app) to reach a device.
+export const MARKET_API_BASE = "https://us-central1-hometower.cloudfunctions.net";
