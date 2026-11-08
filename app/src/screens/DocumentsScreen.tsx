@@ -35,6 +35,18 @@ export default function DocumentsScreen() {
   const [pasteText, setPasteText] = useState("");
   const [ocrNote, setOcrNote] = useState<string | null>(null);
   const [flowNote, setFlowNote] = useState<string | null>(null);
+  // 529 assignment (owner QA round 19): a statement can fill a specific
+  // child's college funding - picked from the My House child card (via
+  // the store intent) or in the confirm card below.
+  const [assignChildId, setAssignChildId] = useState<string | null>(null);
+  const eduChildren = state.family.filter((m) => m.role === "child");
+  useEffect(() => {
+    if (state.eduAssignChildId) {
+      setAssignChildId(state.eduAssignChildId);
+      setSelectedType("529_statement");
+      update({ eduAssignChildId: null });
+    }
+  }, [state.eduAssignChildId]);
   const [extraction, setExtraction] = useState<ExtractionResult | null>(null);
   const [extractionType, setExtractionType] = useState("payslip");
   const [detection, setDetection] = useState<Classification | null>(null);
@@ -206,12 +218,27 @@ export default function DocumentsScreen() {
     };
     updateIntake({ documents: [...docs, record] });
     if (extractionType === "payslip") update({ payrollCheck: { lastConfirmedOn: null, consecutive: 0 } });
+    let assignNote = "";
+    if (extractionType === "529_statement" && assignChildId) {
+      const child = state.family.find((m) => m.id === assignChildId);
+      const bal = Number(extraction.fields["ending_balance"]);
+      const mo = Number(extraction.fields["monthly_contribution"]);
+      if (child && (Number.isFinite(bal) && bal > 0)) {
+        const patch: Record<string, number> = { eduBalance: bal };
+        if (Number.isFinite(mo) && mo > 0) patch.eduMonthly = mo;
+        update({ family: state.family.map((m) => (m.id === assignChildId ? { ...m, ...patch } : m)) });
+        assignNote = ` Filled ${child.name || "the child"}'s college funding from this statement: saved $${bal.toLocaleString("en-US")}${patch.eduMonthly ? `, monthly $${patch.eduMonthly.toLocaleString("en-US")}` : " (the statement shows no monthly contribution - the monthly figure stays as it was)"}.`;
+        setAssignChildId(null);
+      } else if (child) {
+        assignNote = ` Saved, but no balance could be read from it, so ${child.name || "the child"}'s college funding was not filled.`;
+      }
+    }
     setExtraction(null);
     setDetection(null);
     setPendingText(null);
     setPasteText("");
     setAutoPaste("");
-    setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).`);
+    setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).${assignNote}`);
   };
 
   const addManual = () => {
@@ -266,6 +293,15 @@ export default function DocumentsScreen() {
         The register of what the household has provided. Capture a document below: the text is read on this device,
         fields are extracted, and you confirm before anything is saved. Freshness is computed per document type.
       </Text>
+
+      {assignChildId && (
+        <View style={styles.assignBanner}>
+          <Text style={styles.assignText}>
+            Filling college savings for {state.family.find((m) => m.id === assignChildId)?.name || "your child"}: upload their 529 statement below (file, photo, or camera) and confirm - the saved balance goes onto their card, and the monthly contribution too if the statement shows one.
+          </Text>
+          <Pressable onPress={() => setAssignChildId(null)}><Text style={styles.remove}>Cancel assignment</Text></Pressable>
+        </View>
+      )}
 
       {docs.length === 0 && <Text style={styles.line}>No documents yet. Capture the first one below.</Text>}
       {docs.map((d, i) => {
@@ -572,6 +608,18 @@ export default function DocumentsScreen() {
           {Object.entries(extraction.fields).map(([k, v]) => (
             <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
           ))}
+          {extractionType === "529_statement" && eduChildren.length > 0 && (
+            <>
+              <Text style={styles.line}>Whose college savings is this? The balance (and monthly contribution, if shown) fills that child's funding:</Text>
+              <View style={styles.chips}>
+                {eduChildren.map((c) => (
+                  <Pressable key={c.id} style={[styles.chip, assignChildId === c.id && styles.chipSelected]} onPress={() => setAssignChildId(assignChildId === c.id ? null : c.id)}>
+                    <Text style={assignChildId === c.id ? styles.chipTextSelected : styles.chipText}>{c.name || "Child"}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          )}
           {Object.keys(extraction.fields).length === 0 && (
             <Text style={styles.line}>No known fields matched this document type. You can still save it as a register entry.</Text>
           )}
@@ -623,6 +671,8 @@ const styles = StyleSheet.create({
   statusChip: { borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 },
   statusChipText: { fontSize: 12, fontWeight: "700" },
   shortcutBox: { gap: 8, borderTopWidth: 1, borderTopColor: "#E3EAF0", paddingTop: 10 },
+  assignBanner: { backgroundColor: "#E6F4F6", borderRadius: 12, padding: 12, gap: 6, borderWidth: 1, borderColor: "#0E7C86" },
+  assignText: { fontSize: 15, color: "#0B2A4A", lineHeight: 21 },
   buttonGhost: { backgroundColor: "#E8EEF4", borderRadius: 8, paddingVertical: 10, alignItems: "center" },
   buttonGhostText: { color: NAVY, fontWeight: "700", fontSize: 14.5 },
 });
