@@ -64,7 +64,12 @@
       "ending total value": "ending_balance",
       "total ending value": "ending_balance",
       "beginning total value": "beginning_balance",
-      "total beginning value": "beginning_balance"
+      "total beginning value": "beginning_balance",
+      "net account value": "ending_balance",
+      "total account value": "ending_balance",
+      "current account value": "vested_balance",
+      "potential benefit value": "unvested_balance",
+      "cash": "cash_balance"
     },
     "529_statement": {
       "ending balance": "ending_balance",
@@ -99,5 +104,5 @@
   "pack": "ocr-field-maps",
   "source": "hct prototype textract_service.py",
   "status": "Ported from the hct prototype textract_service.py FIELD_MAPS. Data only - the OCR engine that consumes these maps is chosen separately (local-first per VISION).",
-  "version": "1.5"
+  "version": "1.6"
 }
