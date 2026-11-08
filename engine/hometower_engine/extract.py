@@ -83,8 +83,12 @@ def extract_fields(raw_fields: list[RawField], document_type: str,
         # long documents repeat labels in schedules and prose; an early
         # clean figure must not be overwritten by a later sentence, and
         # a prose value is replaced as soon as a real amount appears.
+        # One exception: a parsed ZERO is provisional - state forms
+        # print furniture like "Arizona Adjusted Gross Income ~ 00"
+        # ahead of the real federal figure, so a later non-zero amount
+        # replaces a zero (real packet rehearsal, 2026-11-07).
         if amount is not None:
-            if existing is None or isinstance(existing, str):
+            if existing is None or isinstance(existing, str) or (existing == 0 and amount != 0):
                 result.fields[field_name] = amount
                 result.field_confidence[field_name] = raw.confidence
                 confidences.append(raw.confidence)
