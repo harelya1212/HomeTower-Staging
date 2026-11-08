@@ -11,6 +11,7 @@ import { ageOn, earliestAgeReaching, educationFunding, educationLine, projectVal
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
+import { payslipForecast } from "../payslips.ts";
 import { fetchQuotes, type QuotesOutcome } from "../quotes";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 
@@ -26,15 +27,30 @@ export default function HomeScreen() {
   const { state, loaded } = useHousehold();
   const [push, setPush] = useState<PushStatus | null>(null);
 
+  const today = todayIso();
+  // Payslip-driven forecast (owner QA, 2026-11-08): when saved
+  // payslips project the year per earner (YTD anchor + remaining
+  // periods at the current run rate), THOSE figures drive the tax
+  // snapshot - projected W-2 taxable wages as income, projected
+  // withholding as withholding. The typed Intake numbers are the
+  // fallback for households without usable payslips, and the source
+  // line under the gauges says which one is live.
+  const slipFc = useMemo(
+    () => payslipForecast(state.intake.documents, state.family, state.jobs, today),
+    [state.intake.documents, state.family, state.jobs, today],
+  );
+  const effIncome = slipFc ? slipFc.projectedTaxable : state.grossIncome;
+  const effFederalWh = slipFc ? slipFc.projectedFederal : state.federalWithholdingYtd;
+  const effStateWh = slipFc ? slipFc.projectedState : state.stateWithholdingYtd;
+
   const snap = useMemo(() => {
     try {
-      return computeHouseholdTax(state.intake.filingStatus, state.grossIncome, state.federalWithholdingYtd, state.stateWithholdingYtd, state.ltcgIncome);
+      return computeHouseholdTax(state.intake.filingStatus, effIncome, effFederalWh, effStateWh, state.ltcgIncome);
     } catch {
       return null;
     }
-  }, [state]);
+  }, [state, effIncome, effFederalWh, effStateWh]);
 
-  const today = todayIso();
   const findings = useMemo(() => householdFreshness(state.intake.documents, today), [state.intake.documents, today]);
   const candidates = useMemo(() => reminderCandidates(state.intake.documents, today), [state.intake.documents, today]);
   const confidence = useMemo(() => predictionConfidence(state.intake, today), [state.intake, today]);
@@ -64,14 +80,14 @@ export default function HomeScreen() {
     .filter((m) => m.role === "child")
     .reduce((s, m) => s + (m.eduTarget || 0), 0);
   const children = state.family.filter((m) => m.role === "child");
-  const hasIncome = state.grossIncome > 0;
+  const hasIncome = effIncome > 0;
 
   // Retirement outlook per adult (owner QA round 18): not a ring - an
   // answer. Can this person retire at the age they chose, at today's
   // pace? If not, at what age does the money work, or what monthly
   // contribution makes the chosen age work?
   const adults = state.family.filter((m) => m.role === "self" || m.role === "spouse");
-  const householdNeed = retirementNeedEstimate(state.grossIncome);
+  const householdNeed = retirementNeedEstimate(effIncome);
   const adultOutlook = adults.map((m) => {
     const age = ageOn(m.dob, today);
     const owned = state.assets.filter((a) => (a.kind === "401k" || a.kind === "ira") && m.name.trim() !== "" && a.ownerName.trim().toLowerCase() === m.name.trim().toLowerCase());
@@ -204,6 +220,12 @@ export default function HomeScreen() {
           <Text style={styles.line}>Same story on the state side: no income yet, so no projection. Your state target stays {money(g.stateRefundTargetLow)} - {money(g.stateRefundTargetHigh)}.</Text>
         )}
       </View>
+
+      {slipFc && (
+        <Text style={styles.assumption}>
+          Forecast from your payslips: {slipFc.earners.map((e) => `${e.name.split(" ")[0]} through ${isoToUs(e.anchorEnd)}, + ${e.periodsRemaining} pay periods at the current rate`).join(" · ")}. Projected W-2 wages {money(slipFc.projectedTaxable)} for the year; the withholding in the gauges is projected to year-end, not yet paid. Remove the payslips and the typed Intake numbers take over again.
+        </Text>
+      )}
 
       <View style={styles.ringsRow}>
         <RingGauge pct={confidence.score} label={`Prediction confidence (${confidence.band})`} color={confColor} />

@@ -12,6 +12,7 @@ import { classifyDocument, type Classification } from "../../engine/classify.ts"
 import { pickImageUri, pickImageUris, recognizeImageFile, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
 import type { RawField } from "../../engine/extract.ts";
 import { parseHoldings, parsePlanAccount, positionValue, type HoldingsParse, type PlanAccount } from "../holdings.ts";
+import { parsePayslipRows } from "../payslipRows.ts";
 import { pickFile, pickImageFiles } from "../filePick";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
@@ -112,7 +113,20 @@ export default function DocumentsScreen() {
       // in the general read - they fill what line pairing missed and
       // never override a figure the text already paired.
       const colFlat = columnByPage ? columnByPage.flat() : [];
-      const raw = [...textRaw, ...colFlat];
+      let raw = [...textRaw, ...colFlat];
+      // Payslips: the structure-aware row parser leads (Workday-style
+      // Amount|YTD tables defeat generic line pairing - measured
+      // baseline: strong classification, ZERO fields). Lines the row
+      // parser consumed are removed before generic pairing so a
+      // YTD-only row cannot invent a current-period figure.
+      if (useType === "payslip") {
+        const slip = parsePayslipRows(text);
+        if (slip.fields.length > 0) {
+          const consumed = new Set(slip.consumedLines);
+          const restText = text.split(/\r?\n/).filter((_, i) => !consumed.has(i)).join("\n");
+          raw = [...slip.fields, ...textToRawFields(restText), ...colFlat];
+        }
+      }
       let result = extractFields(raw, useType);
       // Prior-return scoping (real-file rehearsal, 2026-11-07): a full
       // client copy runs 100+ pages of schedules whose repeated labels
@@ -157,7 +171,16 @@ export default function DocumentsScreen() {
     if (pendingText === null) return;
     try {
       const colFlat = pendingColumns ? pendingColumns.flat() : [];
-      setExtraction(extractFields([...textToRawFields(pendingText), ...colFlat], docType));
+      let raw = [...textToRawFields(pendingText), ...colFlat];
+      if (docType === "payslip") {
+        const slip = parsePayslipRows(pendingText);
+        if (slip.fields.length > 0) {
+          const consumed = new Set(slip.consumedLines);
+          const restText = pendingText.split(/\r?\n/).filter((_, i) => !consumed.has(i)).join("\n");
+          raw = [...slip.fields, ...textToRawFields(restText), ...colFlat];
+        }
+      }
+      setExtraction(extractFields(raw, docType));
       setExtractionType(docType);
     } catch (e) {
       setOcrNote(e instanceof Error ? e.message : String(e));
@@ -312,6 +335,13 @@ export default function DocumentsScreen() {
       if (Number.isFinite(vested) && vested > 0 && pendingPlan.lastPrice && pendingPlan.lastPrice > 0) {
         savedFields["plan_shares"] = String(Math.round((vested / pendingPlan.lastPrice) * 1000) / 1000);
       }
+    }
+    if (extractionType === "payslip") {
+      // A bonus run ("On Demand Payment") is not a regular pay cycle:
+      // its YTD is the freshest anchor, but its per-period figures
+      // must never become the run rate. The projection keeps the two
+      // apart by this marker.
+      savedFields["payslip_kind"] = pendingText && /on demand/i.test(pendingText) ? "bonus" : "regular";
     }
     const record: DocumentRecord = {
       docType: extractionType,

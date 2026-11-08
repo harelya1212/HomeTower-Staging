@@ -6,6 +6,7 @@ import { downloadBackup, pickAndRestore } from "../backup.ts";
 import { getPushStatus, isPushEnabled, registerForPush, type PushStatus } from "../push.ts";
 import { todayIso, useHousehold } from "../store.tsx";
 import { newDeviceSecret, syncMarketHoldings, withdrawMarketConsent } from "../marketSync.ts";
+import { payslipForecast } from "../payslips.ts";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
 const FILING = ["married_filing_jointly", "single", "head_of_household", "married_filing_separately"];
@@ -93,6 +94,9 @@ export default function IntakeScreen() {
       <Toggle label="Capital-loss carryforward is known" value={!!intake.capitalLossCarryforwardKnown} onChange={(v) => updateIntake({ capitalLossCarryforwardKnown: v })} />
 
       <Text style={styles.section}>Current numbers (year to date)</Text>
+      {(() => { const fc = payslipForecast(intake.documents, state.family, state.jobs, todayIso()); return fc ? (
+        <Text style={styles.note}>Your saved payslips currently drive the Home forecast ({fc.earners.map((e) => e.name.split(" ")[0]).join(" + ")}), projected to year-end. The three numbers below are the fallback HomeTower uses when no payslip projects - keep them roughly current anyway.</Text>
+      ) : null; })()}
       <Field label="Gross income ($)" value={String(state.grossIncome || "")} numeric onChange={(v) => update({ grossIncome: num(v) })} />
       <Field label="Federal withholding YTD ($)" value={String(state.federalWithholdingYtd || "")} numeric onChange={(v) => update({ federalWithholdingYtd: num(v) })} />
       <Field label="State withholding YTD ($)" value={String(state.stateWithholdingYtd || "")} numeric onChange={(v) => update({ stateWithholdingYtd: num(v) })} />
