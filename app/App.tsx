@@ -5,6 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import React from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
 import AdBanner, { AD_BANNER_HEIGHT } from "./src/components/AdBanner.tsx";
+import { checkBuildFreshness } from "./src/buildCheck.ts";
 import DocumentsScreen from "./src/screens/DocumentsScreen.tsx";
 import HomeScreen, { NAVY, TEAL } from "./src/screens/HomeScreen.tsx";
 import IntakeScreen from "./src/screens/IntakeScreen.tsx";
@@ -50,6 +51,9 @@ const renderMyHouseLabel = ({ color }: { color: string }) => <MyHouseTabLabel co
 
 function Shell() {
   const { state, loaded } = useHousehold();
+  React.useEffect(() => {
+    checkBuildFreshness();
+  }, []);
   if (!loaded) return null;
   if (!state.onboarded) return <OnboardingScreen />;
   return (
