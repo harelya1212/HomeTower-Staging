@@ -76,10 +76,19 @@
       "overpaid": "refund",
       "amount you owe": "amount_owed"
     },
-    "other": {}
+    "other": {},
+    "pension_statement": {
+      "account value": "ending_balance",
+      "ending balance": "ending_balance",
+      "present value": "ending_balance",
+      "accrued benefit": "monthly_benefit",
+      "monthly benefit": "monthly_benefit",
+      "estimated monthly benefit": "monthly_benefit",
+      "normal retirement benefit": "monthly_benefit"
+    }
   },
   "pack": "ocr-field-maps",
   "source": "hct prototype textract_service.py",
   "status": "Ported from the hct prototype textract_service.py FIELD_MAPS. Data only - the OCR engine that consumes these maps is chosen separately (local-first per VISION).",
-  "version": "1.2"
+  "version": "1.3"
 }
