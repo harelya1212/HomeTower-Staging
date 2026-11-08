@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HomeTower - Ongoing Center sketch</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #dfe5ec; color: #12212e; }
+  .phone { max-width: 430px; margin: 0 auto; background: #eef1f5; min-height: 100vh; padding-bottom: 150px; position: relative; }
+  .brand { background: linear-gradient(180deg, #0a2e4f, #071f38); color: #fff; text-align: center; padding: 16px 0 12px; font-size: 24px; font-weight: 800; letter-spacing: .3px; position: sticky; top: 0; z-index: 5; }
+  .brand .mark { display: inline-block; background: #0f766e; border-radius: 8px; padding: 2px 8px; margin-right: 8px; }
+  .wrap { padding: 14px 14px 0; }
+  .sketch-note { background: #fff7d6; border: 1px solid #e3cf6b; color: #6b5b00; border-radius: 10px; padding: 8px 12px; font-size: 13.5px; margin-bottom: 12px; text-align: center; }
+  h1 { font-size: 22px; margin-bottom: 2px; }
+  .sub { font-size: 15px; color: #44566b; margin-bottom: 12px; line-height: 1.35; }
+  .card { background: #fff; border-radius: 14px; padding: 13px 14px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(10,40,70,.10); border-left: 6px solid #9fb2c5; }
+  .card.stale { border-left-color: #d33f2e; }
+  .card.aging { border-left-color: #e8a13a; }
+  .card.missing { border-left-color: #7a8a9c; }
+  .card.fresh { border-left-color: #1d9e75; }
+  .card.event { border-left-color: #0f766e; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .name { font-size: 17.5px; font-weight: 700; }
+  .chip { font-size: 12.5px; font-weight: 700; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+  .chip.stale { background: #fde3df; color: #a02c1d; }
+  .chip.aging { background: #fdf0da; color: #8a5a00; }
+  .chip.missing { background: #e5ebf1; color: #44566b; }
+  .chip.fresh { background: #ddf3e8; color: #0c6b4a; }
+  .chip.event { background: #d9f0ec; color: #0b5a52; }
+  .meta { font-size: 14px; color: #44566b; margin-top: 5px; line-height: 1.4; }
+  .actions { display: flex; gap: 8px; margin-top: 10px; }
+  .btn { flex: 1; text-align: center; border-radius: 10px; padding: 10px 6px; font-size: 15px; font-weight: 700; cursor: pointer; }
+  .btn.primary { background: #0f766e; color: #fff; }
+  .btn.ghost { background: #e8eef4; color: #0a2e4f; flex: 0 0 38%; }
+  .section-title { font-size: 16px; font-weight: 800; margin: 18px 0 8px; color: #0a2e4f; }
+  .need { background: #fff; border-radius: 12px; padding: 11px 14px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(10,40,70,.08); font-size: 15.5px; }
+  .ad { position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%); width: min(430px, 100%); background: #0a2e4f; color: #dce7f2; padding: 9px 14px; font-size: 13.5px; z-index: 6; }
+  .ad b { color: #fff; }
+  .ad .tag { border: 1px solid #f2c94c; color: #f2c94c; border-radius: 4px; padding: 0 4px; font-size: 11px; margin-right: 6px; }
+  .tabs { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); width: min(430px, 100%); background: #fff; border-top: 1px solid #ccd6e0; display: flex; z-index: 6; }
+  .tab { flex: 1; text-align: center; padding: 8px 0 10px; font-size: 12.5px; font-weight: 700; color: #7a8a9c; }
+  .tab .ic { font-size: 21px; display: block; }
+  .tab.active { color: #0f766e; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="brand"><span class="mark">▲</span>HomeTower</div>
+  <div class="wrap">
+    <div class="sketch-note">Design sketch - sample data, to approve the layout before building</div>
+    <h1>Ongoing center</h1>
+    <div class="sub">Everything that repeats - payslips, statements, events. Sorted by urgency: what needs you first is on top. Upload straight from each row.</div>
+
+    <div class="card stale">
+      <div class="row"><div class="name">🧾 Payslips</div><div class="chip stale">STALE - update</div></div>
+      <div class="meta">Last: Oct 24 · Expected every ~14 days · 12 days overdue<br>Shortcut available: confirm "no change" instead of uploading</div>
+      <div class="actions"><div class="btn primary">Upload a payslip</div><div class="btn ghost">No change</div></div>
+    </div>
+
+    <div class="card missing">
+      <div class="row"><div class="name">📈 Stocks &amp; brokerage</div><div class="chip missing">MISSING</div></div>
+      <div class="meta">No statement yet · Expected monthly · Needed for concentration + TaxImpact</div>
+      <div class="actions"><div class="btn primary">Upload a statement</div><div class="btn ghost">History (0)</div></div>
+    </div>
+
+    <div class="card aging">
+      <div class="row"><div class="name">🏦 401(k)</div><div class="chip aging">AGING</div></div>
+      <div class="meta">Last: Aug 30 · Expected every ~90 days · Update within 12 days</div>
+      <div class="actions"><div class="btn primary">Upload a statement</div><div class="btn ghost">History (2)</div></div>
+    </div>
+
+    <div class="card event">
+      <div class="row"><div class="name">🎁 Bonuses &amp; RSU / ESPP</div><div class="chip event">EVENTS</div></div>
+      <div class="meta">Last event: RSU vest, Sep 15 · Next expected: December bonus<br>Bonuses also appear inside payslips - events keep their own timeline</div>
+      <div class="actions"><div class="btn primary">Add an event</div><div class="btn ghost">Upload plan doc</div></div>
+    </div>
+
+    <div class="card missing">
+      <div class="row"><div class="name">🏛️ Pension</div><div class="chip missing">MISSING</div></div>
+      <div class="meta">No pension statement yet · Expected yearly</div>
+      <div class="actions"><div class="btn primary">Upload a statement</div><div class="btn ghost">History (0)</div></div>
+    </div>
+
+    <div class="card fresh">
+      <div class="row"><div class="name">🩺 HSA</div><div class="chip fresh">UP TO DATE</div></div>
+      <div class="meta">Last: Oct 28 · Expected every ~90 days</div>
+      <div class="actions"><div class="btn primary">Upload a statement</div><div class="btn ghost">History (3)</div></div>
+    </div>
+
+    <div class="card fresh">
+      <div class="row"><div class="name">🎓 529 education</div><div class="chip fresh">UP TO DATE</div></div>
+      <div class="meta">Last: Oct 12 · Expected every ~90 days · Per-child view inside</div>
+      <div class="actions"><div class="btn primary">Upload a statement</div><div class="btn ghost">History (1)</div></div>
+    </div>
+
+    <div class="section-title">One-time &amp; profile documents</div>
+    <div class="need"><span>Last year's filed tax return (calibration)</span><span class="chip fresh">HAVE IT</span></div>
+    <div class="need"><span>W-2 - when it arrives (January)</span><span class="chip missing">MISSING</span></div>
+    <div class="need"><span>1098-T - Ella / Shahar tuition</span><span class="chip missing">MISSING</span></div>
+  </div>
+
+  <div class="ad"><span class="tag">AD</span><b>HomeTower is free</b> - supported by ads</div>
+  <div class="tabs">
+    <div class="tab"><span class="ic">🏠</span>Home</div>
+    <div class="tab active"><span class="ic">📄</span>Documents</div>
+    <div class="tab"><span class="ic">🏢</span>Harel</div>
+    <div class="tab"><span class="ic">📊</span>Plan</div>
+    <div class="tab"><span class="ic">👤</span>Intake</div>
+  </div>
+</div>
+</body>
+</html>
