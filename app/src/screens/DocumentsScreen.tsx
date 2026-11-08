@@ -83,8 +83,14 @@ export default function DocumentsScreen() {
         if (idx >= 0) {
           const scopedRaw = textToRawFields(pages.slice(idx, idx + 2).join("\n"));
           const scoped = extractFields(scopedRaw, "prior_return");
-          const numeric = Object.values(scoped.fields).filter((v) => typeof v === "number").length;
-          if (numeric >= 2) result = scoped;
+          // Prefer the scoped read only when its anchors beat the
+          // whole-document read: schedule noise can fake figures, so
+          // count positive AGI / total tax / owed-or-refund on each.
+          const anchors = (f: Record<string, number | string>) =>
+            (typeof f.adjusted_gross_income === "number" && f.adjusted_gross_income > 0 ? 1 : 0) +
+            (typeof f.total_tax === "number" && f.total_tax > 0 ? 1 : 0) +
+            ((typeof f.amount_owed === "number" && f.amount_owed > 0) || (typeof f.refund === "number" && f.refund > 0) ? 1 : 0);
+          if (anchors(scoped.fields) > anchors(result.fields)) result = scoped;
         }
       }
       setExtraction(result);
