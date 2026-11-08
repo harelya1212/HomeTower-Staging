@@ -191,3 +191,16 @@ def test_extract_first_parsed_amount_wins():
     ]
     out = extract_fields(fields, "prior_return")
     assert out.fields.get("adjusted_gross_income") == 338962.0, out.fields
+
+
+def test_extract_guards_against_form_furniture():
+    from hometower_engine.extract import extract_fields, RawField
+    fields = [
+        RawField("REFUND", "~~~~~~~", 0.9),                       # punctuation value + short fuzzy key
+        RawField("Enter the amount of refund", "7177609430", 0.9),  # digit fragment over the cap
+        RawField("Adjusted gross income", "338,962", 0.9),
+    ]
+    out = extract_fields(fields, "prior_return")
+    assert "refund" not in out.fields, out.fields
+    assert "total_payments" not in out.fields, out.fields
+    assert out.fields.get("adjusted_gross_income") == 338962.0, out.fields
