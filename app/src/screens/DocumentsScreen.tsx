@@ -11,7 +11,7 @@ import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { classifyDocument, type Classification } from "../../engine/classify.ts";
 import { pickImageUri, pickImageUris, recognizeImageFile, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
 import type { RawField } from "../../engine/extract.ts";
-import { parseHoldings, positionValue, type HoldingsParse } from "../holdings.ts";
+import { parseHoldings, parsePlanAccount, positionValue, type HoldingsParse, type PlanAccount } from "../holdings.ts";
 import { pickFile, pickImageFiles } from "../filePick";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
@@ -56,6 +56,7 @@ export default function DocumentsScreen() {
   const [pendingText, setPendingText] = useState<string | null>(null);
   const [pendingColumns, setPendingColumns] = useState<RawField[][] | null>(null);
   const [pendingHoldings, setPendingHoldings] = useState<HoldingsParse | null>(null);
+  const [pendingPlan, setPendingPlan] = useState<PlanAccount | null>(null);
   // Multi-photo batch: the user picks several screenshots at once;
   // each is still read and confirmed one at a time, the queue just
   // walks itself after every confirm/discard.
@@ -106,6 +107,7 @@ export default function DocumentsScreen() {
       setPendingColumns(columnByPage ?? null);
       const hp = parseHoldings(text);
       setPendingHoldings(hp.positions.length > 0 ? hp : null);
+      setPendingPlan(parsePlanAccount(text));
       // Column-aware pairs (form PDFs) ride along AFTER the text pairs
       // in the general read - they fill what line pairing missed and
       // never override a figure the text already paired.
@@ -299,6 +301,10 @@ export default function DocumentsScreen() {
     if (extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.cash !== null && savedFields["cash_balance"] === undefined) {
       savedFields["cash_balance"] = String(pendingHoldings.cash);
     }
+    if (extractionType === "brokerage_statement" && pendingPlan) {
+      savedFields["account_ticker"] = pendingPlan.ticker;
+      if (pendingPlan.company) savedFields["account_company"] = pendingPlan.company;
+    }
     const record: DocumentRecord = {
       docType: extractionType,
       status: extraction.status,
@@ -328,6 +334,7 @@ export default function DocumentsScreen() {
     setDetection(null);
     setPendingText(null);
     setPendingHoldings(null);
+    setPendingPlan(null);
     setPasteText("");
     setAutoPaste("");
     const moreComing = photoBatch && photoBatch.queue.length > 0 ? ` Screenshot ${photoBatch.done + 1} of ${photoBatch.total} is being read now.` : "";
@@ -503,7 +510,7 @@ export default function DocumentsScreen() {
                   {info.ofType.length === 0 && <Text style={styles.line}>No documents of this type yet.</Text>}
                   {info.ofType.map((d, i) => (
                     <Text key={i} style={styles.line}>
-                      {d.capturedOn ? isoToUs(d.capturedOn) : "date unknown"} - {d.status} - confidence {d.confidence}{d.holdings && d.holdings.length > 0 ? ` - ${d.holdings.length} positions (${d.holdings.map((h) => h.ticker).join(", ")})` : ""}
+                      {d.capturedOn ? isoToUs(d.capturedOn) : "date unknown"} - {d.status} - confidence {d.confidence}{d.holdings && d.holdings.length > 0 ? ` - ${d.holdings.length} positions (${d.holdings.map((h) => h.ticker).join(", ")})` : ""}{d.fields?.["account_ticker"] ? ` - ${d.fields["account_ticker"]} stock plan` : ""}
                     </Text>
                   ))}
                 </View>
@@ -705,6 +712,20 @@ export default function DocumentsScreen() {
           {Object.entries(extraction.fields).map(([k, v]) => (
             <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
           ))}
+          {extractionType === "brokerage_statement" && pendingPlan && (
+            <>
+              <Text style={styles.line}>Stock plan account: {pendingPlan.ticker}{pendingPlan.company ? ` - ${pendingPlan.company}` : ""}</Text>
+              {(() => {
+                const vested = Number(extraction.fields["vested_balance"]);
+                const unvested = Number(extraction.fields["unvested_balance"]);
+                const total = Number(extraction.fields["ending_balance"]);
+                if (Number.isFinite(vested) && Number.isFinite(unvested) && Number.isFinite(total) && Math.abs(vested + unvested - total) <= 1) {
+                  return <Text style={styles.line}>Vested ${vested.toLocaleString("en-US")} + not yet vested ${unvested.toLocaleString("en-US")} = ${total.toLocaleString("en-US")} - the split ties to the total.</Text>;
+                }
+                return null;
+              })()}
+            </>
+          )}
           {extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.positions.length > 0 && (
             <>
               <Text style={styles.line}>Positions read from this screenshot - check them before saving:</Text>
@@ -753,7 +774,7 @@ export default function DocumentsScreen() {
                 : `Confirm and save as ${extractionType}`}
             </Text>
           </Pressable>
-          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); advanceBatch(); }}>
+          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); setPendingPlan(null); advanceBatch(); }}>
             <Text style={styles.remove}>{photoBatch ? `Discard (${photoBatch.done} of ${photoBatch.total})` : "Discard"}</Text>
           </Pressable>
         </View>
