@@ -126,3 +126,15 @@ in this order:
   point of the basic plan. The intake always asks for it; while it is
   missing the confidence report names it as a detractor and the app
   keeps asking.
+
+## Market-close report + push (owner, 2026-11-07 - added to Phase 1 in full)
+
+Daily market-close report in the owner's format (per-holding close
++ daily %, day-gain footer), computed from the user's entered
+holdings and live closing prices: composition engine + Home card
++ 16:30 ET weekday local reminders built now; the remote push
+sender (Cloud Functions) is code-complete with consent-gated
+holdings sync (OFF by default - only tickers, quantities, cash
+total and the push token may leave the device), and activates
+with the Firebase project + native token steps. MARKET_PUSH.md.
+
