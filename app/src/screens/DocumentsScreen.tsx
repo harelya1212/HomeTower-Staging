@@ -1,6 +1,6 @@
 import { useNavigation } from "@react-navigation/native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { predictionConfidence } from "../../engine/confidence.ts";
 import { extractFields, type ExtractionResult } from "../../engine/extract.ts";
 import { documentFreshness, FRESHNESS_WINDOW_DAYS, householdFreshness } from "../../engine/freshness.ts";
@@ -9,10 +9,10 @@ import type { EquityEvent } from "../store.tsx";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { classifyDocument, type Classification } from "../../engine/classify.ts";
-import { pickImageUri, pickImageUris, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
+import { pickImageUri, pickImageUris, recognizeImageFile, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
 import type { RawField } from "../../engine/extract.ts";
 import { parseHoldings, positionValue, type HoldingsParse } from "../holdings.ts";
-import { pickFile } from "../filePick";
+import { pickFile, pickImageFiles } from "../filePick";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
@@ -58,7 +58,8 @@ export default function DocumentsScreen() {
   // Multi-photo batch: the user picks several screenshots at once;
   // each is still read and confirmed one at a time, the queue just
   // walks itself after every confirm/discard.
-  const [photoBatch, setPhotoBatch] = useState<{ queue: string[]; namedType?: string; total: number; done: number } | null>(null);
+  type PhotoItem = { uri: string } | { file: File };
+  const [photoBatch, setPhotoBatch] = useState<{ queue: PhotoItem[]; namedType?: string; total: number; done: number } | null>(null);
   const [autoPaste, setAutoPaste] = useState("");
   const [expandedReq, setExpandedReq] = useState<string | null>(null);
   const requests = useMemo(
@@ -160,8 +161,10 @@ export default function DocumentsScreen() {
     }
   };
 
-  const processPhotoUri = async (uri: string, namedType?: string, batchActive = false) => {
-    const outcome = await recognizeOnDevice(uri);
+  const processPhotoItem = async (item: PhotoItem, namedType?: string, batchActive = false, batchLabel?: string) => {
+    const outcome = "file" in item
+      ? await recognizeImageFile(item.file, batchLabel ? (pct) => setOcrNote(`${batchLabel} - reading ${pct}%`) : undefined)
+      : await recognizeOnDevice(item.uri);
     if (outcome.error) {
       setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}${batchActive ? " The rest of the batch was not read - pick the remaining screenshots again." : ""}`);
       setPhotoBatch(null);
@@ -175,7 +178,18 @@ export default function DocumentsScreen() {
     const [next, ...rest] = photoBatch.queue;
     const nb = { queue: rest, namedType: photoBatch.namedType, total: photoBatch.total, done: photoBatch.done + 1 };
     setPhotoBatch(nb);
-    void processPhotoUri(next, nb.namedType, true);
+    void processPhotoItem(next, nb.namedType, true, `Screenshot ${nb.done} of ${nb.total}`);
+  };
+
+  const startPhotoBatch = async (items: PhotoItem[], namedType?: string) => {
+    if (items.length === 1) {
+      setPhotoBatch(null);
+      await processPhotoItem(items[0], namedType);
+      return;
+    }
+    setPhotoBatch({ queue: items.slice(1), namedType, total: items.length, done: 1 });
+    setOcrNote(`Reading screenshot 1 of ${items.length} - confirm or discard each reading; the next screenshot follows automatically.`);
+    await processPhotoItem(items[0], namedType, true, `Screenshot 1 of ${items.length}`);
   };
 
   const scanPhoto = async (source: "upload" | "camera", namedType?: string) => {
@@ -184,20 +198,31 @@ export default function DocumentsScreen() {
       const { uri, error } = await takePhotoUri();
       if (error) { setOcrNote(error); return; }
       if (!uri) return;
-      await processPhotoUri(uri, namedType);
+      await processPhotoItem({ uri }, namedType);
+      return;
+    }
+    // Web (owner QA round 25): the photo-library shim resolves empty
+    // inside an iOS standalone web app - the user picks, taps the
+    // checkmark, and nothing arrives, silently. Web therefore picks
+    // through the platform file input (filePick.web) and reads with
+    // web OCR; a cancel is reported, never silent.
+    if (Platform.OS === "web") {
+      const picked = await pickImageFiles();
+      if (picked.error) { setOcrNote(picked.error); return; }
+      if (picked.cancelled || !picked.files.length) {
+        setOcrNote("No photo reached HomeTower - the picker closed without a selection arriving. Please try again.");
+        return;
+      }
+      await startPhotoBatch(picked.files.map((file) => ({ file })), namedType);
       return;
     }
     const { uris, error } = await pickImageUris();
     if (error) { setOcrNote(error); return; }
-    if (!uris.length) return;
-    if (uris.length === 1) {
-      setPhotoBatch(null);
-      await processPhotoUri(uris[0], namedType);
+    if (!uris.length) {
+      setOcrNote("No photo reached HomeTower - the picker closed without a selection arriving. Please try again.");
       return;
     }
-    setPhotoBatch({ queue: uris.slice(1), namedType, total: uris.length, done: 1 });
-    setOcrNote(`Reading screenshot 1 of ${uris.length} - confirm or discard each reading; the next screenshot follows automatically.`);
-    await processPhotoUri(uris[0], namedType, true);
+    await startPhotoBatch(uris.map((uri) => ({ uri })), namedType);
   };
 
   // Owner QA round 6: a real FILE upload. The image picker greys PDFs
@@ -229,7 +254,7 @@ export default function DocumentsScreen() {
           return;
         }
         if (f.type.startsWith("image/")) {
-          const outcome = await recognizeOnDevice(URL.createObjectURL(f));
+          const outcome = await recognizeImageFile(f);
           if (outcome.error) { setFlowNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
           setFlowNote(null);
           runExtraction(outcome.text, namedType);
