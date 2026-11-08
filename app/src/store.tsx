@@ -30,6 +30,8 @@ export interface UiMember {
   role: "self" | "spouse" | "child" | "other";
   dob: string; // YYYY-MM-DD or ""
   retireAge: number; // adults: planned retirement age
+  retireTarget: number; // adults: personal retirement target $, 0 = unset (owner QA round 8: per person, not one household figure)
+  eduTarget: number; // children: education target for THIS child $, 0 = unset (owner QA round 8: per child)
   studentNow: boolean; // children: currently in college
   collegeStartYear: number; // children: 0 = unknown
   yearsLeftInCollege: number; // children who are students now
@@ -149,7 +151,7 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     ...parsed,
     intake: { ...d.intake, ...(parsed.intake ?? {}) },
     goals: { ...d.goals, ...(parsed.goals ?? {}) },
-    family: parsed.family ?? [],
+    family: (parsed.family ?? []).map((m) => ({ retireTarget: 0, eduTarget: 0, ...m })),
     jobs: parsed.jobs ?? [],
     assets: parsed.assets ?? [],
     payrollCheck: parsed.payrollCheck ?? { lastConfirmedOn: null, consecutive: 0 },
