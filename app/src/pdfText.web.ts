@@ -20,10 +20,15 @@
 //    The worker already loaded from this CDN since round 6; the
 //    DOCUMENT never leaves the device - only the library code loads.
 import { itemsToLines, type TextItemLike } from "./pdfLines.ts";
+import { columnRawFields } from "./pdfColumns.ts";
+import type { RawField } from "../engine/extract.ts";
 
 export interface PdfTextOutcome {
   text: string;
   pages: string[];
+  /** Column-aware label-value pairs per page (form PDFs like the
+   * 1040, whose value column detaches from its labels in plain text). */
+  columnByPage: RawField[][];
   stage: string;
   error?: string;
 }
@@ -33,7 +38,7 @@ export async function extractPdfText(uri: string): Promise<PdfTextOutcome> {
     const data = await (await fetch(uri)).arrayBuffer();
     return await extractPdfTextFromBuffer(data);
   } catch (e) {
-    return { text: "", pages: [], stage: "pdf", error: e instanceof Error ? e.message : String(e) };
+    return { text: "", pages: [], columnByPage: [], stage: "pdf", error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -47,11 +52,12 @@ export async function extractPdfTextFromBuffer(data: ArrayBuffer): Promise<PdfTe
     pdfjs = await nativeImport("https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.mjs");
     pdfjs.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.worker.min.mjs";
   } catch (e) {
-    return { text: "", pages: [], stage: "pdf-load", error: e instanceof Error ? e.message : String(e) };
+    return { text: "", pages: [], columnByPage: [], stage: "pdf-load", error: e instanceof Error ? e.message : String(e) };
   }
   try {
     const pdf = await pdfjs.getDocument({ data }).promise;
     const pages: string[] = [];
+    const columnByPage: RawField[][] = [];
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
       const content = await page.getTextContent();
@@ -59,18 +65,30 @@ export async function extractPdfTextFromBuffer(data: ArrayBuffer): Promise<PdfTe
       // fragments are joined without spaces, real word gaps get one
       // space - the naive join made every label unmatchable.
       pages.push(itemsToLines(content.items as TextItemLike[]).join("\n"));
+      // Column-aware pairs from the same items (src/pdfColumns.ts).
+      columnByPage.push(
+        columnRawFields(
+          (content.items as Array<{ str: string; transform: number[]; width: number }>).map((i) => ({
+            str: i.str,
+            x: i.transform[4],
+            y: i.transform[5],
+            width: i.width,
+          })),
+        ),
+      );
     }
     const text = pages.join("\n");
     if (!text.trim()) {
       return {
         text: "",
         pages,
+        columnByPage,
         stage: "pdf",
         error: "This PDF has no readable text layer (it looks like a scanned image). Photograph the pages instead, or paste the text.",
       };
     }
-    return { text, pages, stage: "pdf" };
+    return { text, pages, columnByPage, stage: "pdf" };
   } catch (e) {
-    return { text: "", pages: [], stage: "pdf", error: e instanceof Error ? e.message : String(e) };
+    return { text: "", pages: [], columnByPage: [], stage: "pdf", error: e instanceof Error ? e.message : String(e) };
   }
 }
