@@ -34,11 +34,17 @@ export function extractFields(rawFields: RawField[], documentType: string, pack:
     let fieldName: string | undefined = fieldMap[normalized];
     if (!fieldName) {
       for (const [mapKey, mapField] of Object.entries(fieldMap)) {
-        if (normalized.includes(mapKey) || mapKey.includes(normalized)) { fieldName = mapField; break; }
+        // Fuzzy containment only when the shorter side is a
+        // substantial phrase (mirror of extract.py).
+        if (Math.min(mapKey.length, normalized.length) >= 12 && (normalized.includes(mapKey) || mapKey.includes(normalized))) { fieldName = mapField; break; }
       }
     }
     if (!fieldName) continue;
+    // Pure punctuation is form furniture, never a value.
+    if (!/[A-Za-z0-9]/.test(raw.value)) continue;
     const amount = extractAmount(raw.value);
+    // Household documents do not carry nine-figure amounts.
+    if (amount !== null && Math.abs(amount) >= 100_000_000) continue;
     const existing = result.fields[fieldName];
     // First PARSED amount wins (mirror of extract.py): an early clean
     // figure is never overwritten by later prose; prose is replaced as
