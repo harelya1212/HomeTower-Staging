@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { DateField, StatePicker } from "../components/Fields.tsx";
+import { pickAndRestore } from "../backup.ts";
 import { useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -12,7 +13,8 @@ const LOGO_MARK = require("../../assets/logo-mark.png");
 // Four short steps, skippable; everything stays editable later in Intake
 // (the living record). Documents can be captured right away or later.
 export default function OnboardingScreen() {
-  const { state, update, updateIntake, updateGoals } = useHousehold();
+  const { state, update, updateIntake, updateGoals, restore } = useHousehold();
+  const [restoreNote, setRestoreNote] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [fedLow, setFedLow] = useState("2000");
@@ -150,6 +152,10 @@ export default function OnboardingScreen() {
         )}
       </View>
       <Pressable onPress={skip}><Text style={styles.skip}>Skip for now - everything stays editable in the Intake tab</Text></Pressable>
+      <Pressable onPress={async () => setRestoreNote(await pickAndRestore(restore))}>
+        <Text style={styles.skip}>Already entered your household before? Restore from a backup file</Text>
+      </Pressable>
+      {restoreNote && <Text style={styles.skip}>{restoreNote}</Text>}
     </ScrollView>
   );
 }

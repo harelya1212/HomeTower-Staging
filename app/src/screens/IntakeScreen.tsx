@@ -2,8 +2,9 @@ import React, { useEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { accuracyLevel, validateIntake, type Member } from "../../engine/intake.ts";
 import { StatePicker, TextField } from "../components/Fields.tsx";
+import { downloadBackup, pickAndRestore } from "../backup.ts";
 import { getPushStatus, isPushEnabled, registerForPush, type PushStatus } from "../push.ts";
-import { useHousehold } from "../store.tsx";
+import { todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
 const FILING = ["married_filing_jointly", "single", "head_of_household", "married_filing_separately"];
@@ -27,7 +28,8 @@ function Toggle({ label, value, onChange }: { label: string; value: boolean; onC
 }
 
 export default function IntakeScreen() {
-  const { state, update, updateIntake, updateGoals } = useHousehold();
+  const { state, update, updateIntake, updateGoals, restore } = useHousehold();
+  const [backupNote, setBackupNote] = useState<string | null>(null);
   const goals = state.goals;
   const intake = state.intake;
   const errors = validateIntake(intake);
@@ -147,6 +149,26 @@ export default function IntakeScreen() {
           ))}
         </View>
       )}
+
+      <Text style={styles.section}>Your data - backup & restore</Text>
+      <Text style={styles.note}>
+        HomeTower keeps everything on this device only - nothing is uploaded. That also means deleting the
+        home-screen app deletes the data with it. Keep a backup file: it restores the whole household on any
+        device or browser, and it is yours like every other document here.
+      </Text>
+      <Pressable
+        style={styles.button}
+        onPress={() => setBackupNote(downloadBackup(JSON.stringify(state, null, 2), `hometower-backup-${todayIso()}.json`) ?? "Backup file downloaded - keep it somewhere safe.")}
+      >
+        <Text style={styles.buttonText}>Download a backup file</Text>
+      </Pressable>
+      <Pressable
+        style={styles.button}
+        onPress={async () => setBackupNote(await pickAndRestore(restore))}
+      >
+        <Text style={styles.buttonText}>Restore from a backup file</Text>
+      </Pressable>
+      {backupNote && <Text style={styles.note}>{backupNote}</Text>}
     </ScrollView>
   );
 }
