@@ -180,3 +180,14 @@ def test_confidence_scores():
 
     rsu = _household(has_rsu=True)
     assert prediction_confidence(rsu, today).coverage == 6.0
+
+
+def test_extract_first_parsed_amount_wins():
+    from hometower_engine.extract import extract_fields, RawField
+    fields = [
+        RawField("Adjusted gross income", "See instructions below", 0.9),
+        RawField("Adjusted gross income", "338,962", 0.9),
+        RawField("Adjusted gross income", "999", 0.9),
+    ]
+    out = extract_fields(fields, "prior_return")
+    assert out.fields.get("adjusted_gross_income") == 338962.0, out.fields

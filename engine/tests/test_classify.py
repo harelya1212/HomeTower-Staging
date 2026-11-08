@@ -49,3 +49,20 @@ def test_unknown_falls_back_to_other():
 def test_signals_are_shown():
     c = classify_document(rf("Proceeds", "Cost or other basis"))
     assert c.signals, c
+
+
+def test_8879_packet_is_prior_return_strong():
+    # Real-file rehearsal shape (2026-11-07): an IRS e-file signature
+    # packet IS part of the filed return - its own face must anchor it.
+    fields = [RawField("Adjusted gross income", "338,962", 0.9), RawField("Total tax", "56,074", 0.9)]
+    text = "Form 8879 IRS e-file Signature Authorization. Department of the Treasury, Internal Revenue Service."
+    c = classify_document(fields, text)
+    assert c.doc_type == "prior_return" and c.level == "strong", c
+
+
+def test_repeated_labels_do_not_inflate():
+    # A long document repeating one label must score it once.
+    fields = [RawField("Proceeds", "1", 0.9)] * 20
+    c = classify_document(fields, "")
+    single = classify_document([RawField("Proceeds", "1", 0.9)], "")
+    assert c.score == single.score, (c, single)
