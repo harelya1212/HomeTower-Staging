@@ -66,3 +66,9 @@ def test_repeated_labels_do_not_inflate():
     c = classify_document(fields, "")
     single = classify_document([RawField("Proceeds", "1", 0.9)], "")
     assert c.score == single.score, (c, single)
+
+
+def test_pension_statement_classifies():
+    fields = [RawField("Monthly benefit", "2,450", 0.9), RawField("Present value", "512,000", 0.9)]
+    c = classify_document(fields, "Defined Benefit Pension Plan - annual retirement benefit statement")
+    assert c.doc_type == "pension_statement" and c.level == "strong", c
