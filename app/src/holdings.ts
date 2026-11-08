@@ -16,6 +16,33 @@ export interface HoldingsParse {
   cash: number | null;
 }
 
+export interface PlanAccount {
+  ticker: string;
+  company: string | null;
+}
+
+/** A stock-plan overview names its security OUTSIDE the position
+ * blocks: an all-caps company line ending in "(TICKER)" ("INTEL CORP
+ * COM (INTC)"), or the account header "Stock Plan (INTC) -8978".
+ * Amounts alone do not tell the user WHICH stock a plan document is
+ * about (owner QA round 27), so the identity is parsed explicitly.
+ * Mixed-case plan furniture ("Employee Stock Purchase Plan (ESPP)",
+ * "Restricted Stock (RS)") must never match. */
+export function parsePlanAccount(text: string): PlanAccount | null {
+  const lines = text.split("\n").map((l) => l.trim());
+  for (const line of lines) {
+    const m = line.match(/^([A-Z][A-Z0-9 .,&'()-]*?)\s*\(([A-Z]{1,5})\)$/);
+    if (m && m[1].trim().length >= 4 && !/^(LAST|TOTAL|TODAY)/.test(m[1])) {
+      return { ticker: m[2], company: m[1].trim() };
+    }
+  }
+  for (const line of lines) {
+    const m = line.match(/stock plan\s*\(([A-Z]{1,5})\)/i);
+    if (m) return { ticker: m[1].toUpperCase(), company: null };
+  }
+  return null;
+}
+
 const MONEY_TOKEN = /\(?-?\$?[\d][\d,]*\.?\d*\)?%?/;
 
 function moneyAfter(line: string, fromIndex: number): number | null {
