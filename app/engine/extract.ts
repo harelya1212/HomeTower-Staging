@@ -15,7 +15,11 @@ export interface ExtractionResult {
 }
 
 function normalizeKey(raw: string): string {
-  return raw.toLowerCase().trim().replaceAll(":", "").replaceAll("*", "");
+  // Letters, digits and single spaces only (mirror of extract.py):
+  // OCR sprinkles symbols like the info-icon "®" into labels, and a
+  // surviving symbol breaks exact matching and lets a shorter label
+  // steal the field in the fuzzy pass (real OCR rehearsal).
+  return raw.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function extractAmount(valueStr: string): number | null {
@@ -25,18 +29,25 @@ function extractAmount(valueStr: string): number | null {
 }
 
 export function extractFields(rawFields: RawField[], documentType: string, pack: Pack = ocrMapsPack()): ExtractionResult {
-  const fieldMap: Record<string, string> | undefined = pack.maps[documentType];
-  if (!fieldMap) throw new Error(`Unknown document type: ${documentType}`);
+  const rawMap: Record<string, string> | undefined = pack.maps[documentType];
+  if (!rawMap) throw new Error(`Unknown document type: ${documentType}`);
+  // Both sides of a lookup pass through the same normalization
+  // (mirror of extract.py): map labels carry punctuation the
+  // normalized raw key no longer has ("401(k) contribution").
+  const fieldMap: Record<string, string> = Object.fromEntries(Object.entries(rawMap).map(([k, v]) => [normalizeKey(k), v]));
   const result: ExtractionResult = { documentType, fields: {}, fieldConfidence: {}, confidence: 0, status: "pending_verify" };
   const confidences: number[] = [];
   for (const raw of rawFields) {
     const normalized = normalizeKey(raw.key);
     let fieldName: string | undefined = fieldMap[normalized];
     if (!fieldName) {
+      // Longest matching label wins (mirror of extract.py):
+      // "current account value" must beat the shorter "account
+      // value" it contains, or the vested balance is silently
+      // claimed as the ending balance.
+      let bestLen = -1;
       for (const [mapKey, mapField] of Object.entries(fieldMap)) {
-        // Fuzzy containment only when the shorter side is a
-        // substantial phrase (mirror of extract.py).
-        if (Math.min(mapKey.length, normalized.length) >= 12 && (normalized.includes(mapKey) || mapKey.includes(normalized))) { fieldName = mapField; break; }
+        if (Math.min(mapKey.length, normalized.length) >= 12 && (normalized.includes(mapKey) || mapKey.includes(normalized)) && mapKey.length > bestLen) { fieldName = mapField; bestLen = mapKey.length; }
       }
     }
     if (!fieldName) continue;
