@@ -93,6 +93,7 @@ export interface HouseholdState {
   jobs: Job[];
   assets: Asset[];
   payrollCheck: PayrollCheck;
+  eduAssignChildId: string | null; // transient: My House child card -> Documents 529 assignment
   events: EquityEvent[];
 }
 
@@ -137,6 +138,7 @@ export function defaultState(): HouseholdState {
     },
     onboarded: false,
     payrollCheck: { lastConfirmedOn: null, consecutive: 0 },
+    eduAssignChildId: null,
     events: [],
   };
 }
@@ -175,6 +177,7 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     jobs: parsed.jobs ?? [],
     assets: parsed.assets ?? [],
     payrollCheck: parsed.payrollCheck ?? { lastConfirmedOn: null, consecutive: 0 },
+    eduAssignChildId: parsed.eduAssignChildId ?? null,
     events: parsed.events ?? [],
   };
 }
