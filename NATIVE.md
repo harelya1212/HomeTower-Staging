@@ -17,6 +17,24 @@ prepared path; the build itself runs with the owner, step by step.
    like the TReps flow)
 2. His Apple ID for the development build install (EAS prompts for it)
 
+## Status (2026-11-08)
+- EAS project created and linked: @aharel/hometower, projectId
+  6cad0ddf-e2eb-490e-81e5-519e48006ba3 (also written into app.json
+  extra.eas.projectId in the repo, so a fresh clone is pre-linked).
+- expo-dev-client (~6.0.21) added to dependencies + entry import -
+  the development profile requires it; the first build attempt
+  caught its absence.
+- BUILD BLOCKED (owner decision 2026-11-08: stop here, complete
+  when he says): the owner's Apple ID (harel.y.a@gmail.com) has NO
+  paid Apple Developer Program membership - "You have no team
+  associated with your Apple account". EAS cannot create signing
+  credentials without it. A free/personal team cannot substitute:
+  free provisioning does not include the Push Notifications
+  entitlement, which is the entire point of this build. Resume =
+  enroll in the Apple Developer Program ($99/yr, the item already
+  PAUSED on the app-payments list), let the membership activate,
+  then run the build command below and finish the push proof.
+
 ## Commands (run together, one confirmed step at a time)
     cd app
     npx eas-cli build --profile development --platform ios
