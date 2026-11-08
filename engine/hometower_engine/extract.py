@@ -34,7 +34,12 @@ class ExtractionResult:
 
 
 def _normalize_key(raw: str) -> str:
-    return raw.lower().strip().replace(":", "").replace("*", "")
+    # Letters, digits and single spaces only: OCR sprinkles symbols
+    # like the info-icon "®" into labels ("Current Account Value ®"),
+    # and a surviving symbol breaks exact matching and lets a shorter
+    # label steal the field in the fuzzy pass (real OCR rehearsal,
+    # 2026-11-07).
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", raw.lower())).strip()
 
 
 def _extract_amount(value_str: str) -> Optional[float]:
@@ -49,9 +54,13 @@ def _extract_amount(value_str: str) -> Optional[float]:
 def extract_fields(raw_fields: list[RawField], document_type: str,
                      maps_pack: dict | None = None) -> ExtractionResult:
     maps_pack = maps_pack or load_pack("ocr-field-maps")
-    field_map = maps_pack["maps"].get(document_type)
-    if field_map is None:
+    raw_map = maps_pack["maps"].get(document_type)
+    if raw_map is None:
         raise ValueError(f"Unknown document type: {document_type}")
+    # Both sides of a lookup pass through the same normalization:
+    # map labels carry punctuation ("401(k) contribution") that the
+    # normalized raw key no longer has.
+    field_map = {_normalize_key(k): v for k, v in raw_map.items()}
 
     result = ExtractionResult(document_type=document_type)
     confidences: list[float] = []
@@ -59,14 +68,21 @@ def extract_fields(raw_fields: list[RawField], document_type: str,
         normalized = _normalize_key(raw.key)
         field_name = field_map.get(normalized)
         if not field_name:
+            # Fuzzy containment only when the shorter side is a
+            # substantial phrase - a bare "refund" key must not
+            # claim "total other payments and refundable credits"
+            # (real-file rehearsal, 2026-11-07). Among the matches
+            # the LONGEST label wins: "current account value" must
+            # beat the shorter "account value" it contains, or the
+            # vested balance is silently claimed as the ending
+            # balance (real OCR rehearsal, 2026-11-07).
+            best = None
             for map_key, map_field in field_map.items():
-                # Fuzzy containment only when the shorter side is a
-                # substantial phrase - a bare "refund" key must not
-                # claim "total other payments and refundable credits"
-                # (real-file rehearsal, 2026-11-07).
                 if min(len(map_key), len(normalized)) >= 12 and (map_key in normalized or normalized in map_key):
-                    field_name = map_field
-                    break
+                    if best is None or len(map_key) > len(best[0]):
+                        best = (map_key, map_field)
+            if best is not None:
+                field_name = best[1]
         if not field_name:
             continue
         # Pure punctuation ("~~~~~~~", "----") is form furniture,
