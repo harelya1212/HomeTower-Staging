@@ -6,6 +6,8 @@ import { fbarRequired, foreignTaxCredit, form8938Required } from "../../engine/f
 import { simulate } from "../../engine/taximpact.ts";
 import { treatyPosition, withholdingCap } from "../../engine/treaty.ts";
 import { DateField, usToIso } from "../components/Fields.tsx";
+import { positionValue } from "../holdings.ts";
+import type { Holding } from "../../engine/intake.ts";
 import { useHousehold } from "../store.tsx";
 import { money, NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -53,6 +55,39 @@ function SaleTool() {
   const recordedSales = state.intake.documents
     .map((d, i) => ({ d, i }))
     .filter(({ d }) => d.docType === "1099b" && d.status === "parsed" && d.fields);
+  // Holdings parsed from brokerage app screenshots (round 22): the
+  // positions the household holds NOW, newest capture first, one row
+  // per ticker. Basis = the app's Price Paid; the screenshot carries
+  // no purchase date, so the date stays for the user to set.
+  const holdingsDocs = state.intake.documents
+    .filter((d) => d.holdings && d.holdings.length > 0)
+    .sort((a, b) => (b.capturedOn ?? "").localeCompare(a.capturedOn ?? ""));
+  const holdings = (() => {
+    const seen = new Set<string>();
+    const out: Array<{ h: Holding; capturedOn?: string | null }> = [];
+    for (const d of holdingsDocs) {
+      for (const h of d.holdings ?? []) {
+        if (!seen.has(h.ticker)) {
+          seen.add(h.ticker);
+          out.push({ h, capturedOn: d.capturedOn });
+        }
+      }
+    }
+    return out;
+  })();
+  const holdingsCash = (() => {
+    const c = Number(holdingsDocs[0]?.fields?.["cash_balance"]);
+    return Number.isFinite(c) && c > 0 ? c : 0;
+  })();
+  const applyHolding = (h: Holding, capturedOn?: string | null) => {
+    setTicker(h.ticker);
+    setQty(String(h.quantity));
+    setBasis(String(h.pricePaid));
+    setPrice(String(h.lastPrice));
+    setLotNote(
+      `Filled from your holdings${capturedOn ? ` (captured ${capturedOn})` : ""}: ${h.ticker} ${h.quantity} shares - basis $${h.pricePaid.toLocaleString("en-US")}/share (the Price Paid on your screenshot), now $${h.lastPrice.toLocaleString("en-US")}. The screenshot shows no purchase date - set it below for the short/long-term split.`,
+    );
+  };
   const applySale = (fields: Record<string, string>, capturedOn?: string | null) => {
     const q = Number(fields["quantity"]);
     const proceeds = Number(fields["proceeds"]);
@@ -101,6 +136,29 @@ function SaleTool() {
         <Text style={styles.line}>No recorded sales yet. Upload a 1099-B in the Documents tab and your sales appear here as a list - no typing. The fields below stay as a manual fallback.</Text>
       )}
       {lotNote && <Text style={styles.line}>{lotNote}</Text>}
+      {holdings.length > 0 && (
+        <>
+          <Text style={styles.label}>Your holdings - tap one to fill the tool</Text>
+          {holdings.map(({ h, capturedOn }) => (
+            <Pressable key={h.ticker} style={styles.lotRow} onPress={() => applyHolding(h, capturedOn)}>
+              <Text style={styles.lotText}>
+                {h.ticker} - {h.quantity} shares - basis ${h.pricePaid.toLocaleString("en-US")} - now ${h.lastPrice.toLocaleString("en-US")} - value ${positionValue(h).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+              </Text>
+            </Pressable>
+          ))}
+          {(() => {
+            const total = holdings.reduce((a, { h }) => a + positionValue(h), 0) + holdingsCash;
+            const top = holdings.reduce((a, { h }) => (positionValue(h) > positionValue(a.h) ? { h } : a), holdings[0]);
+            const pct = total > 0 ? (positionValue(top.h) / total) * 100 : 0;
+            const band = pct < 20 ? "manageable" : pct < 35 ? "watch" : pct < 50 ? "high" : "severe";
+            return (
+              <Text style={styles.line}>
+                Concentration: {top.h.ticker} is the largest position at {pct.toFixed(0)}% of this account (positions + cash) - {band} (guide: under 20% manageable, 20-35% watch, 35-50% high, over 50% severe).
+              </Text>
+            );
+          })()}
+        </>
+      )}
       <Txt label="Ticker" value={ticker} onChange={setTicker} />
       <Num label="Quantity" value={qty} onChange={setQty} />
       <Num label="Cost basis per share ($)" value={basis} onChange={setBasis} />
