@@ -13,7 +13,7 @@ FILING_STATUSES = {"single", "married_filing_jointly", "married_filing_separatel
 MEMBER_ROLES = {"adult", "dependent", "student"}
 PAY_FREQUENCIES = {"weekly", "biweekly", "semimonthly", "monthly"}
 DOCUMENT_TYPES = {"w2", "payslip", "hsa_statement", "401k_statement", "1099b", "1098t", "1099q",
-                  "prior_return", "529_statement", "brokerage_statement", "other"}
+                  "prior_return", "529_statement", "brokerage_statement", "pension_statement", "other"}
 DOCUMENT_STATUSES = {"parsed", "pending_verify", "rejected"}
 
 

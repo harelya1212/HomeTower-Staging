@@ -25,6 +25,7 @@ FRESHNESS_WINDOW_DAYS = {
     "1098t": 400,
     "1099q": 400,
     "prior_return": 400,
+    "pension_statement": 400,
     "other": 180,
 }
 AGING_WARNING_DAYS = 7
