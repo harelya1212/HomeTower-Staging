@@ -2,8 +2,13 @@
 
 The user uploads a file WITHOUT naming its type - or names it, and the
 app still verifies. Classification is deterministic and explainable:
-score = 3 x (field-map labels matched, using the extractor's own maps)
-+ 1 per distinctive keyword found in the raw keys or the full text.
+score = 3 x (field-map labels matched, each label counted ONCE)
++ 1 per distinctive keyword found in the raw keys or the full text
++ 3 per IDENTITY ANCHOR - rare, document-defining phrases (a real-file
+rehearsal on 2026-11-07 showed why: a 108-page tax return contains
+1099-B schedules whose repeated labels outvoted the return's own
+identity; anchors + label dedup keep the document's identity ahead of
+its attachments).
 The output is always a PROPOSAL with its signals: the user confirms or
 overrides the type before anything is saved, and the same check runs
 when the user did name a type, so a mismatch is surfaced, not stored.
@@ -27,6 +32,12 @@ KEYWORDS: dict[str, list[str]] = {
     "prior_return": ["1040", "adjusted gross income", "taxable income", "internal revenue service", "u.s. individual income tax return"],
 }
 
+# Identity anchors: phrases that DEFINE the document (they appear on
+# its own face, not inside attachments it may contain). +3 each, once.
+ANCHORS: dict[str, list[str]] = {
+    "prior_return": ["form 1040", "form 8879", "e-file signature authorization"],
+}
+
 
 @dataclass
 class Classification:
@@ -47,9 +58,10 @@ def classify_document(raw_fields: list[RawField], text: str = "",
     for doc_type, field_map in maps.items():
         if doc_type == "other":
             continue
-        matched = [k for k in keys if k in field_map]
+        matched = sorted({k for k in keys if k in field_map})
         kw_hits = [kw for kw in KEYWORDS.get(doc_type, []) if kw in haystack]
-        scored.append((doc_type, 3 * len(matched) + len(kw_hits), matched + kw_hits))
+        anchor_hits = [a for a in ANCHORS.get(doc_type, []) if a in haystack]
+        scored.append((doc_type, 3 * len(matched) + len(kw_hits) + 3 * len(anchor_hits), matched + kw_hits + anchor_hits))
     scored.sort(key=lambda s: (-s[1], s[0]))
     best_type, best_score, best_signals = scored[0]
     runner_type, runner_score = (scored[1][0], scored[1][1]) if len(scored) > 1 else (None, 0)

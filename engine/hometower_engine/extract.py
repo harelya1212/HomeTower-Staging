@@ -66,9 +66,20 @@ def extract_fields(raw_fields: list[RawField], document_type: str,
         if not field_name:
             continue
         amount = _extract_amount(raw.value)
-        result.fields[field_name] = amount if amount is not None else raw.value.strip()
-        result.field_confidence[field_name] = raw.confidence
-        confidences.append(raw.confidence)
+        existing = result.fields.get(field_name)
+        # First PARSED amount wins (real-file rehearsal, 2026-11-07):
+        # long documents repeat labels in schedules and prose; an early
+        # clean figure must not be overwritten by a later sentence, and
+        # a prose value is replaced as soon as a real amount appears.
+        if amount is not None:
+            if existing is None or isinstance(existing, str):
+                result.fields[field_name] = amount
+                result.field_confidence[field_name] = raw.confidence
+                confidences.append(raw.confidence)
+        elif existing is None:
+            result.fields[field_name] = raw.value.strip()
+            result.field_confidence[field_name] = raw.confidence
+            confidences.append(raw.confidence)
 
     result.confidence = round(sum(confidences) / len(confidences), 3) if confidences else 0.0
     result.status = "parsed" if result.confidence >= CONFIDENCE_GATE else "pending_verify"
