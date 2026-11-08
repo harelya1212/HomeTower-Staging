@@ -39,9 +39,21 @@ export function extractFields(rawFields: RawField[], documentType: string, pack:
     }
     if (!fieldName) continue;
     const amount = extractAmount(raw.value);
-    result.fields[fieldName] = amount !== null ? amount : raw.value.trim();
-    result.fieldConfidence[fieldName] = raw.confidence;
-    confidences.push(raw.confidence);
+    const existing = result.fields[fieldName];
+    // First PARSED amount wins (mirror of extract.py): an early clean
+    // figure is never overwritten by later prose; prose is replaced as
+    // soon as a real amount for the field appears.
+    if (amount !== null) {
+      if (existing === undefined || typeof existing === "string") {
+        result.fields[fieldName] = amount;
+        result.fieldConfidence[fieldName] = raw.confidence;
+        confidences.push(raw.confidence);
+      }
+    } else if (existing === undefined) {
+      result.fields[fieldName] = raw.value.trim();
+      result.fieldConfidence[fieldName] = raw.confidence;
+      confidences.push(raw.confidence);
+    }
   }
   result.confidence = confidences.length ? Math.round((confidences.reduce((a, b) => a + b, 0) / confidences.length) * 1000) / 1000 : 0;
   result.status = result.confidence >= CONFIDENCE_GATE ? "parsed" : "pending_verify";

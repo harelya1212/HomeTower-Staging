@@ -2,7 +2,10 @@
 // The user uploads WITHOUT naming the type; the app proposes one and
 // the user confirms or overrides before anything is saved. The same
 // check verifies a type the user did name. Deterministic scoring:
-// 3 x matched field-map labels + 1 per distinctive keyword.
+// 3 x matched field-map labels (each label counted ONCE) + 1 per
+// distinctive keyword + 3 per identity anchor (rare phrases that
+// define the document - a 108-page return's embedded 1099-B schedules
+// must not outvote the return's own identity).
 import type { RawField } from "./extract.ts";
 import { ocrMapsPack, type Pack } from "./packs.ts";
 
@@ -17,6 +20,10 @@ const KEYWORDS: Record<string, string[]> = {
   "529_statement": ["529 plan", "college savings plan", "education account"],
   brokerage_statement: ["brokerage", "securities account", "portfolio value", "holdings"],
   prior_return: ["1040", "adjusted gross income", "taxable income", "internal revenue service", "u.s. individual income tax return"],
+};
+
+const ANCHORS: Record<string, string[]> = {
+  prior_return: ["form 1040", "form 8879", "e-file signature authorization"],
 };
 
 export interface Classification {
@@ -39,9 +46,10 @@ export function classifyDocument(rawFields: RawField[], text = "", pack: Pack = 
   const scored: { docType: string; score: number; signals: string[] }[] = [];
   for (const [docType, fieldMap] of Object.entries(maps)) {
     if (docType === "other") continue;
-    const matched = keys.filter((k) => k in fieldMap);
+    const matched = [...new Set(keys.filter((k) => k in fieldMap))].sort();
     const kwHits = (KEYWORDS[docType] ?? []).filter((kw) => haystack.includes(kw));
-    scored.push({ docType, score: 3 * matched.length + kwHits.length, signals: [...matched, ...kwHits] });
+    const anchorHits = (ANCHORS[docType] ?? []).filter((a) => haystack.includes(a));
+    scored.push({ docType, score: 3 * matched.length + kwHits.length + 3 * anchorHits.length, signals: [...matched, ...kwHits, ...anchorHits] });
   }
   scored.sort((a, b) => b.score - a.score || a.docType.localeCompare(b.docType));
   const best = scored[0];
