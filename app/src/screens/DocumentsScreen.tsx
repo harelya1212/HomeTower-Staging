@@ -9,7 +9,7 @@ import type { EquityEvent } from "../store.tsx";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { classifyDocument, type Classification } from "../../engine/classify.ts";
-import { pickImageUri, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
+import { pickImageUri, pickImageUris, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
 import type { RawField } from "../../engine/extract.ts";
 import { parseHoldings, positionValue, type HoldingsParse } from "../holdings.ts";
 import { pickFile } from "../filePick";
@@ -55,6 +55,10 @@ export default function DocumentsScreen() {
   const [pendingText, setPendingText] = useState<string | null>(null);
   const [pendingColumns, setPendingColumns] = useState<RawField[][] | null>(null);
   const [pendingHoldings, setPendingHoldings] = useState<HoldingsParse | null>(null);
+  // Multi-photo batch: the user picks several screenshots at once;
+  // each is still read and confirmed one at a time, the queue just
+  // walks itself after every confirm/discard.
+  const [photoBatch, setPhotoBatch] = useState<{ queue: string[]; namedType?: string; total: number; done: number } | null>(null);
   const [autoPaste, setAutoPaste] = useState("");
   const [expandedReq, setExpandedReq] = useState<string | null>(null);
   const requests = useMemo(
@@ -156,14 +160,44 @@ export default function DocumentsScreen() {
     }
   };
 
+  const processPhotoUri = async (uri: string, namedType?: string, batchActive = false) => {
+    const outcome = await recognizeOnDevice(uri);
+    if (outcome.error) {
+      setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}${batchActive ? " The rest of the batch was not read - pick the remaining screenshots again." : ""}`);
+      setPhotoBatch(null);
+      return;
+    }
+    runExtraction(outcome.text, namedType);
+  };
+
+  const advanceBatch = () => {
+    if (!photoBatch || photoBatch.queue.length === 0) { setPhotoBatch(null); return; }
+    const [next, ...rest] = photoBatch.queue;
+    const nb = { queue: rest, namedType: photoBatch.namedType, total: photoBatch.total, done: photoBatch.done + 1 };
+    setPhotoBatch(nb);
+    void processPhotoUri(next, nb.namedType, true);
+  };
+
   const scanPhoto = async (source: "upload" | "camera", namedType?: string) => {
     setOcrNote(null);
-    const { uri, error } = source === "camera" ? await takePhotoUri() : await pickImageUri();
+    if (source === "camera") {
+      const { uri, error } = await takePhotoUri();
+      if (error) { setOcrNote(error); return; }
+      if (!uri) return;
+      await processPhotoUri(uri, namedType);
+      return;
+    }
+    const { uris, error } = await pickImageUris();
     if (error) { setOcrNote(error); return; }
-    if (!uri) return;
-    const outcome = await recognizeOnDevice(uri);
-    if (outcome.error) { setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
-    runExtraction(outcome.text, namedType);
+    if (!uris.length) return;
+    if (uris.length === 1) {
+      setPhotoBatch(null);
+      await processPhotoUri(uris[0], namedType);
+      return;
+    }
+    setPhotoBatch({ queue: uris.slice(1), namedType, total: uris.length, done: 1 });
+    setOcrNote(`Reading screenshot 1 of ${uris.length} - confirm or discard each reading; the next screenshot follows automatically.`);
+    await processPhotoUri(uris[0], namedType, true);
   };
 
   // Owner QA round 6: a real FILE upload. The image picker greys PDFs
@@ -266,7 +300,9 @@ export default function DocumentsScreen() {
     setPendingHoldings(null);
     setPasteText("");
     setAutoPaste("");
-    setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).${assignNote}`);
+    const moreComing = photoBatch && photoBatch.queue.length > 0 ? ` Screenshot ${photoBatch.done + 1} of ${photoBatch.total} is being read now.` : "";
+    setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).${assignNote}${moreComing}`);
+    advanceBatch();
   };
 
   const addManual = () => {
@@ -606,6 +642,9 @@ export default function DocumentsScreen() {
       {extraction && (
         <View style={styles.confirmCard}>
           <Text style={styles.section}>Confirm HomeTower's reading</Text>
+          {photoBatch && (
+            <Text style={styles.line}>Batch: screenshot {photoBatch.done} of {photoBatch.total} - confirming or discarding brings the next one.</Text>
+          )}
           {detection && detection.level !== "unknown" && (
             <Text style={styles.line}>
               This looks like a {detection.docType} ({detection.level} match) - signals: {detection.signals.join(", ")}.
@@ -678,7 +717,7 @@ export default function DocumentsScreen() {
           <Pressable style={styles.button} onPress={confirmExtraction}>
             <Text style={styles.buttonText}>Confirm and save as {extractionType}</Text>
           </Pressable>
-          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); }}>
+          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); advanceBatch(); }}>
             <Text style={styles.remove}>Discard</Text>
           </Pressable>
         </View>
