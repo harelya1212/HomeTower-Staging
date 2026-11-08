@@ -19,7 +19,18 @@ export function textToRawFields(text: string, confidence = 0.9): RawField[] {
     const line = lines[i];
     const colon = line.indexOf(":");
     if (colon > 0) {
-      fields.push({ key: line.slice(0, colon), value: line.slice(colon + 1).trim(), confidence });
+      const after = line.slice(colon + 1).trim();
+      // OCR often splits "Label:" from its figure onto the next line
+      // (real E*TRADE screenshot: "Net Account Value :" then
+      // "$91,990.34"). An empty colon value takes the next line when
+      // it is a bare money figure, and consumes it - otherwise the
+      // figure pairs with whatever label follows it instead.
+      if (!after && i + 1 < lines.length && moneyStrong(lines[i + 1])) {
+        fields.push({ key: line.slice(0, colon), value: lines[i + 1], confidence });
+        i++;
+        continue;
+      }
+      fields.push({ key: line.slice(0, colon), value: after, confidence });
       continue;
     }
     const m = line.match(/^(.*?)(\$?\(?-?[\d][\d,]*\.?\d*\)?)$/);

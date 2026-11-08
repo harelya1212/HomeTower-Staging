@@ -104,6 +104,18 @@ export function parseHoldings(text: string): HoldingsParse {
       const v = labelledValue(lines, i, /^cash\b/i);
       if (v !== null && v >= 0) cash = v;
     }
+    // Column-interleaved overview header (real tesseract output):
+    // "Day's Gain Total Gain Cash" on one line, the three values on
+    // the next - Cash is the LAST column, so its value is the last
+    // money token of the following line.
+    if (cash === null && /\bcash\s*$/i.test(line) && /gain/i.test(line)) {
+      const next = lines[i + 1] ?? "";
+      const tokens = next.match(/\(?-?\$[\d,]+\.?\d*\)?/g);
+      if (tokens && tokens.length >= 2) {
+        const v = moneyAfter(tokens[tokens.length - 1], 0);
+        if (v !== null && v >= 0) cash = v;
+      }
+    }
   }
   flush();
   return { positions, cash };
