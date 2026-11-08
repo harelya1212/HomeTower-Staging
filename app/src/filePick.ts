@@ -11,6 +11,18 @@ export interface PickedFile {
   error?: string;
 }
 
+export interface PickedImages {
+  files: File[];
+  cancelled?: boolean;
+  error?: string;
+}
+
+/** Native photo picking goes through expo-image-picker (ocr.ts);
+ * this DOM-input variant exists for web builds only. */
+export async function pickImageFiles(): Promise<PickedImages> {
+  return { files: [], error: "Photo file picking is a web path; the native app uses the photo library picker." };
+}
+
 export async function pickFile(): Promise<PickedFile> {
   try {
     const result = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true });
