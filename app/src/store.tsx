@@ -136,6 +136,24 @@ interface Store {
   update: (patch: Partial<HouseholdState>) => void;
   updateIntake: (patch: Partial<HouseholdIntake>) => void;
   updateGoals: (patch: Partial<GoalInputs>) => void;
+  restore: (parsed: Partial<HouseholdState>) => void;
+}
+
+/** Merge a parsed object (storage load or a backup file) over the
+ * defaults - the same tolerant shape for both, so a backup written by
+ * any build restores into any later build. */
+export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
+  const d = defaultState();
+  return {
+    ...d,
+    ...parsed,
+    intake: { ...d.intake, ...(parsed.intake ?? {}) },
+    goals: { ...d.goals, ...(parsed.goals ?? {}) },
+    family: parsed.family ?? [],
+    jobs: parsed.jobs ?? [],
+    assets: parsed.assets ?? [],
+    payrollCheck: parsed.payrollCheck ?? { lastConfirmedOn: null, consecutive: 0 },
+  };
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -147,19 +165,7 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
       .then((raw) => {
-        if (raw) {
-          const parsed = JSON.parse(raw) as HouseholdState;
-          setState({
-            ...defaultState(),
-            ...parsed,
-            intake: { ...defaultState().intake, ...parsed.intake },
-            goals: { ...defaultState().goals, ...(parsed.goals ?? {}) },
-            family: parsed.family ?? [],
-            jobs: parsed.jobs ?? [],
-            assets: parsed.assets ?? [],
-            payrollCheck: parsed.payrollCheck ?? { lastConfirmedOn: null, consecutive: 0 },
-          });
-        }
+        if (raw) setState(coerceState(JSON.parse(raw) as HouseholdState));
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
@@ -176,6 +182,7 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
       update: (patch) => setState((s) => ({ ...s, ...patch })),
       updateIntake: (patch) => setState((s) => ({ ...s, intake: { ...s.intake, ...patch } })),
       updateGoals: (patch) => setState((s) => ({ ...s, goals: { ...s.goals, ...patch } })),
+      restore: (parsed) => setState(coerceState(parsed)),
     }),
     [state, loaded],
   );
