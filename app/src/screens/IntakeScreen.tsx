@@ -115,7 +115,7 @@ export default function IntakeScreen() {
       <Text style={styles.note}>
         The basic plan always asks for this: the return as filed to the IRS and the state, checked against what actually
         happened (the refund you received or the amount you owed). It is the anchor that calibrates every projection.
-        {(!intake.calibration || !intake.calibration.outcomeVerified) ? " Not verified yet - the app will keep asking." : " Verified."}
+        {(!intake.calibration || !intake.calibration.outcomeVerified) ? " Not verified yet - HomeTower will keep asking." : " Verified."}
       </Text>
       <Field label="Tax year filed" value={String(intake.calibration?.taxYear ?? new Date().getFullYear() - 1)} numeric onChange={(v) => updateIntake({ calibration: { ...intake.calibration, taxYear: num(v) } })} />
       <Toggle label="Federal return filed" value={!!intake.calibration?.federalFiled} onChange={(v) => updateIntake({ calibration: { ...intake.calibration, taxYear: intake.calibration?.taxYear ?? new Date().getFullYear() - 1, federalFiled: v } })} />

@@ -7,8 +7,9 @@ import { householdFreshness } from "../../engine/freshness.ts";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { classifyDocument, type Classification } from "../../engine/classify.ts";
-import { pickDocumentFile, pickImageUri, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
-import { extractPdfText } from "../pdfText";
+import { pickImageUri, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
+import { pickFile } from "../filePick";
+import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -31,6 +32,7 @@ export default function DocumentsScreen() {
   const [selectedType, setSelectedType] = useState("payslip");
   const [pasteText, setPasteText] = useState("");
   const [ocrNote, setOcrNote] = useState<string | null>(null);
+  const [flowNote, setFlowNote] = useState<string | null>(null);
   const [extraction, setExtraction] = useState<ExtractionResult | null>(null);
   const [extractionType, setExtractionType] = useState("payslip");
   const [detection, setDetection] = useState<Classification | null>(null);
@@ -102,25 +104,56 @@ export default function DocumentsScreen() {
   // out; tax documents are PDFs. PDFs are read through their text layer
   // (web), images through the OCR path, anything else gets a plain
   // explanation plus the manual-register option below.
+  // Owner QA round 9: the picker is now the platform file input (see
+  // filePick.web.ts - the library shim returned nothing on iOS), and
+  // EVERY step reports into flowNote, rendered right under the buttons:
+  // picker opened -> file received (by name) -> reading -> result or
+  // the exact error. No silent path remains.
   const uploadFile = async (namedType?: string) => {
-    setOcrNote(null);
-    const picked = await pickDocumentFile();
-    if (picked.error) { setOcrNote(picked.error); return; }
-    if (!picked.uri) return;
-    const isPdf = picked.mimeType === "application/pdf" || /\.pdf$/i.test(picked.name ?? "");
-    if (isPdf) {
-      const outcome = await extractPdfText(picked.uri);
-      if (outcome.error) { setOcrNote(`PDF stage: ${outcome.error}`); return; }
-      runExtraction(outcome.text, namedType);
+    setFlowNote("Opening the file picker...");
+    const picked = await pickFile();
+    if (picked.error) { setFlowNote(picked.error); return; }
+    if (picked.cancelled || (!picked.uri && !picked.file)) {
+      setFlowNote("No file reached HomeTower - the picker closed without a selection arriving. Please try again.");
       return;
     }
-    if ((picked.mimeType ?? "").startsWith("image/")) {
-      const outcome = await recognizeOnDevice(picked.uri);
-      if (outcome.error) { setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
+    setFlowNote(`Received ${picked.name} - reading it now...`);
+    try {
+      if (picked.file) {
+        const f = picked.file;
+        if (f.type.includes("pdf") || /\.pdf$/i.test(f.name)) {
+          const outcome = await extractPdfTextFromBuffer(await f.arrayBuffer());
+          if (outcome.error) { setFlowNote(`Could not read ${f.name}: ${outcome.error}`); return; }
+          setFlowNote(null);
+          runExtraction(outcome.text, namedType);
+          return;
+        }
+        if (f.type.startsWith("image/")) {
+          const outcome = await recognizeOnDevice(URL.createObjectURL(f));
+          if (outcome.error) { setFlowNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
+          setFlowNote(null);
+          runExtraction(outcome.text, namedType);
+          return;
+        }
+        setFlowNote(`${f.name} is not a PDF or a photo - HomeTower reads PDFs and photos. Nothing was saved; the file can be registered manually below.`);
+        return;
+      }
+      const uri = picked.uri as string;
+      const isPdf = /\.pdf$/i.test(picked.name ?? "");
+      if (isPdf) {
+        const outcome = await extractPdfText(uri);
+        if (outcome.error) { setFlowNote(`PDF stage: ${outcome.error}`); return; }
+        setFlowNote(null);
+        runExtraction(outcome.text, namedType);
+        return;
+      }
+      const outcome = await recognizeOnDevice(uri);
+      if (outcome.error) { setFlowNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
+      setFlowNote(null);
       runExtraction(outcome.text, namedType);
-      return;
+    } catch (e) {
+      setFlowNote(e instanceof Error ? e.message : String(e));
     }
-    setOcrNote(`That file type (${picked.mimeType ?? "unknown"}) cannot be read yet. PDFs and photos work; anything else can be registered manually below.`);
   };
 
   useEffect(() => {
@@ -183,22 +216,23 @@ export default function DocumentsScreen() {
 
       <Text style={styles.section}>Upload any document</Text>
       <Text style={styles.note}>
-        No need to say what it is: the app reads it, identifies the type, and shows you its reading for approval
-        before anything is saved. If you do pick a type below, the app still verifies it against the content.
+        No need to say what it is: HomeTower reads it, identifies the type, and shows you its reading for approval
+        before anything is saved. If you do pick a type below, HomeTower still verifies it against the content.
       </Text>
       <Pressable style={styles.button} onPress={() => uploadFile()}>
-        <Text style={styles.buttonText}>Upload a PDF or file - the app identifies it</Text>
+        <Text style={styles.buttonText}>Upload a PDF or file - HomeTower identifies it</Text>
       </Pressable>
       <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload")}>
-        <Text style={styles.buttonText}>Upload a photo - the app identifies it</Text>
+        <Text style={styles.buttonText}>Upload a photo - HomeTower identifies it</Text>
       </Pressable>
       <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera")}>
-        <Text style={styles.buttonText}>Take a photo - the app identifies it</Text>
+        <Text style={styles.buttonText}>Take a photo - HomeTower identifies it</Text>
       </Pressable>
+      {flowNote && <Text style={styles.note}>{flowNote}</Text>}
       <TextInput
         style={styles.pasteBox}
         multiline
-        placeholder="...or paste any document text here and let the app identify it"
+        placeholder="...or paste any document text here and let HomeTower identify it"
         value={autoPaste}
         onChangeText={setAutoPaste}
       />
@@ -208,7 +242,7 @@ export default function DocumentsScreen() {
 
       <Text style={styles.section}>What your household needs</Text>
       <Text style={styles.note}>
-        Your profile decides this list - the app never asks every household for every document (SPEC45, Smart Document Request Engine).
+        Your profile decides this list - HomeTower never asks every household for every document (SPEC45, Smart Document Request Engine).
         Tap an item to upload it right there.
       </Text>
       {requests.map((r) => {
@@ -317,10 +351,11 @@ export default function DocumentsScreen() {
         <Text style={styles.buttonText}>Extract fields from pasted text</Text>
       </Pressable>
       {ocrNote && <Text style={styles.note}>{ocrNote}</Text>}
+      {flowNote && <Text style={styles.note}>{flowNote}</Text>}
 
       {extraction && (
         <View style={styles.confirmCard}>
-          <Text style={styles.section}>Confirm the app's reading</Text>
+          <Text style={styles.section}>Confirm HomeTower's reading</Text>
           {detection && detection.level !== "unknown" && (
             <Text style={styles.line}>
               This looks like a {detection.docType} ({detection.level} match) - signals: {detection.signals.join(", ")}.
