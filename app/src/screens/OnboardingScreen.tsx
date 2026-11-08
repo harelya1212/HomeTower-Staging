@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { DateField, StatePicker } from "../components/Fields.tsx";
 import { pickAndRestore } from "../backup.ts";
-import { useHousehold } from "../store.tsx";
+import { toEngineRole, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -48,7 +48,7 @@ export default function OnboardingScreen() {
       if (married) fam.push({ id: "ob-spouse", name: "", role: "spouse" as const, dob: spouseDob, retireAge: num(spouseRetireAge) || 67, retireTarget: num(spouseRetTarget), eduTarget: 0, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4 });
       for (let i = 0; i < Math.min(6, num(childCount)); i++) fam.push({ id: `ob-child-${i}`, name: "", role: "child" as const, dob: "", retireAge: 67, retireTarget: 0, eduTarget: num(childTargets[i] ?? ""), studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4 });
       update({ family: fam });
-      updateIntake({ members: fam.filter((m) => m.dob).map((m) => ({ name: m.name, role: m.role, dateOfBirth: m.dob || null })) });
+      updateIntake({ members: fam.filter((m) => m.dob).map((m) => ({ name: m.name, role: toEngineRole(m.role, m.studentNow), dateOfBirth: m.dob || null })) });
     }
     update({ onboarded: true });
   };

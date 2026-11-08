@@ -3,7 +3,7 @@ import React, { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { DateField, StatePicker, TextField } from "../components/Fields.tsx";
 import type { Asset, AssetKind, Job, UiMember } from "../store.tsx";
-import { todayIso, useHousehold } from "../store.tsx";
+import { todayIso, toEngineRole, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
 // "My House" - the household's own page (owner QA round 2): the family,
@@ -67,7 +67,7 @@ export default function MyHouseScreen() {
 
   const setFamily = (next: UiMember[]) => {
     update({ family: next });
-    updateIntake({ members: next.filter((m) => m.name.trim()).map((m) => ({ name: m.name.trim(), role: m.role, dateOfBirth: m.dob || null })) });
+    updateIntake({ members: next.filter((m) => m.name.trim()).map((m) => ({ name: m.name.trim(), role: toEngineRole(m.role, m.studentNow), dateOfBirth: m.dob || null })) });
   };
   const patchMember = (id: string, patch: Partial<UiMember>) => setFamily(family.map((m) => (m.id === id ? { ...m, ...patch } : m)));
   const setJobs = (next: Job[]) => update({ jobs: next });
