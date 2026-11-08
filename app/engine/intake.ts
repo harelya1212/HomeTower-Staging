@@ -4,7 +4,7 @@
 export const FILING_STATUSES = new Set(["single", "married_filing_jointly", "married_filing_separately", "head_of_household"]);
 export const MEMBER_ROLES = new Set(["adult", "dependent", "student"]);
 export const PAY_FREQUENCIES = new Set(["weekly", "biweekly", "semimonthly", "monthly"]);
-export const DOCUMENT_TYPES = new Set(["w2", "payslip", "hsa_statement", "401k_statement", "1099b", "1098t", "1099q", "prior_return", "529_statement", "brokerage_statement", "other"]);
+export const DOCUMENT_TYPES = new Set(["w2", "payslip", "hsa_statement", "401k_statement", "1099b", "1098t", "1099q", "prior_return", "529_statement", "brokerage_statement", "pension_statement", "other"]);
 export const DOCUMENT_STATUSES = new Set(["parsed", "pending_verify", "rejected"]);
 
 export interface Member { name: string; role: string; dateOfBirth?: string | null; payFrequency?: string | null }
