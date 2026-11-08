@@ -1,19 +1,24 @@
 // PDF text-layer reading - WEB implementation (Metro resolves this
-// .web variant for web builds). Uses pdf.js locally in the browser:
-// the picked file is read on this device only, nothing is uploaded.
-// Tax PDFs (returns, statements, 1099s) are generated with a real text
-// layer, so extraction quality matches the paste-text path and every
-// field is still user-confirmed before saving.
+// .web variant for web builds). The picked file is read on this device
+// only, nothing is uploaded. Tax PDFs (returns, statements, 1099s) are
+// generated with a real text layer, so extraction quality matches the
+// paste-text path and every field is still user-confirmed before
+// saving.
 //
-// LOADING RULE (white-page incident, 2026-11-07): pdf.js is loaded
-// LAZILY, inside this action only - never at module scope. Bisect
-// proof: the statically-imported pdfjs-dist 6.5.438 legacy build
-// crashed the whole app at startup (blank page in Chromium and iOS
-// Safari); the identical build without it rendered fine. A lazy load
-// inside an explicit user action is not the TReps failure mode (that
-// was a silent-catch dynamic import gating a STATUS): here every load
-// or parse failure returns as a stage result shown in the UI.
-// Worker version pinned to the installed pdfjs-dist version (6.5.438).
+// LOADING HISTORY (three incidents, one conclusion - pdf.js must not
+// travel through Metro at all):
+// 1. Static import (round 6) crashed the app at startup (white page).
+// 2. Metro lazy chunk (rounds 7-11) reached the owner's phone with an
+//    inconsistent module graph: "Requiring unknown module 813", then
+//    "814" after the next build - Metro's splitter mis-registers this
+//    library's entry module between the main bundle and the chunk.
+// 3. Therefore: the library loads with the BROWSER'S OWN module
+//    loader, straight from the pinned CDN (the exact version that is
+//    also in package.json), inside this user action only. Metro never
+//    sees the import (it is constructed at runtime), no chunk pairing
+//    exists, and every failure returns as a stage result in the UI.
+//    The worker already loaded from this CDN since round 6; the
+//    DOCUMENT never leaves the device - only the library code loads.
 export interface PdfTextOutcome {
   text: string;
   stage: string;
@@ -37,11 +42,11 @@ export async function extractPdfText(uri: string): Promise<PdfTextOutcome> {
 export async function extractPdfTextFromBuffer(data: ArrayBuffer): Promise<PdfTextOutcome> {
   let pdfjs: typeof import("pdfjs-dist/legacy/build/pdf.mjs");
   try {
-    // Loaded via the pdfLib chunk (round-11 fix): a chunk URL no cache
-    // has seen, so a stale cached chunk can never pair with a newer
-    // main bundle ("Requiring unknown module" mixed-generation crash).
-    const lib = await import("./pdfLib.web.ts");
-    pdfjs = lib.pdfjs;
+    // Browser-native module load from the pinned CDN - deliberately
+    // constructed at runtime so Metro cannot rewrite it into its own
+    // (broken, for this library) chunk graph. See the header history.
+    const nativeImport = new Function("url", "return import(url)") as (url: string) => Promise<typeof import("pdfjs-dist/legacy/build/pdf.mjs")>;
+    pdfjs = await nativeImport("https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.mjs");
     pdfjs.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.worker.min.mjs";
   } catch (e) {
     return { text: "", stage: "pdf-load", error: e instanceof Error ? e.message : String(e) };
