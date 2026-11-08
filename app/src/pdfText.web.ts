@@ -26,6 +26,15 @@ interface TextItemLike {
 }
 
 export async function extractPdfText(uri: string): Promise<PdfTextOutcome> {
+  try {
+    const data = await (await fetch(uri)).arrayBuffer();
+    return await extractPdfTextFromBuffer(data);
+  } catch (e) {
+    return { text: "", stage: "pdf", error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export async function extractPdfTextFromBuffer(data: ArrayBuffer): Promise<PdfTextOutcome> {
   let pdfjs: typeof import("pdfjs-dist/legacy/build/pdf.mjs");
   try {
     pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -34,7 +43,6 @@ export async function extractPdfText(uri: string): Promise<PdfTextOutcome> {
     return { text: "", stage: "pdf-load", error: e instanceof Error ? e.message : String(e) };
   }
   try {
-    const data = await (await fetch(uri)).arrayBuffer();
     const pdf = await pdfjs.getDocument({ data }).promise;
     const pages: string[] = [];
     for (let p = 1; p <= pdf.numPages; p++) {

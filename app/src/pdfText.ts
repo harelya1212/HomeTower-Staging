@@ -17,3 +17,11 @@ export async function extractPdfText(_uri: string): Promise<PdfTextOutcome> {
     error: "PDF text reading runs in the web app for now. In the phone app, photograph the pages or paste the text instead.",
   };
 }
+
+export async function extractPdfTextFromBuffer(_data: ArrayBuffer): Promise<PdfTextOutcome> {
+  return {
+    text: "",
+    stage: "pdf",
+    error: "PDF text reading runs in the web app for now. In the phone app, photograph the pages or paste the text instead.",
+  };
+}
