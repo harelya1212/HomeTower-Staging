@@ -13,6 +13,7 @@ import { pickImageUri, pickImageUris, recognizeImageFile, recognizeOnDevice, tak
 import type { RawField } from "../../engine/extract.ts";
 import { parseHoldings, parsePlanAccount, positionValue, type HoldingsParse, type PlanAccount } from "../holdings.ts";
 import { parsePayslipRows } from "../payslipRows.ts";
+import { mergePayslipFields, payslipKey } from "../payslips.ts";
 import { pickFile, pickImageFiles } from "../filePick";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
@@ -25,6 +26,10 @@ export default function DocumentsScreen() {
   const navigation = useNavigation<any>();
   const scrollRef = useRef<ScrollView>(null);
   const confirmY = useRef(0);
+  // Within one multi-photo batch: the payslip saved from the previous
+  // screenshot (identity key + its index in intake.documents), so the
+  // next page of the SAME slip merges into it instead of duplicating.
+  const batchSaveRef = useRef<{ key: string; index: number } | null>(null);
   const docs = state.intake.documents;
   const today = todayIso();
   const findings = useMemo(() => householdFreshness(docs, today), [docs, today]);
@@ -208,6 +213,7 @@ export default function DocumentsScreen() {
   };
 
   const startPhotoBatch = async (items: PhotoItem[], namedType?: string) => {
+    batchSaveRef.current = null;
     if (items.length === 1) {
       setPhotoBatch(null);
       await processPhotoItem(items[0], namedType);
@@ -351,7 +357,36 @@ export default function DocumentsScreen() {
       fields: savedFields,
       ...(extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.positions.length > 0 ? { holdings: pendingHoldings.positions } : {}),
     };
-    updateIntake({ documents: [...docs, record] });
+    // Multi-page payslips (owner, 2026-11-08): a slip spans several
+    // screenshots. Inside one batch, a reading whose earner + period
+    // match the payslip saved from the previous screenshot is a PAGE
+    // of that slip - merge into it, never a second document (an
+    // unmerged page 2, which carries the taxable-wages table but no
+    // withholding totals, would poison the forecast's anchor pick).
+    let mergedNote = "";
+    let handled = false;
+    if (extractionType === "payslip" && photoBatch) {
+      const key = payslipKey(savedFields);
+      const prev = batchSaveRef.current;
+      if (key !== "" && prev && prev.key === key && docs[prev.index]?.docType === "payslip") {
+        const mergedRecord: DocumentRecord = {
+          ...docs[prev.index],
+          fields: mergePayslipFields(docs[prev.index].fields ?? {}, savedFields),
+          status: docs[prev.index].status === "parsed" || extraction.status === "parsed" ? "parsed" : extraction.status,
+          confidence: Math.max(docs[prev.index].confidence, extraction.confidence),
+        };
+        updateIntake({ documents: docs.map((d, i) => (i === prev.index ? mergedRecord : d)) });
+        mergedNote = ` Merged with the previous screenshot - same payslip (${savedFields["employee_name"] ?? "same earner"}, period ending ${savedFields["pay_period_end"] ?? ""}); its pages are now ONE document.`;
+        handled = true;
+      }
+    }
+    if (!handled) {
+      updateIntake({ documents: [...docs, record] });
+      if (extractionType === "payslip" && photoBatch) {
+        const key = payslipKey(savedFields);
+        if (key !== "") batchSaveRef.current = { key, index: docs.length };
+      }
+    }
     if (extractionType === "payslip") update({ payrollCheck: { lastConfirmedOn: null, consecutive: 0 } });
     let assignNote = "";
     if (extractionType === "529_statement" && assignChildId) {
@@ -376,7 +411,7 @@ export default function DocumentsScreen() {
     setPasteText("");
     setAutoPaste("");
     const moreComing = photoBatch && photoBatch.queue.length > 0 ? ` Screenshot ${photoBatch.done + 1} of ${photoBatch.total} is being read now.` : "";
-    setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).${assignNote}${moreComing}`);
+    setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).${assignNote}${mergedNote}${moreComing}`);
     advanceBatch();
   };
 
@@ -719,6 +754,9 @@ export default function DocumentsScreen() {
           <Text style={styles.section}>Confirm HomeTower's reading</Text>
           {photoBatch && (
             <Text style={styles.batchLine}>Screenshot {photoBatch.done} of {photoBatch.total} - confirm this one and the next follows.</Text>
+          )}
+          {photoBatch && extractionType === "payslip" && batchSaveRef.current && payslipKey(Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]))) !== "" && payslipKey(Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]))) === batchSaveRef.current.key && (
+            <Text style={styles.line}>Same payslip as the previous screenshot ({String(extraction.fields["employee_name"] ?? "")}, period ending {String(extraction.fields["pay_period_end"] ?? "")}) - confirming merges its pages into ONE document.</Text>
           )}
           {detection && detection.level !== "unknown" && (
             <Text style={styles.line}>
