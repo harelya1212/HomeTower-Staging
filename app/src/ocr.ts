@@ -64,28 +64,4 @@ export async function recognizeOnDevice(uri: string): Promise<OcrOutcome> {
   }
 }
 
-/** Turn OCR/plain text into label-value pairs the extractor understands.
- * Handles "Label: value", "Label value" and label-line/value-line layouts. */
-export function textToRawFields(text: string, confidence = 0.9): RawField[] {
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const fields: RawField[] = [];
-  const moneyish = /[$\d][\d,]*\.?\d*/;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const colon = line.indexOf(":");
-    if (colon > 0) {
-      fields.push({ key: line.slice(0, colon), value: line.slice(colon + 1).trim(), confidence });
-      continue;
-    }
-    const m = line.match(/^(.*?)(\$?\(?-?[\d][\d,]*\.?\d*\)?)$/);
-    if (m && m[1].trim().length >= 2 && /[A-Za-z]/.test(m[1])) {
-      fields.push({ key: m[1].trim(), value: m[2], confidence });
-      continue;
-    }
-    if (!moneyish.test(line) && i + 1 < lines.length && moneyish.test(lines[i + 1])) {
-      fields.push({ key: line, value: lines[i + 1], confidence });
-      i++;
-    }
-  }
-  return fields;
-}
+export { textToRawFields } from "./textFields.ts";

@@ -19,16 +19,13 @@
 //    exists, and every failure returns as a stage result in the UI.
 //    The worker already loaded from this CDN since round 6; the
 //    DOCUMENT never leaves the device - only the library code loads.
+import { itemsToLines, type TextItemLike } from "./pdfLines.ts";
+
 export interface PdfTextOutcome {
   text: string;
   pages: string[];
   stage: string;
   error?: string;
-}
-
-interface TextItemLike {
-  str: string;
-  transform?: number[];
 }
 
 export async function extractPdfText(uri: string): Promise<PdfTextOutcome> {
@@ -58,20 +55,10 @@ export async function extractPdfTextFromBuffer(data: ArrayBuffer): Promise<PdfTe
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
       const content = await page.getTextContent();
-      const lines: string[] = [];
-      let line = "";
-      let lastY: number | null = null;
-      for (const item of content.items as TextItemLike[]) {
-        const y = item.transform?.[5] ?? null;
-        if (lastY !== null && y !== null && y !== lastY && line) {
-          lines.push(line);
-          line = "";
-        }
-        line += (line && !line.endsWith(" ") ? " " : "") + item.str;
-        if (y !== null) lastY = y;
-      }
-      if (line) lines.push(line);
-      pages.push(lines.join("\n"));
+      // Geometry-based reconstruction (src/pdfLines.ts): word
+      // fragments are joined without spaces, real word gaps get one
+      // space - the naive join made every label unmatchable.
+      pages.push(itemsToLines(content.items as TextItemLike[]).join("\n"));
     }
     const text = pages.join("\n");
     if (!text.trim()) {
