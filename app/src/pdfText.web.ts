@@ -21,6 +21,7 @@
 //    DOCUMENT never leaves the device - only the library code loads.
 export interface PdfTextOutcome {
   text: string;
+  pages: string[];
   stage: string;
   error?: string;
 }
@@ -35,7 +36,7 @@ export async function extractPdfText(uri: string): Promise<PdfTextOutcome> {
     const data = await (await fetch(uri)).arrayBuffer();
     return await extractPdfTextFromBuffer(data);
   } catch (e) {
-    return { text: "", stage: "pdf", error: e instanceof Error ? e.message : String(e) };
+    return { text: "", pages: [], stage: "pdf", error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -49,7 +50,7 @@ export async function extractPdfTextFromBuffer(data: ArrayBuffer): Promise<PdfTe
     pdfjs = await nativeImport("https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.mjs");
     pdfjs.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.worker.min.mjs";
   } catch (e) {
-    return { text: "", stage: "pdf-load", error: e instanceof Error ? e.message : String(e) };
+    return { text: "", pages: [], stage: "pdf-load", error: e instanceof Error ? e.message : String(e) };
   }
   try {
     const pdf = await pdfjs.getDocument({ data }).promise;
@@ -76,12 +77,13 @@ export async function extractPdfTextFromBuffer(data: ArrayBuffer): Promise<PdfTe
     if (!text.trim()) {
       return {
         text: "",
+        pages,
         stage: "pdf",
         error: "This PDF has no readable text layer (it looks like a scanned image). Photograph the pages instead, or paste the text.",
       };
     }
-    return { text, stage: "pdf" };
+    return { text, pages, stage: "pdf" };
   } catch (e) {
-    return { text: "", stage: "pdf", error: e instanceof Error ? e.message : String(e) };
+    return { text: "", pages: [], stage: "pdf", error: e instanceof Error ? e.message : String(e) };
   }
 }

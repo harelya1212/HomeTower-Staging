@@ -6,6 +6,7 @@
 // says so as a stage result shown in the UI (never a silent failure).
 export interface PdfTextOutcome {
   text: string;
+  pages: string[];
   stage: string;
   error?: string;
 }
@@ -13,6 +14,7 @@ export interface PdfTextOutcome {
 export async function extractPdfText(_uri: string): Promise<PdfTextOutcome> {
   return {
     text: "",
+    pages: [],
     stage: "pdf",
     error: "PDF text reading runs in the web app for now. In the phone app, photograph the pages or paste the text instead.",
   };
@@ -21,6 +23,7 @@ export async function extractPdfText(_uri: string): Promise<PdfTextOutcome> {
 export async function extractPdfTextFromBuffer(_data: ArrayBuffer): Promise<PdfTextOutcome> {
   return {
     text: "",
+    pages: [],
     stage: "pdf",
     error: "PDF text reading runs in the web app for now. In the phone app, photograph the pages or paste the text instead.",
   };
