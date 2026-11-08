@@ -322,6 +322,14 @@ export default function DocumentsScreen() {
                   </Pressable>
                 )}
               </View>
+              <View style={styles.catActions}>
+                <Pressable style={[styles.buttonGhost, { flex: 1 }]} onPress={() => scanPhoto("upload", c.docType)}>
+                  <Text style={styles.buttonGhostText}>📷 Upload a photo</Text>
+                </Pressable>
+                <Pressable style={[styles.buttonGhost, { flex: 1 }]} onPress={() => scanPhoto("camera", c.docType)}>
+                  <Text style={styles.buttonGhostText}>📸 Take a photo</Text>
+                </Pressable>
+              </View>
               {c.key === "payslip" && showShortcut && (
                 hasPayslip ? (
                   <View style={styles.shortcutBox}>
@@ -615,4 +623,6 @@ const styles = StyleSheet.create({
   statusChip: { borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 },
   statusChipText: { fontSize: 12, fontWeight: "700" },
   shortcutBox: { gap: 8, borderTopWidth: 1, borderTopColor: "#E3EAF0", paddingTop: 10 },
+  buttonGhost: { backgroundColor: "#E8EEF4", borderRadius: 8, paddingVertical: 10, alignItems: "center" },
+  buttonGhostText: { color: NAVY, fontWeight: "700", fontSize: 14.5 },
 });
