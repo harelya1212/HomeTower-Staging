@@ -10,7 +10,7 @@
 // other document in this app.
 import { readAsStringAsync } from "expo-file-system/legacy";
 import { Platform } from "react-native";
-import { pickDocumentFile } from "./ocr.ts";
+import { pickFile } from "./filePick";
 import type { HouseholdState } from "./store.tsx";
 
 /** Trigger a backup-file download (web). Returns an error message or null. */
@@ -32,21 +32,24 @@ export function downloadBackup(json: string, filename: string): string | null {
   }
 }
 
-async function readPickedText(uri: string): Promise<string> {
-  if (Platform.OS === "web") {
-    return await (await fetch(uri)).text();
+async function readPickedText(picked: { file?: File; uri?: string }): Promise<string> {
+  if (picked.file) return await picked.file.text();
+  if (Platform.OS === "web" && picked.uri) {
+    return await (await fetch(picked.uri)).text();
   }
-  return await readAsStringAsync(uri);
+  return await readAsStringAsync(picked.uri as string);
 }
 
 /** Pick a file and, if it is a HomeTower backup, hand it to `restore`.
  * Returns a status message for the UI, or null when the user cancelled. */
 export async function pickAndRestore(restore: (parsed: Partial<HouseholdState>) => void): Promise<string | null> {
-  const picked = await pickDocumentFile();
+  const picked = await pickFile();
   if (picked.error) return picked.error;
-  if (!picked.uri) return null;
+  if (picked.cancelled || (!picked.uri && !picked.file)) {
+    return "No file reached HomeTower - the picker closed without a selection arriving. Nothing was changed.";
+  }
   try {
-    const text = await readPickedText(picked.uri);
+    const text = await readPickedText(picked);
     const parsed = JSON.parse(text) as Partial<HouseholdState>;
     if (!parsed || typeof parsed !== "object" || !("intake" in parsed) || !("family" in parsed)) {
       return "That file is not a HomeTower backup - nothing was changed.";
