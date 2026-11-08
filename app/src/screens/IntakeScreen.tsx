@@ -104,11 +104,11 @@ export default function IntakeScreen() {
       <Field label="Retirement saving per month ($)" value={String(goals.retirementMonthly || "")} numeric onChange={(v) => updateGoals({ retirementMonthly: num(v) })} />
       <Text style={styles.note}>Years until retirement come from the My House family table (your date of birth and planned retirement age) once it is filled; until then the fallback below is used.</Text>
       <Field label="Years until retirement (fallback)" value={String(goals.retirementYears || "")} numeric onChange={(v) => updateGoals({ retirementYears: num(v) })} />
-      <Field label="Retirement target ($)" value={String(goals.retirementTarget || "")} numeric onChange={(v) => updateGoals({ retirementTarget: num(v) })} />
+      <Field label="Retirement target ($) - household fallback (per-person targets in My House win)" value={String(goals.retirementTarget || "")} numeric onChange={(v) => updateGoals({ retirementTarget: num(v) })} />
       <Field label="Education savings today ($)" value={String(goals.eduBalance || "")} numeric onChange={(v) => updateGoals({ eduBalance: num(v) })} />
       <Field label="Education saving per month ($)" value={String(goals.eduMonthly || "")} numeric onChange={(v) => updateGoals({ eduMonthly: num(v) })} />
       <Field label="Years until education money is needed" value={String(goals.eduYears || "")} numeric onChange={(v) => updateGoals({ eduYears: num(v) })} />
-      <Field label="Education target ($)" value={String(goals.eduTarget || "")} numeric onChange={(v) => updateGoals({ eduTarget: num(v) })} />
+      <Field label="Education target ($) - household fallback (per-child targets in My House win)" value={String(goals.eduTarget || "")} numeric onChange={(v) => updateGoals({ eduTarget: num(v) })} />
       <Field label="Assumed yearly growth (%)" value={String(goals.assumedReturnPct || "")} numeric onChange={(v) => updateGoals({ assumedReturnPct: num(v) })} />
 
       <Text style={styles.section}>Calibration - last year's filed return</Text>

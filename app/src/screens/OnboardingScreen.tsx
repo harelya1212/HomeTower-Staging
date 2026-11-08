@@ -19,8 +19,11 @@ export default function OnboardingScreen() {
   const [name, setName] = useState("");
   const [fedLow, setFedLow] = useState("2000");
   const [fedHigh, setFedHigh] = useState("3000");
-  const [retTarget, setRetTarget] = useState("");
-  const [eduTarget, setEduTarget] = useState("");
+  const [selfRetireAge, setSelfRetireAge] = useState("67");
+  const [spouseRetireAge, setSpouseRetireAge] = useState("67");
+  const [selfRetTarget, setSelfRetTarget] = useState("");
+  const [spouseRetTarget, setSpouseRetTarget] = useState("");
+  const [childTargets, setChildTargets] = useState<string[]>([]);
   const [selfDob, setSelfDob] = useState("");
   const [spouseDob, setSpouseDob] = useState("");
   const [childCount, setChildCount] = useState("");
@@ -34,17 +37,16 @@ export default function OnboardingScreen() {
       refundTargetLow: num(fedLow),
       refundTargetHigh: num(fedHigh),
     });
-    updateGoals({
-      retirementTarget: num(retTarget),
-      eduTarget: num(eduTarget),
-    });
     // Seed the My House family table from the quick start (only when the
-    // table is still empty - never overwrite a filled table).
+    // table is still empty - never overwrite a filled table). Retirement
+    // is per adult and education per child (owner QA round 8): the ages
+    // and personal targets land on each person's own row.
     if (state.family.length === 0 && (selfDob || spouseDob || num(childCount) > 0)) {
+      updateGoals({ retirementTarget: 0, eduTarget: 0 });
       const fam = [];
-      if (selfDob || true) fam.push({ id: "ob-self", name: "", role: "self" as const, dob: selfDob, retireAge: 67, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 });
-      if (married) fam.push({ id: "ob-spouse", name: "", role: "spouse" as const, dob: spouseDob, retireAge: 67, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 });
-      for (let i = 0; i < Math.min(6, num(childCount)); i++) fam.push({ id: `ob-child-${i}`, name: "", role: "child" as const, dob: "", retireAge: 67, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 });
+      if (selfDob || true) fam.push({ id: "ob-self", name: "", role: "self" as const, dob: selfDob, retireAge: num(selfRetireAge) || 67, retireTarget: num(selfRetTarget), eduTarget: 0, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 });
+      if (married) fam.push({ id: "ob-spouse", name: "", role: "spouse" as const, dob: spouseDob, retireAge: num(spouseRetireAge) || 67, retireTarget: num(spouseRetTarget), eduTarget: 0, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 });
+      for (let i = 0; i < Math.min(6, num(childCount)); i++) fam.push({ id: `ob-child-${i}`, name: "", role: "child" as const, dob: "", retireAge: 67, retireTarget: 0, eduTarget: num(childTargets[i] ?? ""), studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 });
       update({ family: fam });
       updateIntake({ members: fam.filter((m) => m.dob).map((m) => ({ name: m.name, role: m.role, dateOfBirth: m.dob || null })) });
     }
@@ -124,10 +126,30 @@ export default function OnboardingScreen() {
           <TextInput style={styles.input} value={fedLow} onChangeText={setFedLow} keyboardType="numeric" />
           <Text style={styles.label}>Federal refund target - high ($)</Text>
           <TextInput style={styles.input} value={fedHigh} onChangeText={setFedHigh} keyboardType="numeric" />
-          <Text style={styles.label}>Retirement target ($, optional)</Text>
-          <TextInput style={styles.input} value={retTarget} onChangeText={setRetTarget} keyboardType="numeric" placeholder="You can set this later" />
-          <Text style={styles.label}>Education target ($, optional)</Text>
-          <TextInput style={styles.input} value={eduTarget} onChangeText={setEduTarget} keyboardType="numeric" placeholder="You can set this later" />
+          <Text style={styles.label}>Retirement - you: planned retirement age</Text>
+          <TextInput style={styles.input} value={selfRetireAge} onChangeText={setSelfRetireAge} keyboardType="numeric" placeholder="67" />
+          <Text style={styles.label}>Retirement target - you ($, optional)</Text>
+          <TextInput style={styles.input} value={selfRetTarget} onChangeText={setSelfRetTarget} keyboardType="numeric" placeholder="You can set this later" />
+          {married && (
+            <>
+              <Text style={styles.label}>Retirement - spouse: planned retirement age</Text>
+              <TextInput style={styles.input} value={spouseRetireAge} onChangeText={setSpouseRetireAge} keyboardType="numeric" placeholder="67" />
+              <Text style={styles.label}>Retirement target - spouse ($, optional)</Text>
+              <TextInput style={styles.input} value={spouseRetTarget} onChangeText={setSpouseRetTarget} keyboardType="numeric" placeholder="You can set this later" />
+            </>
+          )}
+          {Array.from({ length: Math.min(6, num(childCount)) }, (_, i) => (
+            <View key={i}>
+              <Text style={styles.label}>Education target - child {i + 1} ($, optional)</Text>
+              <TextInput
+                style={styles.input}
+                value={childTargets[i] ?? ""}
+                onChangeText={(v) => setChildTargets((prev) => { const next = [...prev]; next[i] = v; return next; })}
+                keyboardType="numeric"
+                placeholder="You can set this later"
+              />
+            </View>
+          ))}
         </View>
       )}
 

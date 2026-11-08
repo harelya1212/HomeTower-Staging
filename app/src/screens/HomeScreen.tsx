@@ -51,8 +51,17 @@ export default function HomeScreen() {
   const retMonthly = retAssets.length ? retAssets.reduce((s, a) => s + a.monthly, 0) : g.retirementMonthly;
   const eduBalance = eduAssets.length ? eduAssets.reduce((s, a) => s + a.value, 0) : g.eduBalance;
   const eduMonthly = eduAssets.length ? eduAssets.reduce((s, a) => s + a.monthly, 0) : g.eduMonthly;
-  const retirementPct = goalPct(projectValue(retBalance, retMonthly, yearsToRetire, g.assumedReturnPct), g.retirementTarget);
-  const eduPct = goalPct(projectValue(eduBalance, eduMonthly, g.eduYears, g.assumedReturnPct), g.eduTarget);
+  // Owner QA round 8: targets are per person / per child when set -
+  // the rings use the sum of the personal targets; the single Intake
+  // goal fields remain the fallback.
+  const retireTargetSum = state.family
+    .filter((m) => m.role === "self" || m.role === "spouse")
+    .reduce((s, m) => s + (m.retireTarget || 0), 0);
+  const eduTargetSum = state.family
+    .filter((m) => m.role === "child")
+    .reduce((s, m) => s + (m.eduTarget || 0), 0);
+  const retirementPct = goalPct(projectValue(retBalance, retMonthly, yearsToRetire, g.assumedReturnPct), retireTargetSum > 0 ? retireTargetSum : g.retirementTarget);
+  const eduPct = goalPct(projectValue(eduBalance, eduMonthly, g.eduYears, g.assumedReturnPct), eduTargetSum > 0 ? eduTargetSum : g.eduTarget);
   const children = state.family.filter((m) => m.role === "child");
 
   useEffect(() => {

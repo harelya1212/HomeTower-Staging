@@ -141,6 +141,14 @@ export default function MyHouseScreen() {
             <>
               <Text style={styles.label}>Planned retirement age</Text>
               <TextInput style={styles.input} value={String(m.retireAge || "")} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { retireAge: num(v) })} placeholder="67" />
+              <Text style={styles.label}>Retirement target ($, optional - this person's own)</Text>
+              <TextInput style={styles.input} value={m.retireTarget ? String(m.retireTarget) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { retireTarget: num(v) })} placeholder="You can set this later" />
+            </>
+          )}
+          {m.role === "child" && (
+            <>
+              <Text style={styles.label}>Education target ($, optional - for this child)</Text>
+              <TextInput style={styles.input} value={m.eduTarget ? String(m.eduTarget) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduTarget: num(v) })} placeholder="You can set this later" />
             </>
           )}
           {m.role === "child" && (
@@ -165,7 +173,7 @@ export default function MyHouseScreen() {
           <Pressable onPress={() => setFamily(family.filter((x) => x.id !== m.id))}><Text style={styles.remove}>Remove</Text></Pressable>
         </View>
       ))}
-      <Pressable style={styles.addButton} onPress={() => setFamily([...family, { id: newId(), name: "", role: family.length === 0 ? "self" : "child", dob: "", retireAge: 67, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 }])}>
+      <Pressable style={styles.addButton} onPress={() => setFamily([...family, { id: newId(), name: "", role: family.length === 0 ? "self" : "child", dob: "", retireAge: 67, retireTarget: 0, eduTarget: 0, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 }])}>
         <Text style={styles.addText}>+ Add a family member</Text>
       </Pressable>
 
