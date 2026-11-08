@@ -27,6 +27,10 @@ const KIND_LABEL: Record<AssetKind, string> = { home: "Home", brokerage: "Stocks
 let seq = 0;
 const newId = () => `row-${Date.now()}-${seq++}`;
 const num = (v: string) => Number(v) || 0;
+// Typical US cost-of-attendance presets (College Board ballparks) - a
+// starting point the user edits; shown as such next to the field.
+const eduCostPreset = (inState: boolean, roomBoard: boolean): number =>
+  inState ? (roomBoard ? 29000 : 11000) : (roomBoard ? 60000 : 44000);
 
 // Pick a person from the family table instead of typing the name again
 // (owner QA round 4: "the user already typed the family members").
@@ -168,12 +172,34 @@ export default function MyHouseScreen() {
                   <TextInput style={styles.input} value={String(m.collegeStartYear || "")} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { collegeStartYear: num(v) })} placeholder="2031" />
                 </>
               )}
+              <Text style={styles.label}>College funding - saved so far for this child ($)</Text>
+              <TextInput style={styles.input} value={m.eduBalance ? String(m.eduBalance) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduBalance: num(v) })} placeholder="e.g. 12000" />
+              <Text style={styles.label}>Monthly contribution for this child ($)</Text>
+              <TextInput style={styles.input} value={m.eduMonthly ? String(m.eduMonthly) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduMonthly: num(v) })} placeholder="e.g. 200" />
+              <Text style={styles.label}>Where will they study?</Text>
+              <View style={styles.chipWrap}>
+                {([true, false] as const).map((v) => (
+                  <Pressable key={String(v)} onPress={() => patchMember(m.id, { eduInState: v, eduAnnualCost: eduCostPreset(v, m.eduRoomBoard) })} style={[styles.chip, m.eduInState === v && styles.chipOn]}>
+                    <Text style={[styles.chipText, m.eduInState === v && styles.chipTextOn]}>{v ? "In-state" : "Out-of-state"}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={styles.toggleRow}>
+                <Text style={styles.label}>Include room & board in the cost</Text>
+                <Switch value={m.eduRoomBoard} onValueChange={(v) => patchMember(m.id, { eduRoomBoard: v, eduAnnualCost: eduCostPreset(m.eduInState, v) })} />
+              </View>
+              <Text style={styles.label}>Expected cost per year ($) - typical US averages filled in, edit to your school</Text>
+              <TextInput style={styles.input} value={m.eduAnnualCost ? String(m.eduAnnualCost) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduAnnualCost: num(v) })} placeholder="e.g. 29000" />
+              <Text style={styles.label}>Expected scholarship per year ($)</Text>
+              <TextInput style={styles.input} value={m.eduScholarshipYear ? String(m.eduScholarshipYear) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduScholarshipYear: num(v) })} placeholder="0" />
+              <Text style={styles.label}>Years of college to fund</Text>
+              <TextInput style={styles.input} value={String(m.eduDurationYears || "")} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduDurationYears: num(v) })} placeholder="4" />
             </>
           )}
           <Pressable onPress={() => setFamily(family.filter((x) => x.id !== m.id))}><Text style={styles.remove}>Remove</Text></Pressable>
         </View>
       ))}
-      <Pressable style={styles.addButton} onPress={() => setFamily([...family, { id: newId(), name: "", role: family.length === 0 ? "self" : "child", dob: "", retireAge: 67, retireTarget: 0, eduTarget: 0, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0 }])}>
+      <Pressable style={styles.addButton} onPress={() => setFamily([...family, { id: newId(), name: "", role: family.length === 0 ? "self" : "child", dob: "", retireAge: 67, retireTarget: 0, eduTarget: 0, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4 }])}>
         <Text style={styles.addText}>+ Add a family member</Text>
       </Pressable>
 
