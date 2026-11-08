@@ -11,6 +11,7 @@ import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { classifyDocument, type Classification } from "../../engine/classify.ts";
 import { pickImageUri, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
 import type { RawField } from "../../engine/extract.ts";
+import { parseHoldings, positionValue, type HoldingsParse } from "../holdings.ts";
 import { pickFile } from "../filePick";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
@@ -53,6 +54,7 @@ export default function DocumentsScreen() {
   const [detection, setDetection] = useState<Classification | null>(null);
   const [pendingText, setPendingText] = useState<string | null>(null);
   const [pendingColumns, setPendingColumns] = useState<RawField[][] | null>(null);
+  const [pendingHoldings, setPendingHoldings] = useState<HoldingsParse | null>(null);
   const [autoPaste, setAutoPaste] = useState("");
   const [expandedReq, setExpandedReq] = useState<string | null>(null);
   const requests = useMemo(
@@ -96,6 +98,8 @@ export default function DocumentsScreen() {
       setDetection(detected);
       setPendingText(text);
       setPendingColumns(columnByPage ?? null);
+      const hp = parseHoldings(text);
+      setPendingHoldings(hp.positions.length > 0 ? hp : null);
       // Column-aware pairs (form PDFs) ride along AFTER the text pairs
       // in the general read - they fill what line pairing missed and
       // never override a figure the text already paired.
@@ -227,12 +231,17 @@ export default function DocumentsScreen() {
 
   const confirmExtraction = () => {
     if (!extraction) return;
+    const savedFields: Record<string, string> = Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]));
+    if (extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.cash !== null && savedFields["cash_balance"] === undefined) {
+      savedFields["cash_balance"] = String(pendingHoldings.cash);
+    }
     const record: DocumentRecord = {
       docType: extractionType,
       status: extraction.status,
       confidence: extraction.confidence,
       capturedOn: today,
-      fields: Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)])),
+      fields: savedFields,
+      ...(extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.positions.length > 0 ? { holdings: pendingHoldings.positions } : {}),
     };
     updateIntake({ documents: [...docs, record] });
     if (extractionType === "payslip") update({ payrollCheck: { lastConfirmedOn: null, consecutive: 0 } });
@@ -254,6 +263,7 @@ export default function DocumentsScreen() {
     setExtraction(null);
     setDetection(null);
     setPendingText(null);
+    setPendingHoldings(null);
     setPasteText("");
     setAutoPaste("");
     setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).${assignNote}`);
@@ -427,7 +437,7 @@ export default function DocumentsScreen() {
                   {info.ofType.length === 0 && <Text style={styles.line}>No documents of this type yet.</Text>}
                   {info.ofType.map((d, i) => (
                     <Text key={i} style={styles.line}>
-                      {d.capturedOn ? isoToUs(d.capturedOn) : "date unknown"} - {d.status} - confidence {d.confidence}
+                      {d.capturedOn ? isoToUs(d.capturedOn) : "date unknown"} - {d.status} - confidence {d.confidence}{d.holdings && d.holdings.length > 0 ? ` - ${d.holdings.length} positions (${d.holdings.map((h) => h.ticker).join(", ")})` : ""}
                     </Text>
                   ))}
                 </View>
@@ -626,6 +636,30 @@ export default function DocumentsScreen() {
           {Object.entries(extraction.fields).map(([k, v]) => (
             <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
           ))}
+          {extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.positions.length > 0 && (
+            <>
+              <Text style={styles.line}>Positions read from this screenshot - check them before saving:</Text>
+              {pendingHoldings.positions.map((p) => (
+                <Text key={p.ticker} style={styles.line}>
+                  {p.ticker} - {p.quantity} shares - paid ${p.pricePaid.toLocaleString("en-US")} - now ${p.lastPrice.toLocaleString("en-US")} - value ${positionValue(p).toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                </Text>
+              ))}
+              {(() => {
+                const posSum = pendingHoldings.positions.reduce((a, p) => a + positionValue(p), 0);
+                const cash = pendingHoldings.cash ?? (Number.isFinite(Number(extraction.fields["cash_balance"])) ? Number(extraction.fields["cash_balance"]) : null);
+                const account = Number(extraction.fields["ending_balance"]);
+                if (cash !== null && Number.isFinite(account) && account > 0) {
+                  const total = posSum + cash;
+                  return Math.abs(total - account) <= 1 ? (
+                    <Text style={styles.line}>Check: positions ${posSum.toLocaleString("en-US", { maximumFractionDigits: 2 })} + cash ${cash.toLocaleString("en-US")} = ${total.toLocaleString("en-US", { maximumFractionDigits: 2 })} - matches the account value on the screenshot.</Text>
+                  ) : (
+                    <Text style={styles.line}>Check: positions ${posSum.toLocaleString("en-US", { maximumFractionDigits: 2 })} + cash ${cash.toLocaleString("en-US")} = ${total.toLocaleString("en-US", { maximumFractionDigits: 2 })}, but the account value reads ${account.toLocaleString("en-US")} - a position may be cut off or misread; scroll the app and add another screenshot if one is missing.</Text>
+                  );
+                }
+                return <Text style={styles.line}>Positions total ${posSum.toLocaleString("en-US", { maximumFractionDigits: 2 })} (cash not read from this screenshot).</Text>;
+              })()}
+            </>
+          )}
           {extractionType === "529_statement" && eduChildren.length > 0 && (
             <>
               <Text style={styles.line}>Whose college savings is this? The balance (and monthly contribution, if shown) fills that child's funding:</Text>
@@ -644,7 +678,7 @@ export default function DocumentsScreen() {
           <Pressable style={styles.button} onPress={confirmExtraction}>
             <Text style={styles.buttonText}>Confirm and save as {extractionType}</Text>
           </Pressable>
-          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); }}>
+          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); }}>
             <Text style={styles.remove}>Discard</Text>
           </Pressable>
         </View>
