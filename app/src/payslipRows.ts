@@ -56,7 +56,12 @@ export interface PayslipParse {
 
 export function parsePayslipRows(text: string): PayslipParse {
   const whole = norm(text);
-  if (!whole.includes("payslip") || !(whole.includes("gross pay") || whole.includes("pay period"))) return { fields: [], consumedLines: [] };
+  // Gate: page 1 carries "gross pay / pay period"; page 2 of the same
+  // slip carries neither - it is identified by the running header
+  // ("Payslip: Name (id): date") and the Taxable Wages table.
+  const looksPayslip = whole.includes("payslip")
+    && (whole.includes("gross pay") || whole.includes("pay period") || whole.includes("taxable wages") || /payslip:\s*.+\(\d+\)/.test(text));
+  if (!looksPayslip) return { fields: [], consumedLines: [] };
   const out: RawField[] = [];
   const consumed: number[] = [];
   const seen = new Set<string>();
@@ -120,8 +125,14 @@ export function parsePayslipRows(text: string): PayslipParse {
       continue;
     }
 
-    // Description | Amount | YTD rows.
-    if (n.includes("refund")) continue; // ESPP refund rows are not contributions
+    // Description | Amount | YTD rows. An ESPP refund row is not a
+    // contribution - and it must be CONSUMED, not just skipped: left
+    // to generic pairing it fuzzy-matches the ESPP label and invents
+    // a negative contribution (measured on a real page 2).
+    if (n.includes("refund")) {
+      if (ROWS.some(([label]) => n.startsWith(label))) consumed.push(i);
+      continue;
+    }
     for (const [label, curKey, ytdKey] of ROWS) {
       if (!n.startsWith(label)) continue;
       const amts = amountsIn(line);

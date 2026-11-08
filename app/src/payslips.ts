@@ -92,6 +92,26 @@ function periodsRemaining(freq: string, endIso: string): number {
   void y;
 }
 
+// Identity of one physical payslip across its pages: same earner,
+// same period end. Two screenshots carrying the same key are pages
+// of ONE slip, not two slips.
+export function payslipKey(fields: Record<string, string | number>): string {
+  const name = normName(String(fields["employee_name"] ?? ""));
+  const end = usToIso(String(fields["pay_period_end"] ?? "")) ?? usToIso(String(fields["check_date"] ?? "")) ?? "";
+  return name === "" ? "" : `${name}|${end}`;
+}
+
+// Merge two pages' readings of the same slip into one field set.
+// The earlier page wins on a conflicting figure (page order in a
+// batch follows the document); the later page fills the gaps - the
+// tables a payslip splits across pages are disjoint by construction.
+// A bonus marker on either page marks the merged slip as a bonus run.
+export function mergePayslipFields(prev: Record<string, string>, next: Record<string, string>): Record<string, string> {
+  const merged: Record<string, string> = { ...next, ...prev };
+  if (prev["payslip_kind"] === "bonus" || next["payslip_kind"] === "bonus") merged["payslip_kind"] = "bonus";
+  return merged;
+}
+
 export function payslipForecast(
   documents: DocumentRecord[],
   family: MemberLike[],
