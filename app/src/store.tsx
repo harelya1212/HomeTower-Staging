@@ -35,6 +35,14 @@ export interface UiMember {
   studentNow: boolean; // children: currently in college
   collegeStartYear: number; // children: 0 = unknown
   yearsLeftInCollege: number; // children who are students now
+  // Per-child education funding (owner QA round 18, SPEC45 sec. 32)
+  eduBalance: number; // this child's saved balance
+  eduMonthly: number; // this child's monthly contribution
+  eduAnnualCost: number; // expected cost per college year, 0 = unset
+  eduInState: boolean; // true = in-state costs, false = out-of-state
+  eduRoomBoard: boolean; // true = cost includes room & board
+  eduScholarshipYear: number; // expected scholarship per year
+  eduDurationYears: number; // years of college to fund, default 4
 }
 
 export interface Job {
@@ -163,7 +171,7 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     ...parsed,
     intake: { ...d.intake, ...(parsed.intake ?? {}) },
     goals: { ...d.goals, ...(parsed.goals ?? {}) },
-    family: (parsed.family ?? []).map((m) => ({ retireTarget: 0, eduTarget: 0, ...m })),
+    family: (parsed.family ?? []).map((m) => ({ retireTarget: 0, eduTarget: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4, ...m })),
     jobs: parsed.jobs ?? [],
     assets: parsed.assets ?? [],
     payrollCheck: parsed.payrollCheck ?? { lastConfirmedOn: null, consecutive: 0 },
@@ -211,5 +219,10 @@ export function useHousehold(): Store {
 }
 
 export function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  // LOCAL calendar date - toISOString() is UTC and showed Phoenix users
+  // tomorrow's date every evening (owner QA, 2026-11-07).
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
 }
