@@ -37,7 +37,11 @@ export async function extractPdfText(uri: string): Promise<PdfTextOutcome> {
 export async function extractPdfTextFromBuffer(data: ArrayBuffer): Promise<PdfTextOutcome> {
   let pdfjs: typeof import("pdfjs-dist/legacy/build/pdf.mjs");
   try {
-    pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    // Loaded via the pdfLib chunk (round-11 fix): a chunk URL no cache
+    // has seen, so a stale cached chunk can never pair with a newer
+    // main bundle ("Requiring unknown module" mixed-generation crash).
+    const lib = await import("./pdfLib.web.ts");
+    pdfjs = lib.pdfjs;
     pdfjs.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.worker.min.mjs";
   } catch (e) {
     return { text: "", stage: "pdf-load", error: e instanceof Error ? e.message : String(e) };
