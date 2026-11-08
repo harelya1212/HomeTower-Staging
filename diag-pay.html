@@ -1,0 +1,27 @@
+<!doctype html><html><head><meta charset="utf-8"><title>diag pay ocr</title></head>
+<body><pre id="out">START</pre>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/tesseract.min.js"></script>
+<script>
+const out = document.getElementById('out');
+const INTEREST = /gross|net pay|federal|state tax|401|hsa|health savings|stock purchase|pay period|payslip|employee|total|earnings|deduction|withholding|restricted stock|bonus|taxable wages|employer/i;
+async function run() {
+  const worker = await Tesseract.createWorker('eng', 1, {
+    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/worker.min.js',
+    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.0.0/tesseract-core-simd.wasm.js',
+    langPath: 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0'
+  });
+  for (const name of ['diag-slip-a.jpg', 'diag-slip-y.jpg']) {
+    out.textContent += '\n=== ' + name + ' OCR start ' + new Date().toISOString();
+    const t0 = Date.now();
+    const res = await worker.recognize(name);
+    const text = res.data.text || '';
+    const lines = text.split('\n');
+    const kept = lines.filter(l => INTEREST.test(l));
+    out.textContent += '\n=== ' + name + ' DONE in ' + Math.round((Date.now()-t0)/1000) + 's; chars=' + text.length + '; lines=' + lines.length + '; kept=' + kept.length;
+    out.textContent += '\n--- kept lines:\n' + kept.join('\n');
+  }
+  await worker.terminate();
+  out.textContent += '\nALL DONE';
+}
+run().catch(e => { out.textContent += '\nERROR ' + (e && e.message || e); });
+</script></body></html>
