@@ -21,7 +21,7 @@ from .packs import load_pack
 
 KEYWORDS: dict[str, list[str]] = {
     "w2": ["w-2", "wage and tax statement", "wages tips", "social security wages", "medicare wages"],
-    "payslip": ["gross pay", "net pay", "pay period", "pay date", "year to date", "earnings statement"],
+    "payslip": ["gross pay", "net pay", "pay period", "pay date", "year to date", "earnings statement", "payslip", "payslip information", "current and ytd totals", "taxable wages"],
     "1099b": ["1099-b", "proceeds", "cost or other basis", "date acquired", "date sold"],
     "1098t": ["1098-t", "qualified tuition", "tuition and fees", "scholarships or grants"],
     "1099q": ["1099-q", "gross distribution", "qualified education expenses"],
