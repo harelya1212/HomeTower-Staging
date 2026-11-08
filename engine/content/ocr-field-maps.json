@@ -64,7 +64,12 @@
     },
     "529_statement": {
       "ending balance": "ending_balance",
-      "account value": "ending_balance"
+      "account value": "ending_balance",
+      "total value": "ending_balance",
+      "monthly contribution": "monthly_contribution",
+      "automatic contribution": "monthly_contribution",
+      "recurring contribution": "monthly_contribution",
+      "total contributions": "contributions_total"
     },
     "prior_return": {
       "total income": "total_income",
@@ -90,5 +95,5 @@
   "pack": "ocr-field-maps",
   "source": "hct prototype textract_service.py",
   "status": "Ported from the hct prototype textract_service.py FIELD_MAPS. Data only - the OCR engine that consumes these maps is chosen separately (local-first per VISION).",
-  "version": "1.3"
+  "version": "1.4"
 }
