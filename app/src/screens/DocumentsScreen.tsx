@@ -23,6 +23,7 @@ export default function DocumentsScreen() {
   const { state, update, updateIntake } = useHousehold();
   const navigation = useNavigation<any>();
   const scrollRef = useRef<ScrollView>(null);
+  const confirmY = useRef(0);
   const docs = state.intake.documents;
   const today = todayIso();
   const findings = useMemo(() => householdFreshness(docs, today), [docs, today]);
@@ -281,9 +282,13 @@ export default function DocumentsScreen() {
     }
   };
 
+  // Scroll to the TOP of the confirm card when a reading lands: the
+  // card is tall, and scrolling to the end of the page hid its header
+  // (and the batch progress line) above the viewport - owner QA
+  // round 26: the "1 of X" indicator existed but was never seen.
   useEffect(() => {
     if (extraction) {
-      const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+      const t = setTimeout(() => scrollRef.current?.scrollTo({ y: Math.max(0, confirmY.current - 8), animated: true }), 120);
       return () => clearTimeout(t);
     }
   }, [extraction]);
@@ -665,10 +670,10 @@ export default function DocumentsScreen() {
       {flowNote && <Text style={styles.note}>{flowNote}</Text>}
 
       {extraction && (
-        <View style={styles.confirmCard}>
+        <View style={styles.confirmCard} onLayout={(e) => { confirmY.current = e.nativeEvent.layout.y; }}>
           <Text style={styles.section}>Confirm HomeTower's reading</Text>
           {photoBatch && (
-            <Text style={styles.line}>Batch: screenshot {photoBatch.done} of {photoBatch.total} - confirming or discarding brings the next one.</Text>
+            <Text style={styles.batchLine}>Screenshot {photoBatch.done} of {photoBatch.total} - confirm this one and the next follows.</Text>
           )}
           {detection && detection.level !== "unknown" && (
             <Text style={styles.line}>
@@ -740,10 +745,16 @@ export default function DocumentsScreen() {
             <Text style={styles.line}>No known fields matched this document type. You can still save it as a register entry.</Text>
           )}
           <Pressable style={styles.button} onPress={confirmExtraction}>
-            <Text style={styles.buttonText}>Confirm and save as {extractionType}</Text>
+            <Text style={styles.buttonText}>
+              {photoBatch
+                ? photoBatch.queue.length > 0
+                  ? `Confirm and save (${photoBatch.done} of ${photoBatch.total}) - next follows`
+                  : `Confirm and save (${photoBatch.total} of ${photoBatch.total}) - last one`
+                : `Confirm and save as ${extractionType}`}
+            </Text>
           </Pressable>
           <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); advanceBatch(); }}>
-            <Text style={styles.remove}>Discard</Text>
+            <Text style={styles.remove}>{photoBatch ? `Discard (${photoBatch.done} of ${photoBatch.total})` : "Discard"}</Text>
           </Pressable>
         </View>
       )}
@@ -778,6 +789,7 @@ const styles = StyleSheet.create({
   buttonText: { color: "#FFFFFF", fontWeight: "700" },
   pasteBox: { backgroundColor: "#FFFFFF", borderRadius: 8, padding: 12, minHeight: 90, textAlignVertical: "top", fontSize: 13 },
   confirmCard: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 14, gap: 6, borderWidth: 1, borderColor: TEAL },
+  batchLine: { fontSize: 16.5, fontWeight: "700", color: "#0f766e", marginBottom: 6 },
   mismatch: { backgroundColor: "#FEF7E0", borderRadius: 10, padding: 10, gap: 8 },
   manualLink: { color: TEAL, fontSize: 13, fontWeight: "600", marginTop: 6 },
   catCard: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 13, gap: 8, borderWidth: 1, borderColor: "#D7E0E8" },
