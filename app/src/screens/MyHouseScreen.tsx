@@ -194,6 +194,9 @@ export default function MyHouseScreen() {
               <TextInput style={styles.input} value={m.eduScholarshipYear ? String(m.eduScholarshipYear) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduScholarshipYear: num(v) })} placeholder="0" />
               <Text style={styles.label}>Years of college to fund</Text>
               <TextInput style={styles.input} value={String(m.eduDurationYears || "")} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduDurationYears: num(v) })} placeholder="4" />
+              <Pressable style={styles.prefill} onPress={() => { update({ eduAssignChildId: m.id }); navigation.navigate("Documents"); }}>
+                <Text style={styles.prefillText}>📄 Or upload a savings (529) statement for {m.name || "this child"} - HomeTower fills the balance (and monthly contribution, if the statement shows one) from it</Text>
+              </Pressable>
             </>
           )}
           <Pressable onPress={() => setFamily(family.filter((x) => x.id !== m.id))}><Text style={styles.remove}>Remove</Text></Pressable>
