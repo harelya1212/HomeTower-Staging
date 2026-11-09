@@ -30,7 +30,7 @@ function ok(name: string, cond: boolean) {
 }
 
 const VERSION = String(ocrMapsPack().version);
-eq("field maps are v1.13", VERSION, "1.13");
+eq("field maps are v1.14", VERSION, "1.14");
 
 // ---------------------------------------------------------------------------
 // Faithful text, condensed from the owner's real documents (the
