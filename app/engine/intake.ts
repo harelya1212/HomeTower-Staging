@@ -46,6 +46,16 @@ export interface DocumentRecord {
   /** Round 55: structured tax-form boxes (hsa_1099_sa / hsa_5498_sa)
    * - the numbered boxes exactly as the form printed them. */
   formBoxes?: Record<string, string> | null;
+  /** Round 58: the content fingerprint of the extracted text this
+   * reading came from (FNV-1a over the normalized text - see
+   * fingerprintText in src/reconcile.ts). Stamped at save and at
+   * reprocess; a re-upload of the same document carries the same
+   * fingerprint and refreshes this record in place instead of
+   * stacking a duplicate (upsertDocument in src/reconcile.ts).
+   * Absent on records saved before round 58 - for those the
+   * fingerprint is recomputed from the retained rawText whenever
+   * one is needed, so they dedupe too. */
+  fingerprint?: string | null;
 }
 /** Round 48: what a bank/card statement CSV proved about household
  * spending - months of evidence and annualized outflows per
