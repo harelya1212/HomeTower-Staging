@@ -10,13 +10,18 @@ import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { Platform } from "react-native";
 import type { RawField } from "../engine/extract.ts";
-import { recognizeBandsWebOcr, recognizeWithWebOcr } from "./webOcr.ts";
+import { probeWebImageSize, recognizeBandsWebOcr, recognizeUpscaledWebOcr, recognizeWithWebOcr } from "./webOcr.ts";
 
 export interface OcrOutcome {
   stage: string;
   text: string;
   error: string | null;
   source: "mlkit" | "paste" | "none";
+  /** Round 56: why an image read failed, when it did - "decode"
+   * (image could not be processed), "engine" (text recognition
+   * failed to load or run), "no_text" (recognition ran, no text
+   * found). Null when text arrived. */
+  failure?: "decode" | "engine" | "no_text" | null;
 }
 
 export async function pickImageUri(): Promise<{ uri: string | null; error: string | null }> {
@@ -70,10 +75,10 @@ export async function recognizeOnDevice(uri: string): Promise<OcrOutcome> {
     const TextRecognition = mod.default ?? mod;
     const result = await TextRecognition.recognize(uri);
     const text: string = result?.text ?? "";
-    if (!text) return { stage: "mlkit", text: "", error: "ML Kit returned no text for this image.", source: "mlkit" };
-    return { stage: "mlkit", text, error: null, source: "mlkit" };
+    if (!text) return { stage: "mlkit", text: "", error: "ML Kit returned no text for this image.", source: "mlkit", failure: "no_text" };
+    return { stage: "mlkit", text, error: null, source: "mlkit", failure: null };
   } catch (e) {
-    return { stage: "mlkit-load", text: "", error: e instanceof Error ? e.message : String(e), source: "none" };
+    return { stage: "mlkit-load", text: "", error: e instanceof Error ? e.message : String(e), source: "none", failure: "engine" };
   }
 }
 
@@ -81,18 +86,34 @@ export async function recognizeOnDevice(uri: string): Promise<OcrOutcome> {
  * browser (src/webOcr.ts - the screenshot is read locally, nothing
  * is uploaded). Native photo flows use URIs + ML Kit instead; this
  * entry exists for the web file-input path. */
-export async function recognizeImageFile(file: File, onProgress?: (pct: number) => void): Promise<OcrOutcome> {
+export async function recognizeImageFile(file: File | Blob, onProgress?: (pct: number) => void): Promise<OcrOutcome> {
   if (Platform.OS !== "web") {
-    return { stage: "file", text: "", error: "Image files are read on web; the native app reads photos from the library or camera.", source: "none" };
+    return { stage: "file", text: "", error: "Image files are read on web; the native app reads photos from the library or camera.", source: "none", failure: "engine" };
   }
   const r = await recognizeWithWebOcr(file, onProgress);
-  return { stage: r.stage, text: r.text, error: r.error, source: r.error ? "none" : "paste" };
+  return { stage: r.stage, text: r.text, error: r.error, source: r.error ? "none" : "paste", failure: r.failure ?? (r.error ? "engine" : null) };
 }
 
 /** Section re-read of a tall image file (web OCR): small, enlarged
  * horizontal bands, used to rescue tables the fast pass dropped.
  * Returns one text per band; the caller fills missing fields only. */
-export async function recognizeImageBands(file: File, onProgress?: (pct: number) => void): Promise<{ texts: string[]; stage: string; error: string | null }> {
+/** The picked image's pixel size on web (null elsewhere). */
+export async function probeImageSize(file: File | Blob): Promise<{ w: number; h: number } | null> {
+  if (Platform.OS !== "web") return null;
+  return probeWebImageSize(file);
+}
+
+/** ROUND 59 (TRACE A): the wide-image enlarged re-read. Returns
+ * null when no enlarged pass applies (native, tall image, or the
+ * image is already at the ladder's target width). */
+export async function recognizeImageUpscaled(file: File | Blob, onProgress?: (pct: number) => void): Promise<OcrOutcome | null> {
+  if (Platform.OS !== "web") return null;
+  const r = await recognizeUpscaledWebOcr(file, onProgress);
+  if (!r) return null;
+  return { stage: r.stage, text: r.text, error: r.error, source: r.error ? "none" : "paste", failure: r.failure ?? (r.error ? "engine" : null) };
+}
+
+export async function recognizeImageBands(file: File | Blob, onProgress?: (pct: number) => void): Promise<{ texts: string[]; stage: string; error: string | null }> {
   if (Platform.OS !== "web") {
     return { texts: [], stage: "file", error: "Section re-read runs on web; the native app reads with ML Kit." };
   }

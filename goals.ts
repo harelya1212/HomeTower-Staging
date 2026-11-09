@@ -1279,6 +1279,11 @@ export interface RetirementTimeline {
   /** Collision-aware label layout at TIMELINE_REF_WIDTH; the
    * component re-runs timelineLabelLayout at its measured width. */
   labels: TimelineLabel[];
+  /** ROUND 59 (TRACE G): at retirement accuracy X the numeric
+   * "80+" shout is suppressed in the label layout - the band is
+   * drawn, the decade ticks and the Goal label stay, but no label
+   * carries the number the disclaimer says cannot be confirmed. */
+  suppressEightyPlus?: boolean;
 }
 
 export function retirementTimelineModel(input: {
@@ -1390,6 +1395,9 @@ export function timelineLabelLayout(input: {
   goalAge: number;
   band: TimelineBand;
   axisWidth: number;
+  /** Round 59 (TRACE G): render the end tick without its "80+"
+   * text (the tick is dropped, like a colliding one). */
+  suppressEightyPlus?: boolean;
 }): TimelineLabel[] {
   const W = Math.max(1, input.axisWidth);
   const span = Math.max(1, input.maxAge - input.minAge);
@@ -1452,9 +1460,10 @@ export function timelineLabelLayout(input: {
   const kept: { left: number; right: number }[] = rangeAbove ? [goalBox] : [goalBox, rangeBox];
   const maxTick = input.ticks.length ? Math.max(...input.ticks) : null;
   for (const t of input.ticks) {
-    const text = t >= 80 ? "80+" : String(t);
+    const suppressed = input.suppressEightyPlus === true && t >= 80;
+    const text = suppressed ? "" : t >= 80 ? "80+" : String(t);
     const box = place(x(t), timelineTextWidth(text));
-    let dropped = kept.some((k) => hit(box, k));
+    let dropped = suppressed || kept.some((k) => hit(box, k));
     if (rangeAbove && t === maxTick) dropped = true; // the above-axis label IS the end label
     labels.push({
       kind: "tick", text, anchorAge: t, left: box.left, right: box.right,
@@ -1463,6 +1472,90 @@ export function timelineLabelLayout(input: {
     if (!dropped) kept.push(box);
   }
   return labels.sort((a, b) => a.anchorAge - b.anchorAge || a.left - b.left);
+}
+
+// ---------------------------------------------------------------------------
+// ROUND 55 - the expanded 401(k) fact set (workstream F). One owned
+// statement carries the whole picture: balance, the year's
+// contribution streams (pretax/Roth, after-tax, employer match, the
+// 415-limit total), the balance composition, the Mega Backdoor Roth
+// figures (after-tax in, Roth conversion balance, after-tax
+// residual), the holdings and the future election. Every fact
+// carries its provenance: the statement and its as-of date. The
+// forecast consumes the balance (round 51) and the match
+// (rounds 51-52); the rest is persisted and displayed - no new
+// projection stream is inferred from it.
+// ---------------------------------------------------------------------------
+
+export interface K401Facts {
+  balance: number | null;
+  pretaxRothYtd: number | null;
+  afterTaxYtd: number | null;
+  matchYtd: number | null;
+  total415Ytd: number | null;
+  employeeContributionsYtd: number | null;
+  pretaxBalance: number | null;
+  matchBalance: number | null;
+  rothConversionBalance: number | null;
+  /** Exactly 0 when the statement prints $0.00 after-tax - a
+   * confirmed zero, distinct from null (not read). */
+  afterTaxBalance: number | null;
+  election: string | null;
+  holdings: { label: string; value: number }[];
+  /** Statement period end (ISO) when the record carries one. */
+  statementAsOf: string | null;
+  capturedOn: string | null;
+}
+
+function factsFromDoc(d: SsDocLike & { capturedOn?: string | null }): K401Facts | null {
+  if (!d.fields) return null;
+  const num = (k: string): number | null => {
+    const raw = d.fields?.[k];
+    if (raw === undefined || raw === "") return null;
+    const v = Number(String(raw).replace(/[^0-9.-]/g, ""));
+    return Number.isFinite(v) ? v : null;
+  };
+  let holdings: { label: string; value: number }[] = [];
+  try {
+    const parsed = JSON.parse(d.fields["holdings_detail"] ?? "[]") as { label: string; value: number }[];
+    if (Array.isArray(parsed)) holdings = parsed.filter((h) => typeof h?.label === "string" && Number.isFinite(h?.value));
+  } catch { holdings = []; }
+  const facts: K401Facts = {
+    balance: num("ending_balance"),
+    pretaxRothYtd: num("employee_pretax_roth_ytd"),
+    afterTaxYtd: num("after_tax_ytd"),
+    matchYtd: num("employer_contribution_period") ?? num("employer_contributions"),
+    total415Ytd: num("total_415_ytd"),
+    employeeContributionsYtd: num("employee_contributions"),
+    pretaxBalance: num("pretax_balance"),
+    matchBalance: num("match_balance"),
+    rothConversionBalance: num("roth_conversion_balance"),
+    afterTaxBalance: num("after_tax_balance"),
+    election: d.fields["future_election"] || null,
+    holdings,
+    statementAsOf: d.fields["statement_as_of"] || null,
+    capturedOn: d.capturedOn ?? null,
+  };
+  return facts.balance !== null || facts.pretaxRothYtd !== null || facts.matchYtd !== null ? facts : null;
+}
+
+/** The freshest 401(k) statement fact set. With a member id, only
+ * that member's OWNED statements count (AC-D3 - no guessing whose
+ * statement it is); without one, the household's freshest statement
+ * (the Documents card is a household surface). */
+export function k401StatementFacts(docs: SsDocLike[], memberId?: string): K401Facts | null {
+  let best: (K401Facts & { key: string }) | null = null;
+  for (const d of docs) {
+    if (d.docType !== "401k_statement") continue;
+    if (memberId !== undefined && d.ownerMemberId !== memberId) continue;
+    const f = factsFromDoc(d);
+    if (!f) continue;
+    const key = f.statementAsOf ?? f.capturedOn ?? "";
+    if (!best || key >= best.key) best = { ...f, key };
+  }
+  if (!best) return null;
+  const { balance, pretaxRothYtd, afterTaxYtd, matchYtd, total415Ytd, employeeContributionsYtd, pretaxBalance, matchBalance, rothConversionBalance, afterTaxBalance, election, holdings, statementAsOf, capturedOn } = best;
+  return { balance, pretaxRothYtd, afterTaxYtd, matchYtd, total415Ytd, employeeContributionsYtd, pretaxBalance, matchBalance, rothConversionBalance, afterTaxBalance, election, holdings, statementAsOf, capturedOn };
 }
 
 /** Monthly contribution needed to reach a target from a balance in a
@@ -1513,4 +1606,76 @@ export function educationFunding(balance: number, monthly: number, yearsToStart:
     pctFunded: needAtStart > 0 ? Math.round((projectedAtStart / needAtStart) * 100) : null,
     requiredMonthly: Math.round(requiredMonthly(balance, needAtStart, yearsToStart, annualReturnPct)),
   };
+}
+
+/** ROUND 59 (TRACE F) - the Home education card's per-child model,
+ * extracted from the screen so the accuracy gating is pinnable.
+ * Copilot's rule, mirroring Retirement's: a child whose college
+ * costs are still the DEFAULT is in early-estimate mode - the
+ * arithmetic (funded %, saved-by-start, need, gap) still shows,
+ * but the status is "early", never a red verdict; the verdict
+ * presentation unlocks per child, only when that child's real
+ * costs are set. Gating is per child by construction: each entry
+ * carries its own earlyEstimate flag. */
+export interface EduChildLike {
+  id: string;
+  name: string;
+  dob: string;
+  studentNow?: boolean;
+  collegeStartYear?: number;
+  yearsLeftInCollege?: number;
+  eduDurationYears?: number;
+  eduAnnualCost?: number;
+  eduBalance?: number;
+  eduMonthly?: number;
+  eduScholarshipYear?: number;
+}
+export type EducationStatus = "early" | "covered" | "gap";
+export interface EducationOutlook {
+  child: EduChildLike;
+  yearsToStart: number;
+  duration: number;
+  funding: EducationFunding;
+  usingDefaultCost: boolean;
+  earlyEstimate: boolean;
+  status: EducationStatus;
+}
+export function educationOutlookFor(
+  children: EduChildLike[],
+  today: string,
+  assumedReturnPct: number,
+  defaultAnnualCost: number,
+): EducationOutlook[] {
+  const thisYear = Number(today.slice(0, 4));
+  return children.map((c) => {
+    const age = ageOn(c.dob, today);
+    let yearsToStart = 0;
+    if (!c.studentNow && (c.collegeStartYear ?? 0) > 0) yearsToStart = Math.max(0, (c.collegeStartYear ?? 0) - thisYear);
+    else if (!c.studentNow && age !== null) yearsToStart = Math.max(0, 18 - age);
+    const duration = c.studentNow && (c.yearsLeftInCollege ?? 0) > 0 ? (c.yearsLeftInCollege ?? 4) : c.eduDurationYears || 4;
+    const usingDefaultCost = !((c.eduAnnualCost ?? 0) > 0);
+    const effCost = usingDefaultCost ? defaultAnnualCost : (c.eduAnnualCost ?? 0);
+    const funding = educationFunding(c.eduBalance || 0, c.eduMonthly || 0, yearsToStart, duration, effCost, c.eduScholarshipYear || 0, assumedReturnPct);
+    const earlyEstimate = usingDefaultCost;
+    const status: EducationStatus = earlyEstimate ? "early" : funding.gap <= 0 ? "covered" : "gap";
+    return { child: c, yearsToStart, duration, funding, usingDefaultCost, earlyEstimate, status };
+  });
+}
+
+/** ROUND 59 (TRACE E) - the 401(k) card's employer-match line when
+ * the source is a statement. Provenance discipline: the statement
+ * CONFIRMS a year-to-date total ($11,466.08 on the owner's real
+ * NetBenefits statement); the monthly pace is HomeTower's
+ * DERIVATION from that total over the statement's own period, and
+ * the line must say both things in that order - confirmed figure
+ * first, pace labelled estimated/derived, source labelled as a
+ * derivation source. (Contrast, audited the same round: a 529 or
+ * HSA statement's monthly_contribution is only ever stored when
+ * the statement's period is exactly one month - see
+ * parseSectionFields - so those monthly figures ARE stated
+ * period figures and keep their plain source label.) */
+export function statementMatchLine(input: { periodTotal: number; months: number; monthly: number; statementLabel: string }): string {
+  const total = `$${Math.round(input.periodTotal).toLocaleString("en-US")}`;
+  const pace = `$${Math.round(input.monthly).toLocaleString("en-US")}`;
+  return `Employer match YTD: ${total} confirmed - Estimated pace: ~${pace}/mo - Source: 401(k) statement, ${input.statementLabel} (statement -> derived pace: the statement confirms the year-to-date total; the monthly pace is derived from its ${input.months}-month period, not stated by it)`;
 }

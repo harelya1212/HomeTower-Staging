@@ -63,6 +63,41 @@ export interface PayslipForecast {
 
 const PERIODS_PER_YEAR: Record<string, number> = { weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 };
 
+/** ROUND 59 (TRACE C) - the frequency a pace is annualized with is
+ * read from the earner's OWN slip period ends before the job record
+ * is believed: a job record still carrying the form's "biweekly"
+ * default turned a real semi-monthly $44.65/check into $97/mo on
+ * the HSA card while every piece of payroll evidence (slips ending
+ * on the 15th and at month-end; statement deposits twice a month)
+ * said 24 periods a year. Decisive signatures, in order: ends on
+ * BOTH the 15th and a month-end (the semi-monthly signature - a
+ * biweekly cycle lands 14 days apart and cannot produce that pair
+ * in adjacent periods); all ends on one day-of-month or all at
+ * month-end across 2+ months (monthly); median spacing of about a
+ * week, about two weeks, or about a month. Anything indecisive
+ * falls back to the job record, then to semi-monthly (the app's
+ * standing default - see the forecast's signature comment). */
+export function periodsPerYearForEarner(ends: string[], jobFrequency?: string | null): number {
+  const sorted = [...new Set(ends.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)))].sort();
+  if (sorted.length >= 2) {
+    const parts = sorted.map((e) => ({ y: Number(e.slice(0, 4)), m: Number(e.slice(5, 7)), d: Number(e.slice(8, 10)) }));
+    const lastDay = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const isLast = parts.map((p) => p.d === lastDay(p.y, p.m));
+    const allSemiDays = parts.every((p, i) => p.d === 15 || isLast[i]);
+    if (allSemiDays && parts.some((p) => p.d === 15) && isLast.some(Boolean)) return 24;
+    const months = new Set(parts.map((p) => `${p.y}-${p.m}`));
+    if (months.size >= 2 && (parts.every((p) => p.d === parts[0].d) || isLast.every(Boolean))) return 12;
+    const gaps: number[] = [];
+    for (let i = 1; i < sorted.length; i++) gaps.push(Math.round((Date.parse(sorted[i]) - Date.parse(sorted[i - 1])) / 86400000));
+    gaps.sort((a, b) => a - b);
+    const median = gaps[Math.floor(gaps.length / 2)];
+    if (median >= 6 && median <= 8) return 52;
+    if (median >= 13 && median <= 15) return 26;
+    if (median >= 27 && median <= 32) return 12;
+  }
+  return PERIODS_PER_YEAR[(jobFrequency ?? "semimonthly").toLowerCase()] ?? 24;
+}
+
 function normName(s: string): string {
   return s.toLowerCase().replace(/[^a-z ]+/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -133,6 +168,88 @@ export function mergePayslipFields(prev: Record<string, string>, next: Record<st
 // gate component and NOTHING in the app said so. This reports, per
 // earner, exactly which components no saved slip provided - the
 // Home screen shows it instead of a silent blank.
+export interface PayslipDeductionTotals {
+  esppYtd: number;
+  /** Monthly ESPP pace from the freshest REGULAR slip per earner,
+   * annualized - bonus slips never set pace (same rule as 401(k)). */
+  esppMonthlyPace: number | null;
+  hsaYtd: number;
+  hsaMonthlyPace: number | null;
+  perEarner: { name: string; esppYtd: number; esppMonthlyPace: number | null; hsaYtd: number; hsaMonthlyPace: number | null }[];
+}
+
+/**
+ * ROUND 52 - ESPP and HSA read off the payslips, with exactly the
+ * evidence discipline of payslip401kTotals: slips grouped per
+ * earner, freshest first (a fuller reading wins a same-date tie);
+ * year-to-date from the freshest slip that carries it (YTD figures
+ * are cumulative - never summed across one earner's slips); pace
+ * from the freshest REGULAR slip carrying the item, annualized by
+ * the pay frequency. The parsed fields have existed since the
+ * first field maps; nothing read them until the provenance round.
+ * Null when there are no payslips at all; pace null when no regular
+ * slip carries the item - an absent item is Unknown/Not detected
+ * downstream, never a $0 finding.
+ */
+export function payslipDeductionTotals(
+  documents: DocumentRecord[],
+  todayIso: string,
+  jobs: JobLike[] = [],
+): PayslipDeductionTotals | null {
+  const slips = documents.filter((d) => d.docType === "payslip" && d.fields && (d.fields["employee_name"] ?? "").trim() !== "");
+  if (slips.length === 0) return null;
+  const thisYear = todayIso.slice(0, 4);
+  const byEarner = new Map<string, DocumentRecord[]>();
+  for (const s of slips) {
+    const key = normName(s.fields!["employee_name"]);
+    const arr = byEarner.get(key) ?? [];
+    arr.push(s);
+    byEarner.set(key, arr);
+  }
+  const fieldCount = (d: DocumentRecord) => Object.values(d.fields ?? {}).filter((v) => v !== "").length;
+  const perEarner: PayslipDeductionTotals["perEarner"] = [];
+  for (const [key, docs] of byEarner) {
+    const withEnd = docs.map((d) => ({ d, end: slipEnd(d) })).filter((x) => x.end !== null && x.end.slice(0, 4) === thisYear) as Array<{ d: DocumentRecord; end: string }>;
+    if (withEnd.length === 0) continue;
+    withEnd.sort((a, b) => (a.end > b.end ? -1 : a.end < b.end ? 1 : fieldCount(b.d) - fieldCount(a.d) || (a.d.capturedOn > b.d.capturedOn ? -1 : 1)));
+    const pick = (field: string) => {
+      for (const x of withEnd) {
+        const v = num((x.d.fields ?? {})[field]);
+        if (v !== null) return v;
+      }
+      return null;
+    };
+    const job = jobs.find((j) => normName(j.memberName) === key);
+    const perYear = periodsPerYearForEarner(withEnd.map((x) => x.end), job?.payFrequency);
+    const pace = (field: string) => {
+      for (const x of withEnd) {
+        const f = x.d.fields ?? {};
+        if ((f["payslip_kind"] ?? "regular") === "bonus") continue;
+        const cur = num(f[field]);
+        if (cur !== null) return Math.round(((cur * perYear) / 12) * 100) / 100;
+      }
+      return null;
+    };
+    const esppYtd = pick("ytd_espp");
+    const hsaYtd = pick("ytd_hsa");
+    const esppMonthlyPace = pace("espp_contribution");
+    const hsaMonthlyPace = pace("hsa_contribution");
+    if (esppYtd === null && hsaYtd === null && esppMonthlyPace === null && hsaMonthlyPace === null) continue;
+    perEarner.push({ name: docs[0].fields!["employee_name"] || key, esppYtd: esppYtd ?? 0, esppMonthlyPace, hsaYtd: hsaYtd ?? 0, hsaMonthlyPace });
+  }
+  const paceSum = (pickFn: (e: PayslipDeductionTotals["perEarner"][number]) => number | null) => {
+    const vals = perEarner.map(pickFn).filter((v): v is number => v !== null);
+    return vals.length > 0 ? Math.round(vals.reduce((sum, v) => sum + v, 0) * 100) / 100 : null;
+  };
+  return {
+    esppYtd: Math.round(perEarner.reduce((sum, e) => sum + e.esppYtd, 0) * 100) / 100,
+    esppMonthlyPace: paceSum((e) => e.esppMonthlyPace),
+    hsaYtd: Math.round(perEarner.reduce((sum, e) => sum + e.hsaYtd, 0) * 100) / 100,
+    hsaMonthlyPace: paceSum((e) => e.hsaMonthlyPace),
+    perEarner,
+  };
+}
+
 export interface PayslipGap { name: string; missing: string[] }
 
 export function payslipGaps(documents: DocumentRecord[], todayIso: string): PayslipGap[] {
@@ -164,7 +281,7 @@ export function payslipGaps(documents: DocumentRecord[], todayIso: string): Pays
 }
 
 export interface Payslip401k {
-  perEarner: Array<{ name: string; total: number; through: string; monthlyPace: number | null }>;
+  perEarner: Array<{ name: string; total: number; through: string; monthlyPace: number | null; matchMonthlyPace: number | null }>;
   total: number;
   earners: number;
   through: string; // ISO - freshest period end any component came from
@@ -219,14 +336,29 @@ export function payslip401kTotals(documents: DocumentRecord[], todayIso: string,
     // not a pace, so they never set it.
     let monthlyPace: number | null = null;
     const job = jobs.find((j) => normName(j.memberName) === key);
-    const perYear = ({ weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 } as Record<string, number>)[(job?.payFrequency ?? "semimonthly").toLowerCase()] ?? 24;
+    const perYear = periodsPerYearForEarner(withEnd.map((x) => x.end), job?.payFrequency);
     for (const x of withEnd) {
       const f = x.d.fields ?? {};
       if ((f["payslip_kind"] ?? "regular") === "bonus") continue;
       const cur = num(f["k401_contribution"]);
       if (cur !== null) { monthlyPace = Math.round(((cur * perYear) / 12) * 100) / 100; break; }
     }
-    perEarner.push({ name: docs[0].fields!["employee_name"] || key, total: (reg?.value ?? 0) + (bon?.value ?? 0), through: eThrough, monthlyPace });
+    // Employer match pace (round 51, Copilot's source doctrine:
+    // payroll is authoritative for employer match, and the projected
+    // portfolio is current assets + employee contributions +
+    // EMPLOYER contributions + growth). Same rule as the employee
+    // pace, read independently: the freshest REGULAR slip carrying
+    // a match line sets it, annualized the same way; a bonus run's
+    // match is an event, never a pace. Kept in its own field - the
+    // totals above stay employee-only, by the owner's rule.
+    let matchMonthlyPace: number | null = null;
+    for (const x of withEnd) {
+      const f = x.d.fields ?? {};
+      if ((f["payslip_kind"] ?? "regular") === "bonus") continue;
+      const cur = num(f["k401_employer_match"]);
+      if (cur !== null) { matchMonthlyPace = Math.round(((cur * perYear) / 12) * 100) / 100; break; }
+    }
+    perEarner.push({ name: docs[0].fields!["employee_name"] || key, total: (reg?.value ?? 0) + (bon?.value ?? 0), through: eThrough, monthlyPace, matchMonthlyPace });
     if (eThrough > through) through = eThrough;
     void key;
   }

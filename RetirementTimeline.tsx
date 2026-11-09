@@ -54,7 +54,7 @@ export default function RetirementTimeline({ timeline, colorKey, compact }: {
   const [axisW, setAxisW] = useState(0);
   const labels = useMemo(() => {
     if (!reference || axisW <= 0) return timeline.labels;
-    return timelineLabelLayout({ minAge, maxAge, ticks, goalAge: reference.desiredAge, band, axisWidth: axisW });
+    return timelineLabelLayout({ minAge, maxAge, ticks, goalAge: reference.desiredAge, band, axisWidth: axisW, suppressEightyPlus: timeline.suppressEightyPlus });
   }, [axisW, timeline, reference, minAge, maxAge, ticks, band]);
   const denom = axisW > 0 ? axisW : TIMELINE_REF_WIDTH;
   const stripLabels = labels.filter((l) => l.placement === "strip" && !l.dropped);
