@@ -13,6 +13,7 @@ import LifestyleScreen from "./src/screens/LifestyleScreen.tsx";
 import MyHouseScreen from "./src/screens/MyHouseScreen.tsx";
 import OnboardingScreen from "./src/screens/OnboardingScreen.tsx";
 import PlanScreen from "./src/screens/PlanScreen.tsx";
+import RetirementScreen from "./src/screens/RetirementScreen.tsx";
 import { HouseholdProvider, useHousehold } from "./src/store.tsx";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -87,6 +88,11 @@ function Shell() {
         <Tab.Screen
           name="Lifestyle"
           component={LifestyleScreen}
+          options={{ tabBarButton: () => null }}
+        />
+        <Tab.Screen
+          name="Retirement"
+          component={RetirementScreen}
           options={{ tabBarButton: () => null }}
         />
       </Tab.Navigator>
