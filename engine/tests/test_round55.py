@@ -26,13 +26,17 @@ def rf(*pairs: tuple[str, str]) -> list[RawField]:
     return [RawField(key=k, value=v, confidence=0.9) for k, v in pairs]
 
 
-def test_maps_byte_identical_and_v113():
+def test_maps_byte_identical_and_v114():
     py_copy = (ROOT / "content" / "ocr-field-maps.json").read_bytes()
     ts_copy = (ROOT.parent / "app" / "packs" / "ocr-field-maps.json").read_bytes()
     assert py_copy == ts_copy, "field maps must stay byte-identical across the two copies"
     pack = json.loads(py_copy)
-    assert pack["version"] == "1.13", pack["version"]
+    assert pack["version"] == "1.14", pack["version"]
     assert "hsa_1099_sa" in pack["maps"] and "hsa_5498_sa" in pack["maps"]
+    # Round 57: the HSA statement map resolves the section parser's
+    # per-payroll label (derived only from the statement's own
+    # deposit detail) to its field.
+    assert pack["maps"]["hsa_statement"]["statement per-payroll contribution"] == "per_payroll_contribution"
 
 
 def test_5498_sa_classifies_and_extracts():
