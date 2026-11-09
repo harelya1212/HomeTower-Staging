@@ -23,6 +23,35 @@ export function defaultLifestyle(): LifestyleState {
   return { amounts: {}, states: {}, adjusted: {}, additionsAnnual: 0, confirmed: false };
 }
 
+// ROUND 49 - the quick estimate (one monthly figure + exceptions) and
+// the exception answers statements cannot supply. Mirrors the
+// QuickEstimateData / LifestyleExceptions shapes in goals.ts.
+export interface QuickEstimateState {
+  monthlySpend: number;
+  mortgageEndsMonthly: number;
+  collegeEndsAnnual: number;
+  travelAdjustPct: number; // signed percent
+  healthcareBridgeAnnual: number;
+  done: boolean;
+}
+
+export function defaultQuickEstimate(): QuickEstimateState {
+  return { monthlySpend: 0, mortgageEndsMonthly: 0, collegeEndsAnnual: 0, travelAdjustPct: 0, healthcareBridgeAnnual: 0, done: false };
+}
+
+export interface LifestyleExceptionsState {
+  mortgageAtRetirement: "" | "still" | "ends" | "none";
+  mortgageMonthly: number;
+  collegeContinuesAnnual: number;
+  healthcareBridgeAnnual: number;
+  majorChangeAnnual: number; // signed
+  travel: "" | "more" | "same" | "less";
+}
+
+export function defaultLifestyleExceptions(): LifestyleExceptionsState {
+  return { mortgageAtRetirement: "", mortgageMonthly: 0, collegeContinuesAnnual: 0, healthcareBridgeAnnual: 0, majorChangeAnnual: 0, travel: "" };
+}
+
 export interface GoalInputs {
   retirementBalance: number;
   retirementMonthly: number;
@@ -47,6 +76,8 @@ export interface GoalInputs {
   inflationPct: number; // labelled assumption, default 2.5
   noPension: boolean; // household declares it has no pension (pension then counts as known)
   lifestyle: LifestyleState; // round 48: the expense-based retirement target page
+  quickEstimate: QuickEstimateState; // round 49: the 60-second estimate path
+  exceptions: LifestyleExceptionsState; // round 49: what statements cannot tell us
   stateRefundTargetLow: number;
   stateRefundTargetHigh: number;
 }
@@ -183,6 +214,8 @@ export function defaultState(): HouseholdState {
       inflationPct: 2.5,
       noPension: false,
       lifestyle: defaultLifestyle(),
+      quickEstimate: defaultQuickEstimate(),
+      exceptions: defaultLifestyleExceptions(),
     },
     onboarded: false,
     payrollCheck: { lastConfirmedOn: null, consecutive: 0 },
@@ -250,11 +283,34 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     states: savedLifestyle.states && typeof savedLifestyle.states === "object" ? savedLifestyle.states : {},
     adjusted: savedLifestyle.adjusted && typeof savedLifestyle.adjusted === "object" ? savedLifestyle.adjusted : {},
   };
+  // Round 49: the quick-estimate and exceptions records are nested the
+  // same way - merge over their defaults, coerce numbers, and keep the
+  // enum answers inside their vocabularies so an older or partial save
+  // can never poison the math.
+  const numOr = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const savedQuick = (parsed.goals?.quickEstimate ?? {}) as Partial<QuickEstimateState>;
+  const quickEstimate: QuickEstimateState = {
+    monthlySpend: numOr(savedQuick.monthlySpend),
+    mortgageEndsMonthly: numOr(savedQuick.mortgageEndsMonthly),
+    collegeEndsAnnual: numOr(savedQuick.collegeEndsAnnual),
+    travelAdjustPct: numOr(savedQuick.travelAdjustPct),
+    healthcareBridgeAnnual: numOr(savedQuick.healthcareBridgeAnnual),
+    done: savedQuick.done === true,
+  };
+  const savedEx = (parsed.goals?.exceptions ?? {}) as Partial<LifestyleExceptionsState>;
+  const exceptions: LifestyleExceptionsState = {
+    mortgageAtRetirement: savedEx.mortgageAtRetirement === "still" || savedEx.mortgageAtRetirement === "ends" || savedEx.mortgageAtRetirement === "none" ? savedEx.mortgageAtRetirement : "",
+    mortgageMonthly: numOr(savedEx.mortgageMonthly),
+    collegeContinuesAnnual: numOr(savedEx.collegeContinuesAnnual),
+    healthcareBridgeAnnual: numOr(savedEx.healthcareBridgeAnnual),
+    majorChangeAnnual: numOr(savedEx.majorChangeAnnual),
+    travel: savedEx.travel === "more" || savedEx.travel === "same" || savedEx.travel === "less" ? savedEx.travel : "",
+  };
   const merged: HouseholdState = {
     ...d,
     ...parsed,
     intake: { ...d.intake, ...(parsed.intake ?? {}) },
-    goals: { ...d.goals, ...(parsed.goals ?? {}), lifestyle },
+    goals: { ...d.goals, ...(parsed.goals ?? {}), lifestyle, quickEstimate, exceptions },
     family: (parsed.family ?? []).map((m) => ({ retireTarget: 0, ssAnnual: 0, ssClaimAge: 67, retireFlex: "fixed" as const, pensionAnnual: 0, eduTarget: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4, ...m })),
     jobs: parsed.jobs ?? [],
     assets: parsed.assets ?? [],

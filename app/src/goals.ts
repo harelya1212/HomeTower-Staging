@@ -252,6 +252,172 @@ export function lifestyleBreakdown(l: LifestyleData): LifestyleBreakdown {
   };
 }
 
+// ---------------------------------------------------------------------------
+// ROUND 49 - quick estimate, exceptions overlays, spending precedence,
+// Social Security statement fallback. The round-48 category model stays
+// untouched; these helpers layer the upload-first UX on top of it.
+// ---------------------------------------------------------------------------
+
+/** The 60-second estimate: one monthly spend figure plus the exceptions
+ * that end before retirement. Structurally identical to the store shape. */
+export interface QuickEstimateData {
+  monthlySpend: number;
+  mortgageEndsMonthly: number;
+  collegeEndsAnnual: number;
+  travelAdjustPct: number; // signed percent applied to today's spending
+  healthcareBridgeAnnual: number;
+  done: boolean;
+}
+
+export interface QuickBreakdown {
+  currentSpending: number;
+  endingTotal: number;
+  travelDelta: number; // signed $/yr
+  lifestyleAnnual: number;
+}
+
+export function quickBreakdown(q: QuickEstimateData): QuickBreakdown {
+  const currentSpending = Math.max(0, q.monthlySpend || 0) * 12;
+  const endingTotal = Math.max(0, q.mortgageEndsMonthly || 0) * 12 + Math.max(0, q.collegeEndsAnnual || 0);
+  const travelDelta = Math.round((currentSpending * (q.travelAdjustPct || 0)) / 100);
+  const lifestyleAnnual = Math.max(0, currentSpending - endingTotal + travelDelta + Math.max(0, q.healthcareBridgeAnnual || 0));
+  return { currentSpending, endingTotal, travelDelta, lifestyleAnnual };
+}
+
+/** The exception answers statements cannot supply. Structurally
+ * identical to the store shape. majorChangeAnnual is SIGNED. */
+export interface LifestyleExceptions {
+  mortgageAtRetirement: "" | "still" | "ends" | "none";
+  mortgageMonthly: number;
+  collegeContinuesAnnual: number;
+  healthcareBridgeAnnual: number;
+  majorChangeAnnual: number;
+  travel: "" | "more" | "same" | "less";
+}
+
+export interface LifestyleEffective {
+  breakdown: LifestyleBreakdown;
+  /** Housing-row amount restored into the base when the mortgage
+   * overlay guard fires (the row already ends, so the payment is
+   * already out of the lifestyle figure; the guard compares against
+   * the row's continues value instead of subtracting it twice). */
+  housingRestored: number;
+  mortgageOverlay: number; // $/yr removed because the mortgage ends
+  collegeContinues: number;
+  healthcareBridge: number;
+  majorChange: number; // signed
+  lifestyleAnnual: number;
+  /** What leaves before retirement, display-ready: the breakdown's
+   * ending total plus the mortgage overlay, minus restored housing. */
+  endingTotal: number;
+}
+
+export function lifestyleEffective(l: LifestyleData, ex: LifestyleExceptions): LifestyleEffective {
+  const bd = lifestyleBreakdown(l);
+  const housingAmt = Math.max(0, l.amounts["housing"] || 0);
+  const housingEnds = (l.states["housing"] ?? "continues") === "ends";
+  let housingRestored = 0;
+  let mortgageOverlay = 0;
+  if (ex.mortgageAtRetirement === "ends") {
+    if (housingEnds) {
+      // Double-count guard: the whole housing row already ends, so the
+      // mortgage payment is already out. The overlay is skipped and the
+      // base is read against the row's continues value.
+      housingRestored = housingAmt;
+    } else {
+      mortgageOverlay = Math.max(0, ex.mortgageMonthly || 0) * 12;
+    }
+  }
+  const collegeContinues = Math.max(0, ex.collegeContinuesAnnual || 0);
+  const healthcareBridge = Math.max(0, ex.healthcareBridgeAnnual || 0);
+  const majorChange = ex.majorChangeAnnual || 0; // signed on purpose
+  const lifestyleAnnual = Math.max(0, bd.lifestyleAnnual + housingRestored - mortgageOverlay + collegeContinues + healthcareBridge + majorChange);
+  return {
+    breakdown: bd,
+    housingRestored,
+    mortgageOverlay,
+    collegeContinues,
+    healthcareBridge,
+    majorChange,
+    lifestyleAnnual,
+    endingTotal: bd.endingTotal + mortgageOverlay - housingRestored,
+  };
+}
+
+export type SpendingTier = "confirmed" | "set" | "quick" | "none";
+
+export interface SpendingChoice {
+  spendingAnnual: number;
+  tier: SpendingTier;
+  lifestyleAnnual: number; // effective category-path figure (may be 0)
+}
+
+/** Home's spending precedence (round 49): confirmed lifestyle, then a
+ * custom figure, then the budget worksheet, then the quick estimate,
+ * then the 70%-of-income placeholder. First positive wins. */
+export function chooseSpending(input: {
+  lifestyle: LifestyleData;
+  exceptions: LifestyleExceptions;
+  customAnnual: number;
+  budgetTotal: number;
+  quick: QuickEstimateData;
+  fallback: number;
+}): SpendingChoice {
+  const eff = lifestyleEffective(input.lifestyle, input.exceptions);
+  if (input.lifestyle.confirmed && eff.lifestyleAnnual > 0) {
+    return { spendingAnnual: eff.lifestyleAnnual, tier: "confirmed", lifestyleAnnual: eff.lifestyleAnnual };
+  }
+  if (input.customAnnual > 0) return { spendingAnnual: input.customAnnual, tier: "set", lifestyleAnnual: eff.lifestyleAnnual };
+  if (input.budgetTotal > 0) return { spendingAnnual: input.budgetTotal, tier: "set", lifestyleAnnual: eff.lifestyleAnnual };
+  if (input.quick.done) {
+    const qb = quickBreakdown(input.quick);
+    if (qb.lifestyleAnnual > 0) return { spendingAnnual: qb.lifestyleAnnual, tier: "quick", lifestyleAnnual: eff.lifestyleAnnual };
+  }
+  return { spendingAnnual: input.fallback, tier: "none", lifestyleAnnual: eff.lifestyleAnnual };
+}
+
+/** Minimal document shape the Social Security helpers read. */
+export interface SsDocLike {
+  docType: string;
+  ownerMemberId?: string | null;
+  capturedOn?: string | null;
+  fields?: Record<string, string>;
+}
+
+/** The freshest Social Security statement reading owned by a member. */
+export function ssStatementFor(docs: SsDocLike[], memberId: string): { monthly: number; capturedOn: string | null } | null {
+  let best: { monthly: number; capturedOn: string | null } | null = null;
+  for (const d of docs) {
+    if (d.docType !== "ssa_statement" || d.ownerMemberId !== memberId || !d.fields) continue;
+    const v = Number(String(d.fields["monthly_benefit_estimate"] ?? "").replace(/[^0-9.]/g, ""));
+    if (!Number.isFinite(v) || v <= 0) continue;
+    if (!best || (d.capturedOn ?? "") >= (best.capturedOn ?? "")) best = { monthly: v, capturedOn: d.capturedOn ?? null };
+  }
+  return best;
+}
+
+/** Dependable Social Security for one adult: a typed-in figure wins;
+ * otherwise the member's own statement (monthly benefit x 12). */
+export function ssForMember(
+  member: { id: string; ssAnnual?: number | null },
+  docs: SsDocLike[],
+): { annual: number; source: "manual" | "statement" | "none"; statementOn: string | null } {
+  if ((member.ssAnnual ?? 0) > 0) return { annual: member.ssAnnual ?? 0, source: "manual", statementOn: null };
+  const st = ssStatementFor(docs, member.id);
+  if (st) return { annual: Math.round(st.monthly * 12), source: "statement", statementOn: st.capturedOn };
+  return { annual: 0, source: "none", statementOn: null };
+}
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/** "November 2026" from an ISO date; "" when unparseable. */
+export function monthYearLabel(iso: string | null | undefined): string {
+  if (!iso || !/^\d{4}-\d{2}/.test(iso)) return "";
+  const m = Number(iso.slice(5, 7));
+  if (!(m >= 1 && m <= 12)) return "";
+  return `${MONTH_NAMES[m - 1]} ${iso.slice(0, 4)}`;
+}
+
 /** Monthly contribution needed to reach a target from a balance in a
  * given number of years (the inverse of projectValue). */
 export function requiredMonthly(balance: number, target: number, years: number, annualReturnPct: number): number {
