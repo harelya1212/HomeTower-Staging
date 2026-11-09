@@ -8,7 +8,7 @@ import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { computeFederalTax } from "../../engine/federal.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
-import { ageOn, earliestAgeReaching, educationFunding, educationLine, projectValue, requiredMonthly, retirementNeedEstimate } from "../goals.ts";
+import { ageOn, educationFunding, educationLine, householdRetirement, projectValue, requiredMonthly } from "../goals.ts";
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
@@ -120,7 +120,6 @@ export default function HomeScreen() {
   // pace? If not, at what age does the money work, or what monthly
   // contribution makes the chosen age work?
   const adults = state.family.filter((m) => m.role === "self" || m.role === "spouse");
-  const householdNeed = retirementNeedEstimate(effIncome);
   const adultOutlook = adults.map((m) => {
     const age = ageOn(m.dob, today);
     const owned = state.assets.filter((a) => (a.kind === "401k" || a.kind === "ira") && m.name.trim() !== "" && a.ownerName.trim().toLowerCase() === m.name.trim().toLowerCase());
@@ -136,15 +135,35 @@ export default function HomeScreen() {
       ?? k401Totals?.perEarner.find((e) => { const a = norm(e.name).split(" "); const b = norm(m.name).split(" "); return a.length > 1 && b.length > 1 && a[0] === b[0] && a[a.length - 1] === b[b.length - 1]; });
     const paceFromSlips = !(assetMo > 0) && slipEarner?.monthlyPace != null && slipEarner.monthlyPace > 0;
     const mo = assetMo > 0 ? assetMo : paceFromSlips ? slipEarner!.monthlyPace! : assetMo;
-    const need = m.retireTarget > 0 ? m.retireTarget : householdNeed > 0 ? Math.round(householdNeed / Math.max(1, adults.length)) : 0;
-    if (age === null) return { m, age, bal, mo, need, years: 0, projected: 0, onTrack: false, realisticAge: null as number | null, reqMo: 0, paceFromSlips };
+    if (age === null) return { m, age, bal, mo, years: 0, projected: 0, paceFromSlips };
     const years = Math.max(0, (m.retireAge || 67) - age);
     const projected = projectValue(bal, mo, years, g.assumedReturnPct);
-    const onTrack = need > 0 && projected >= need;
-    const realisticAge = need > 0 && !onTrack ? earliestAgeReaching(bal, mo, need, g.assumedReturnPct, age, m.retireAge || 67) : null;
-    const reqMo = need > 0 && years > 0 ? Math.round(requiredMonthly(bal, need, years, g.assumedReturnPct)) : 0;
-    return { m, age, bal, mo, need, years, projected, onTrack, realisticAge, reqMo, paceFromSlips };
+    return { m, age, bal, mo, years, projected, paceFromSlips };
   });
+
+  // Retirement is a HOUSEHOLD goal (round 46, Copilot's pension
+  // review): the spending target minus dependable income (Social
+  // Security + pension + other), divided by a starting withdrawal
+  // rate - never a per-person figure doubled, because a couple
+  // shares housing, utilities, insurance and food. Per-person rows
+  // below stay as attribution: balances and accounts ARE personal.
+  const incomeBasis = slipFc ? slipFc.projectedGross : effIncome;
+  const spendingFromDefault = !(g.retirementSpendingAnnual > 0);
+  const spendingAnnual = spendingFromDefault ? Math.round(incomeBasis * 0.7) : g.retirementSpendingAnnual;
+  const ssAnnualTotal = adults.reduce((sum, m) => sum + (m.ssAnnual || 0), 0);
+  const pensionStmtMonthly = state.intake.documents.reduce((best, d) => {
+    if (d.docType !== "pension_statement" || !d.fields) return best;
+    const v = Number(String(d.fields["monthly_benefit"] ?? "").replace(/[^0-9.]/g, ""));
+    return Number.isFinite(v) && v > best ? v : best;
+  }, 0);
+  const pensionFromStatement = !(g.pensionAnnual > 0) && pensionStmtMonthly > 0;
+  const pensionAnnualEff = g.pensionAnnual > 0 ? g.pensionAnnual : Math.round(pensionStmtMonthly * 12);
+  const projectedPortfolio = adultOutlook.reduce((sum, a) => sum + a.projected, 0);
+  const currentRetBalance = adultOutlook.reduce((sum, a) => sum + a.bal, 0);
+  const hhRet = householdRetirement({ spendingAnnual, socialSecurityAnnual: ssAnnualTotal, pensionAnnual: pensionAnnualEff, otherAnnual: g.otherRetirementIncomeAnnual || 0, projectedPortfolio });
+  const maxRetYears = adultOutlook.reduce((sum, a) => Math.max(sum, a.years), 0);
+  const hhShort = Math.max(0, hhRet.needBase - projectedPortfolio);
+  const hhReqMo = hhRet.needBase > 0 && maxRetYears > 0 ? Math.round(requiredMonthly(currentRetBalance, hhRet.needBase, maxRetYears, g.assumedReturnPct)) : 0;
 
   // Education funding per child (owner QA round 18, SPEC45 sec. 32):
   // saved vs the real cost path - per child, with their own dates.
@@ -431,43 +450,55 @@ export default function HomeScreen() {
 
       {adults.length > 0 && (
         <View style={styles.card}>
-          <Text style={styles.cardLabel}>Retirement outlook - per person **</Text>
-          {adultOutlook.map(({ m, age, need, years, projected, onTrack, realisticAge, reqMo, mo, paceFromSlips }) => {
-            const pct = need > 0 ? Math.max(0, Math.min(100, Math.round((projected / need) * 100))) : null;
-            return (
-              <View key={m.id} style={styles.personBlock}>
-                <Text style={styles.personName}>{m.name || (m.role === "self" ? "You" : "Spouse")} - retire at {m.retireAge || 67}</Text>
-                {age === null ? (
-                  <Text style={styles.line}>Add a date of birth in the {state.intake.name || "My House"} tab and HomeTower can time this.</Text>
-                ) : need <= 0 ? (
-                  <Text style={styles.line}>Age {age}, {years} years to go. Add household income (or a personal target in the {state.intake.name || "My House"} tab) so HomeTower can estimate how much is enough.</Text>
-                ) : (
-                  <>
-                    <View style={styles.tilesRow}>
-                      <View style={styles.tile}>
-                        <Text numberOfLines={1} style={[styles.tileValue, { color: onTrack ? GREEN : (pct ?? 0) >= 50 ? YELLOW : RED }]}>{pct}%</Text>
-                        <Text style={styles.tileLabel}>Funded</Text>
-                      </View>
-                      <View style={styles.tile}>
-                        <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(projected)}</Text>
-                        <Text style={styles.tileLabel}>Projected</Text>
-                      </View>
-                      <View style={styles.tile}>
-                        <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(need)}</Text>
-                        <Text style={styles.tileLabel}>{adults.length > 1 ? "Need (each)" : "Need"}</Text>
-                      </View>
-                    </View>
-                    <Text style={styles.line}>{onTrack ? `🟢 On track for age ${m.retireAge || 67}.` : realisticAge !== null ? `🔴 Ready at ${realisticAge} at today's pace (${money(mo)}/mo${paceFromSlips ? " from payslips" : ""}) - or save ${money(reqMo)}/mo in total to retire at ${m.retireAge || 67}.` : `🔴 Not ready by 80 at today's pace (${money(mo)}/mo${paceFromSlips ? " from payslips" : ""}) - save ${money(reqMo)}/mo in total to retire at ${m.retireAge || 67}.`}</Text>
-                  </>
-                )}
+          <Text style={styles.cardLabel}>Retirement - household goal **</Text>
+          {adultOutlook.every((a) => a.age === null) ? (
+            <Text style={styles.line}>Add dates of birth in the {state.intake.name || "My House"} tab and HomeTower can time this.</Text>
+          ) : spendingAnnual <= 0 ? (
+            <Text style={styles.line}>Add household income (or a retirement spending target in the {state.intake.name || "My House"} tab) so HomeTower can estimate how much is enough.</Text>
+          ) : hhRet.portfolioGapAnnual <= 0 ? (
+            <>
+              <Text style={styles.line}>{"\u{1F7E2}"} Your dependable income covers the spending target on its own - {money(hhRet.dependableAnnual)}/year of Social Security, pension and other income against a target of {money(spendingAnnual)}/year. Your savings sit on top of that.</Text>
+              <Text style={styles.line}>Projected portfolio at retirement: {money(projectedPortfolio)}.</Text>
+            </>
+          ) : (
+            <>
+              <View style={styles.tilesRow}>
+                <View style={styles.tile}>
+                  <Text numberOfLines={1} style={[styles.tileValue, { color: projectedPortfolio >= hhRet.needBase ? GREEN : Math.round((projectedPortfolio / hhRet.needBase) * 100) >= 50 ? YELLOW : RED }]}>{Math.round((projectedPortfolio / hhRet.needBase) * 100)}%</Text>
+                  <Text style={styles.tileLabel}>Funded</Text>
+                </View>
+                <View style={styles.tile}>
+                  <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(projectedPortfolio)}</Text>
+                  <Text style={styles.tileLabel}>Projected</Text>
+                </View>
+                <View style={styles.tile}>
+                  <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(hhRet.needBase)}</Text>
+                  <Text style={styles.tileLabel}>Need (household)</Text>
+                </View>
               </View>
-            );
-          })}
+              <Text style={styles.line}>{projectedPortfolio >= hhRet.needBase ? "\u{1F7E2} On track as a household at the base 4.0% withdrawal rate." : `\u{1F534} Short by ${money(hhShort)} as a household${hhReqMo > 0 ? ` - saving about ${money(hhReqMo)}/mo more across the household closes it` : ""}.`}</Text>
+              <Text style={styles.line}>Projected retirement income: {money(hhRet.projectedIncomeAnnual)}/year</Text>
+              <Text style={styles.line}>Target lifestyle: {money(spendingAnnual)}/year</Text>
+              <Text style={styles.line}>{hhRet.incomeGapAnnual > 0 ? `Projected gap: ${money(hhRet.incomeGapAnnual)}/year` : `That covers the target, with ${money(-hhRet.incomeGapAnnual)}/year to spare.`}</Text>
+              <Text style={styles.line}>Based on household retirement spending of {money(spendingAnnual)}/year{spendingFromDefault ? ` (70% of projected income - a starting assumption; set your own in the ${state.intake.name || "My House"} tab)` : ""}, expected Social Security of {money(ssAnnualTotal)}/year, pension of {money(pensionAnnualEff)}/year{pensionFromStatement ? " (from your pension statement)" : ""}{(g.otherRetirementIncomeAnnual || 0) > 0 ? `, and other dependable income of ${money(g.otherRetirementIncomeAnnual)}/year` : ""}, at a 4.0% starting withdrawal rate.</Text>
+              {ssAnnualTotal <= 0 && pensionAnnualEff <= 0 && (
+                <Text style={styles.line}>No Social Security or pension is entered yet - add them in the {state.intake.name || "My House"} tab and the need comes down.</Text>
+              )}
+              <Text style={styles.line}>At a conservative 3.5% withdrawal rate the need is {money(hhRet.needConservative)}; at a flexible 4.5%, {money(hhRet.needFlexible)}.</Text>
+            </>
+          )}
+          {adultOutlook.map(({ m, age, years, projected, mo, paceFromSlips }) => (
+            <View key={m.id} style={styles.personBlock}>
+              <Text style={styles.personName}>{m.name || (m.role === "self" ? "You" : "Spouse")} - retire at {m.retireAge || 67}</Text>
+              {age === null ? (
+                <Text style={styles.line}>Add a date of birth in the {state.intake.name || "My House"} tab and HomeTower can time this.</Text>
+              ) : (
+                <Text style={styles.line}>Age {age}, {years} years to go. Projected {moneyShort(projected)} by then - saving {money(mo)}/mo{paceFromSlips ? " (pace from payslips)" : ""}.{m.retireTarget > 0 ? ` Personal target: ${money(m.retireTarget)}.` : ""}</Text>
+              )}
+            </View>
+          ))}
           {adultOutlook.some((a) => a.paceFromSlips) && k401Totals && (
             <Text style={styles.footnote}>Pace from payslips: {money(k401Totals.total)} contributed in {k401Totals.year} across {k401Totals.earners} earner{k401Totals.earners === 1 ? "" : "s"}. Balances still count as $0 until a 401(k) statement is added - the funded % can only rise from here.</Text>
-          )}
-          {adultOutlook.some((a) => a.m.retireTarget <= 0 && a.need > 0) && householdNeed > 0 && (
-            <Text style={styles.footnote}>Need = the household estimate, {money(householdNeed)} in total (70% of income x 25 years), split per adult. Set a personal target in the {state.intake.name || "My House"} tab to make it individual.</Text>
           )}
         </View>
       )}
@@ -617,7 +648,7 @@ export default function HomeScreen() {
             </Text>
           )}
           {(adults.length > 0 || children.length > 0) && (
-            <Text style={styles.footnote}>** Outlooks assume {g.assumedReturnPct}% yearly growth - an editable assumption in Intake, not a promise.</Text>
+            <Text style={styles.footnote}>** Outlooks assume {g.assumedReturnPct}% yearly growth - an editable assumption in Intake, not a promise. The retirement need uses a 4.0% starting withdrawal rate (25x is just 1 / 4%); at 3.5% the need is higher, at 4.5% lower.</Text>
           )}
         </View>
       )}
