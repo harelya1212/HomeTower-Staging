@@ -16,6 +16,7 @@ import {
   directionalProjected,
   docEvidenceStatus,
   employerMatchFor,
+  faceStatusFor,
   k401StatementMatchFor,
   outlookRating,
   projectToCommonDate,
@@ -256,17 +257,27 @@ eq("required portfolio floors at 0", requiredPortfolioFor(30000, 40000, 0.04), 0
   eq("harness rating label", d.ratingLabel, "Current path misses target");
   // GT8: the face model - exactly the fields HomeScreen's X
   // directional branch renders. No dollar target, no funded %.
+  // ROUND 53 SUPERSEDES THE FACE SHAPE (Copilot's device feedback):
+  // a visual status card - the status line (an off-track rating is
+  // softened to "Too early to confirm" on the X face only), two big
+  // numbers, the timeline, one opportunity line, one action - and
+  // NO Recommended line and no paragraph text. The four assertions
+  // below are unchanged in substance.
+  const disp = faceStatusFor(model.accuracy.level, d.rating, d.desiredAge);
   const face = {
     title: "Retirement outlook",
+    status: disp.label,
+    support: disp.support,
     confidence: "Early estimate - Low confidence",
-    desired: `Desired retirement: Age ${d.desiredAge}`,
-    currentPath: `Current path: ${d.rangeLabel}`,
-    outlook: `Outlook: ${d.ratingLabel}`,
-    recommended: `Recommended: ${d.action.text}`,
+    desired: d.desiredAge,
+    currentPath: d.rangeLabel,
+    timeline: model.timeline !== null,
+    opportunity: model.opportunityLine,
+    cta: "Improve estimate",
   };
   ok("GT8 face shows the range", face.currentPath.includes("80+"));
-  ok("GT8 face has no target field", !("target" in face) && !Object.values(face).some((v) => v.includes("target $") || v.includes("Target:")));
-  ok("GT8 face has no funded %", !Object.values(face).some((v) => v.includes("%") && v.toLowerCase().includes("fund")));
+  ok("GT8 face has no target field", !("target" in face) && !Object.values(face).some((v) => String(v).includes("target $") || String(v).includes("Target:")));
+  ok("GT8 face has no funded %", !Object.values(face).some((v) => String(v).includes("%") && String(v).toLowerCase().includes("fund")));
   ok("GT8 face carries no readiness figure", !("readiness" in face));
   console.log(`     harness directional: desired ${d.desiredAge}, range ${d.rangeLabel}, rating ${d.ratingLabel}, action [${d.action.kind}] "${d.action.text}" impact "${d.action.impactText}" levers save=${d.levers.saveMonthly} later=${d.levers.yearsLater} spend=${d.levers.spendingCutAnnual} monthlyNet=${Math.round(model.monthlyNet)}`);
 
