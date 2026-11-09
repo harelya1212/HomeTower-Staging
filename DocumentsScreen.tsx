@@ -55,6 +55,7 @@ export default function DocumentsScreen() {
   const countsLabel = (c: string) => (c === "fully" ? "● counts fully" : c === "partially" ? "◐ counts partially" : "○ counts barely");
   const countsColor = (c: string) => (c === "fully" ? "#1E8E3E" : c === "partially" ? "#E37400" : "#C5221F");
   const [selectedType, setSelectedType] = useState("payslip");
+  const [showManual, setShowManual] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [ocrNote, setOcrNote] = useState<string | null>(null);
   const [flowNote, setFlowNote] = useState<string | null>(null);
@@ -481,6 +482,11 @@ export default function DocumentsScreen() {
     : s === "aging" ? { t: "AGING", bg: "#FDF0DA", fg: "#8A5A00" }
     : s === "missing" ? { t: "MISSING", bg: "#E5EBF1", fg: "#44566B" }
     : { t: "UP TO DATE", bg: "#DDF3E8", fg: "#0C6B4A" };
+  // Needs list = profile requests BEYOND the Ongoing center (owner,
+  // 2026-11-08): a document type the Ongoing center already tracks
+  // never appears in the needs list too - no asking twice.
+  const ongoingTypes = new Set(CATS.map((c) => c.docType));
+  const needsList = requests.filter((r) => !ongoingTypes.has(r.docType));
   const EVENT_LABEL: Record<EquityEvent["kind"], string> = { bonus: "Bonus", rsu_vest: "RSU vest", espp_purchase: "ESPP purchase" };
   const lastEvent = state.events.length ? [...state.events].sort((a, b) => b.date.localeCompare(a.date))[0] : null;
   const saveEvent = () => {
@@ -491,13 +497,29 @@ export default function DocumentsScreen() {
     setEvNote("");
   };
 
+  // One upload button per card (owner, 2026-11-08): the old trio
+  // (file / photo / camera buttons side by side) was duplication.
+  // The single Upload button opens this source chooser - the user
+  // can bring any kind of file or take a photo, from the one button.
+  const [chooserFor, setChooserFor] = useState<string | null>(null);
+  const sourceChooser = (key: string, docType?: string) =>
+    chooserFor !== key ? null : (
+      <View style={styles.reqActions}>
+        <Pressable style={styles.button} onPress={() => { setChooserFor(null); uploadFile(docType); }}>
+          <Text style={styles.buttonText}>PDF or file</Text>
+        </Pressable>
+        <Pressable style={styles.buttonAlt} onPress={() => { setChooserFor(null); scanPhoto("upload", docType); }}>
+          <Text style={styles.buttonText}>Photo from library</Text>
+        </Pressable>
+        <Pressable style={styles.buttonAlt} onPress={() => { setChooserFor(null); scanPhoto("camera", docType); }}>
+          <Text style={styles.buttonText}>Take a photo</Text>
+        </Pressable>
+      </View>
+    );
+
   return (
     <ScrollView ref={scrollRef} style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Documents</Text>
-      <Text style={styles.note}>
-        The register of what the household has provided. Capture a document below: the text is read on this device,
-        fields are extracted, and you confirm before anything is saved. Freshness is computed per document type.
-      </Text>
 
       {assignChildId && (
         <View style={styles.assignBanner}>
@@ -508,190 +530,16 @@ export default function DocumentsScreen() {
         </View>
       )}
 
-      {docs.length === 0 && <Text style={styles.line}>No documents yet. Capture the first one below.</Text>}
-      {docs.map((d, i) => {
-        const f = byKey.get(i);
-        return (
-          <View key={i} style={styles.row}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.docType}>{d.docType}</Text>
-              <Text style={styles.line}>Captured: {d.capturedOn ?? "unknown"} - status: {d.status}</Text>
-              {f && <Text style={[styles.line, { color: BADGE[f.status] }]}>{f.status.toUpperCase()} - {f.message}</Text>}
-              {indicators[i] && <Text style={[styles.line, { color: countsColor(indicators[i].counts), fontWeight: "600" }]}>{countsLabel(indicators[i].counts)} toward prediction confidence</Text>}
-            </View>
-            <Pressable onPress={() => removeDoc(i)}>
-              <Text style={styles.remove}>Remove</Text>
-            </Pressable>
-          </View>
-        );
-      })}
-
-      <Text style={styles.section}>Ongoing center</Text>
-      <Text style={styles.note}>
-        Everything that repeats - payslips, statements, events. Sorted by urgency: what needs you first is on top. Upload straight from each row.
-      </Text>
-      {[...CATS]
-        .map((c) => ({ c, info: catInfo(c) }))
-        .sort((a, b) => a.info.rank - b.info.rank)
-        .map(({ c, info }) => {
-          const chip = chipFor(info.status);
-          return (
-            <View key={c.key} style={styles.catCard}>
-              <View style={styles.catHead}>
-                <Text style={styles.catName}>{c.icon} {c.name}</Text>
-                <View style={[styles.statusChip, { backgroundColor: chip.bg }]}>
-                  <Text style={[styles.statusChipText, { color: chip.fg }]}>{chip.t}</Text>
-                </View>
-              </View>
-              <Text style={styles.line}>
-                {info.latest
-                  ? `Last: ${info.latest.capturedOn ? isoToUs(info.latest.capturedOn) : "date unknown"} · Expected ${c.cadence}${info.overdue > 0 ? ` · ${info.overdue} days overdue` : ""}`
-                  : `No document yet · Expected ${c.cadence}`}
-                {c.extra ? `\n${c.extra}` : ""}
-              </Text>
-              <View style={styles.catActions}>
-                <Pressable style={[styles.button, { flex: 1 }]} onPress={() => uploadFile(c.docType)}>
-                  <Text style={styles.buttonText}>Upload {c.key === "payslip" ? "a payslip" : "a statement"}</Text>
-                </Pressable>
-                {c.key === "payslip" ? (
-                  <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => setShowShortcut((s) => !s)}>
-                    <Text style={styles.buttonText}>No change</Text>
-                  </Pressable>
-                ) : (
-                  <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => setExpandedCat(expandedCat === c.key ? null : c.key)}>
-                    <Text style={styles.buttonText}>History ({info.ofType.length})</Text>
-                  </Pressable>
-                )}
-              </View>
-              <View style={styles.catActions}>
-                <Pressable style={[styles.buttonGhost, { flex: 1 }]} onPress={() => scanPhoto("upload", c.docType)}>
-                  <Text style={styles.buttonGhostText}>📷 Upload a photo</Text>
-                </Pressable>
-                <Pressable style={[styles.buttonGhost, { flex: 1 }]} onPress={() => scanPhoto("camera", c.docType)}>
-                  <Text style={styles.buttonGhostText}>📸 Take a photo</Text>
-                </Pressable>
-              </View>
-              {c.key === "payslip" && showShortcut && (
-                hasPayslip ? (
-                  <View style={styles.shortcutBox}>
-                    <Text style={styles.line}>Instead of uploading a new payslip every cycle: did anything change since the last one?</Text>
-                    {state.payrollCheck.lastConfirmedOn && (
-                      <Text style={styles.line}>
-                        Last confirmed unchanged: {isoToUs(state.payrollCheck.lastConfirmedOn)} (provisional cycle {state.payrollCheck.consecutive} of 3 - the 3rd needs the document)
-                      </Text>
-                    )}
-                    {([
-                      ["gross", "Did gross pay change?"],
-                      ["net", "Did the net deposit change?"],
-                      ["benefits", "Did any benefit election change?"],
-                    ] as const).map(([key, label]) => (
-                      <View key={key}>
-                        <Text style={styles.line}>{label}</Text>
-                        <View style={styles.chips}>
-                          {([["no", "No change"], ["yes", "Changed"], ["unsure", "Not sure"]] as const).map(([val, lab]) => (
-                            <Pressable
-                              key={val}
-                              style={[styles.chip, payAnswers[key] === val && styles.chipSelected]}
-                              onPress={() => setPayAnswers((a) => ({ ...a, [key]: val }))}
-                            >
-                              <Text style={payAnswers[key] === val ? styles.chipTextSelected : styles.chipText}>{lab}</Text>
-                            </Pressable>
-                          ))}
-                        </View>
-                      </View>
-                    ))}
-                    <Pressable style={styles.button} onPress={confirmPayrollCycle}>
-                      <Text style={styles.buttonText}>Confirm this cycle</Text>
-                    </Pressable>
-                    {payNote && <Text style={styles.note}>{payNote}</Text>}
-                  </View>
-                ) : (
-                  <Text style={styles.note}>Upload one payslip first - then this shortcut unlocks for the cycles after it.</Text>
-                )
-              )}
-              {expandedCat === c.key && (
-                <View style={styles.shortcutBox}>
-                  {info.ofType.length === 0 && <Text style={styles.line}>No documents of this type yet.</Text>}
-                  {info.ofType.map((d, i) => (
-                    <Text key={i} style={styles.line}>
-                      {d.capturedOn ? isoToUs(d.capturedOn) : "date unknown"} - {d.status} - confidence {d.confidence}{d.holdings && d.holdings.length > 0 ? ` - ${d.holdings.length} positions (${d.holdings.map((h) => h.ticker).join(", ")})` : ""}{d.fields?.["account_ticker"] ? ` - ${d.fields["account_ticker"]} stock plan` : ""}
-                    </Text>
-                  ))}
-                </View>
-              )}
-            </View>
-          );
-        })}
-
-      <View style={styles.catCard}>
-        <View style={styles.catHead}>
-          <Text style={styles.catName}>🎁 Bonuses & RSU / ESPP</Text>
-          <View style={[styles.statusChip, { backgroundColor: "#D9F0EC" }]}>
-            <Text style={[styles.statusChipText, { color: "#0B5A52" }]}>EVENTS</Text>
-          </View>
-        </View>
-        <Text style={styles.line}>
-          {lastEvent
-            ? `Last event: ${EVENT_LABEL[lastEvent.kind]} - ${isoToUs(lastEvent.date)}${lastEvent.amount > 0 ? ` - $${lastEvent.amount.toLocaleString()}` : ""}${lastEvent.note ? ` - ${lastEvent.note}` : ""} · ${state.events.length} event${state.events.length === 1 ? "" : "s"} recorded`
-            : "No events recorded yet. Bonuses also appear inside payslips - events keep their own timeline."}
-        </Text>
-        <View style={styles.catActions}>
-          <Pressable style={[styles.button, { flex: 1 }]} onPress={() => setShowEventForm((s) => !s)}>
-            <Text style={styles.buttonText}>Add an event</Text>
-          </Pressable>
-          <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => uploadFile()}>
-            <Text style={styles.buttonText}>Upload plan doc</Text>
-          </Pressable>
-        </View>
-        {showEventForm && (
-          <View style={styles.shortcutBox}>
-            <View style={styles.chips}>
-              {(Object.keys(EVENT_LABEL) as EquityEvent["kind"][]).map((k) => (
-                <Pressable key={k} style={[styles.chip, evKind === k && styles.chipSelected]} onPress={() => setEvKind(k)}>
-                  <Text style={evKind === k ? styles.chipTextSelected : styles.chipText}>{EVENT_LABEL[k]}</Text>
-                </Pressable>
-              ))}
-            </View>
-            <Text style={styles.line}>Date</Text>
-            <DateField value={evDate} onChange={setEvDate} />
-            <Text style={styles.line}>Amount ($)</Text>
-            <TextField value={evAmount} onChange={setEvAmount} keyboardType="numeric" placeholder="e.g. 12500" />
-            <Text style={styles.line}>Note (optional)</Text>
-            <TextField value={evNote} onChange={setEvNote} placeholder="e.g. Q4 bonus, Intel" />
-            <Pressable style={styles.button} onPress={saveEvent}>
-              <Text style={styles.buttonText}>Save event</Text>
-            </Pressable>
-            {state.events.length > 0 && (
-              <>
-                <Text style={styles.line}>Recorded:</Text>
-                {[...state.events].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5).map((e) => (
-                  <View key={e.id} style={styles.catHead}>
-                    <Text style={styles.line}>{EVENT_LABEL[e.kind]} - {isoToUs(e.date)}{e.amount > 0 ? ` - $${e.amount.toLocaleString()}` : ""}</Text>
-                    <Pressable onPress={() => update({ events: state.events.filter((x) => x.id !== e.id) })}>
-                      <Text style={styles.remove}>Remove</Text>
-                    </Pressable>
-                  </View>
-                ))}
-              </>
-            )}
-          </View>
-        )}
-      </View>
 
       <Text style={styles.section}>Upload any document</Text>
       <Text style={styles.note}>
         No need to say what it is: HomeTower reads it, identifies the type, and shows you its reading for approval
         before anything is saved. If you do pick a type below, HomeTower still verifies it against the content.
       </Text>
-      <Pressable style={styles.button} onPress={() => uploadFile()}>
-        <Text style={styles.buttonText}>Upload a PDF or file - HomeTower identifies it</Text>
+      <Pressable style={styles.button} onPress={() => setChooserFor(chooserFor === "any" ? null : "any")}>
+        <Text style={styles.buttonText}>Upload - file, photo, or camera</Text>
       </Pressable>
-      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload")}>
-        <Text style={styles.buttonText}>Upload a photo - HomeTower identifies it</Text>
-      </Pressable>
-      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera")}>
-        <Text style={styles.buttonText}>Take a photo - HomeTower identifies it</Text>
-      </Pressable>
+      {sourceChooser("any")}
       {flowNote && <Text style={styles.note}>{flowNote}</Text>}
       <TextInput
         style={styles.pasteBox}
@@ -703,82 +551,6 @@ export default function DocumentsScreen() {
       <Pressable style={styles.buttonAlt} onPress={() => runExtraction(autoPaste)}>
         <Text style={styles.buttonText}>Read and identify pasted text</Text>
       </Pressable>
-
-      <Text style={styles.section}>What your household needs</Text>
-      <Text style={styles.note}>
-        Your profile decides this list - HomeTower never asks every household for every document (SPEC45, Smart Document Request Engine).
-        Tap an item to upload it right there.
-      </Text>
-      {requests.map((r) => {
-        const b = reqBadge(r.status);
-        const open = expandedReq === r.key;
-        return (
-          <View key={r.key} style={styles.reqCard}>
-            <Pressable
-              style={styles.reqRow}
-              onPress={() => { setSelectedType(r.docType); setExpandedReq(open ? null : r.key); }}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.docType}>{r.label}</Text>
-                <Text style={styles.line}>{r.detail}</Text>
-              </View>
-              <Text style={{ color: b.c, fontWeight: "700", fontSize: 14 }}>{b.t}</Text>
-            </Pressable>
-            {open && r.key === "calibration_outcome" && (
-              <View style={styles.reqActions}>
-                <Text style={styles.line}>This one is not a document - it is the number the IRS and the state actually confirmed. Record it once in the Intake tab and the confidence score uses it as the calibration anchor.</Text>
-                <Pressable style={styles.button} onPress={() => navigation.navigate("Intake")}>
-                  <Text style={styles.buttonText}>Open Intake to record the outcome</Text>
-                </Pressable>
-              </View>
-            )}
-            {open && r.key !== "calibration_outcome" && (
-              <View style={styles.reqActions}>
-                <Pressable style={styles.button} onPress={() => uploadFile(r.docType)}>
-                  <Text style={styles.buttonText}>Upload a PDF or file of this document</Text>
-                </Pressable>
-                <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload", r.docType)}>
-                  <Text style={styles.buttonText}>Upload a photo of this document</Text>
-                </Pressable>
-                <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera", r.docType)}>
-                  <Text style={styles.buttonText}>Take a photo of this document</Text>
-                </Pressable>
-              </View>
-            )}
-          </View>
-        );
-      })}
-
-
-      <Text style={styles.section}>Capture a document</Text>
-      <View style={styles.chips}>
-        {[...DOCUMENT_TYPES].map((t) => (
-          <Pressable key={t} style={[styles.chip, selectedType === t && styles.chipSelected]} onPress={() => setSelectedType(t)}>
-            <Text style={selectedType === t ? styles.chipTextSelected : styles.chipText}>{t}</Text>
-          </Pressable>
-        ))}
-      </View>
-      <Pressable style={styles.button} onPress={() => uploadFile(selectedType)}>
-        <Text style={styles.buttonText}>Upload a PDF or file of the {selectedType}</Text>
-      </Pressable>
-      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload", selectedType)}>
-        <Text style={styles.buttonText}>Upload a photo of the {selectedType}</Text>
-      </Pressable>
-      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera", selectedType)}>
-        <Text style={styles.buttonText}>Take a photo of the {selectedType}</Text>
-      </Pressable>
-      <TextInput
-        style={styles.pasteBox}
-        multiline
-        placeholder="...or paste the document text here (works on every platform)"
-        value={pasteText}
-        onChangeText={setPasteText}
-      />
-      <Pressable style={styles.buttonAlt} onPress={() => runExtraction(pasteText, selectedType)}>
-        <Text style={styles.buttonText}>Extract fields from pasted text</Text>
-      </Pressable>
-      {ocrNote && <Text style={styles.note}>{ocrNote}</Text>}
-      {flowNote && <Text style={styles.note}>{flowNote}</Text>}
 
       {extraction && (
         <View style={styles.confirmCard} onLayout={(e) => { confirmY.current = e.nativeEvent.layout.y; }}>
@@ -899,10 +671,235 @@ export default function DocumentsScreen() {
           </Pressable>
         </View>
       )}
-
-      <Pressable onPress={addManual}>
-        <Text style={styles.manualLink}>No text handy? Register {selectedType} manually (today, no extraction)</Text>
+      {ocrNote && <Text style={styles.note}>{ocrNote}</Text>}
+      <Pressable onPress={() => setShowManual((s) => !s)}>
+        <Text style={styles.manualLink}>No text handy? Register a document manually (today, no extraction)</Text>
       </Pressable>
+      {showManual && (
+        <View style={styles.shortcutBox}>
+          <Text style={styles.line}>Pick the type, then register it - it counts as received today, with no reading.</Text>
+          <View style={styles.chips}>
+            {[...DOCUMENT_TYPES].map((t) => (
+              <Pressable key={t} style={[styles.chip, selectedType === t && styles.chipSelected]} onPress={() => setSelectedType(t)}>
+                <Text style={selectedType === t ? styles.chipTextSelected : styles.chipText}>{t}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Pressable style={styles.button} onPress={addManual}>
+            <Text style={styles.buttonText}>Register {selectedType} manually</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <Text style={styles.section}>Ongoing center</Text>
+      <Text style={styles.note}>
+        Everything that repeats - payslips, statements, events. Sorted by urgency: what needs you first is on top. Upload straight from each row.
+      </Text>
+      {[...CATS]
+        .map((c) => ({ c, info: catInfo(c) }))
+        .sort((a, b) => a.info.rank - b.info.rank)
+        .map(({ c, info }) => {
+          const chip = chipFor(info.status);
+          return (
+            <View key={c.key} style={styles.catCard}>
+              <View style={styles.catHead}>
+                <Text style={styles.catName}>{c.icon} {c.name}</Text>
+                <View style={[styles.statusChip, { backgroundColor: chip.bg }]}>
+                  <Text style={[styles.statusChipText, { color: chip.fg }]}>{chip.t}</Text>
+                </View>
+              </View>
+              <Text style={styles.line}>
+                {info.latest
+                  ? `Last: ${info.latest.capturedOn ? isoToUs(info.latest.capturedOn) : "date unknown"} · Expected ${c.cadence}${info.overdue > 0 ? ` · ${info.overdue} days overdue` : ""}`
+                  : `No document yet · Expected ${c.cadence}`}
+                {c.extra ? `\n${c.extra}` : ""}
+              </Text>
+              <View style={styles.catActions}>
+                <Pressable style={[styles.button, { flex: 1 }]} onPress={() => setChooserFor(chooserFor === c.key ? null : c.key)}>
+                  <Text style={styles.buttonText}>Upload {c.key === "payslip" ? "a payslip" : "a statement"}</Text>
+                </Pressable>
+                {c.key === "payslip" ? (
+                  <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => setShowShortcut((s) => !s)}>
+                    <Text style={styles.buttonText}>No change</Text>
+                  </Pressable>
+                ) : (
+                  <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => setExpandedCat(expandedCat === c.key ? null : c.key)}>
+                    <Text style={styles.buttonText}>History ({info.ofType.length})</Text>
+                  </Pressable>
+                )}
+              </View>
+              {sourceChooser(c.key, c.docType)}
+              {c.key === "payslip" && showShortcut && (
+                hasPayslip ? (
+                  <View style={styles.shortcutBox}>
+                    <Text style={styles.line}>Instead of uploading a new payslip every cycle: did anything change since the last one?</Text>
+                    {state.payrollCheck.lastConfirmedOn && (
+                      <Text style={styles.line}>
+                        Last confirmed unchanged: {isoToUs(state.payrollCheck.lastConfirmedOn)} (provisional cycle {state.payrollCheck.consecutive} of 3 - the 3rd needs the document)
+                      </Text>
+                    )}
+                    {([
+                      ["gross", "Did gross pay change?"],
+                      ["net", "Did the net deposit change?"],
+                      ["benefits", "Did any benefit election change?"],
+                    ] as const).map(([key, label]) => (
+                      <View key={key}>
+                        <Text style={styles.line}>{label}</Text>
+                        <View style={styles.chips}>
+                          {([["no", "No change"], ["yes", "Changed"], ["unsure", "Not sure"]] as const).map(([val, lab]) => (
+                            <Pressable
+                              key={val}
+                              style={[styles.chip, payAnswers[key] === val && styles.chipSelected]}
+                              onPress={() => setPayAnswers((a) => ({ ...a, [key]: val }))}
+                            >
+                              <Text style={payAnswers[key] === val ? styles.chipTextSelected : styles.chipText}>{lab}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+                    ))}
+                    <Pressable style={styles.button} onPress={confirmPayrollCycle}>
+                      <Text style={styles.buttonText}>Confirm this cycle</Text>
+                    </Pressable>
+                    {payNote && <Text style={styles.note}>{payNote}</Text>}
+                  </View>
+                ) : (
+                  <Text style={styles.note}>Upload one payslip first - then this shortcut unlocks for the cycles after it.</Text>
+                )
+              )}
+              {expandedCat === c.key && (
+                <View style={styles.shortcutBox}>
+                  {info.ofType.length === 0 && <Text style={styles.line}>No documents of this type yet.</Text>}
+                  {info.ofType.map((d, i) => (
+                    <Text key={i} style={styles.line}>
+                      {d.capturedOn ? isoToUs(d.capturedOn) : "date unknown"} - {d.status} - confidence {d.confidence}{d.holdings && d.holdings.length > 0 ? ` - ${d.holdings.length} positions (${d.holdings.map((h) => h.ticker).join(", ")})` : ""}{d.fields?.["account_ticker"] ? ` - ${d.fields["account_ticker"]} stock plan` : ""}
+                    </Text>
+                  ))}
+                </View>
+              )}
+            </View>
+          );
+        })}
+
+      <View style={styles.catCard}>
+        <View style={styles.catHead}>
+          <Text style={styles.catName}>🎁 Bonuses & RSU / ESPP</Text>
+          <View style={[styles.statusChip, { backgroundColor: "#D9F0EC" }]}>
+            <Text style={[styles.statusChipText, { color: "#0B5A52" }]}>EVENTS</Text>
+          </View>
+        </View>
+        <Text style={styles.line}>
+          {lastEvent
+            ? `Last event: ${EVENT_LABEL[lastEvent.kind]} - ${isoToUs(lastEvent.date)}${lastEvent.amount > 0 ? ` - $${lastEvent.amount.toLocaleString()}` : ""}${lastEvent.note ? ` - ${lastEvent.note}` : ""} · ${state.events.length} event${state.events.length === 1 ? "" : "s"} recorded`
+            : "No events recorded yet. Bonuses also appear inside payslips - events keep their own timeline."}
+        </Text>
+        <View style={styles.catActions}>
+          <Pressable style={[styles.button, { flex: 1 }]} onPress={() => setShowEventForm((s) => !s)}>
+            <Text style={styles.buttonText}>Add an event</Text>
+          </Pressable>
+          <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => uploadFile()}>
+            <Text style={styles.buttonText}>Upload plan doc</Text>
+          </Pressable>
+        </View>
+        {showEventForm && (
+          <View style={styles.shortcutBox}>
+            <View style={styles.chips}>
+              {(Object.keys(EVENT_LABEL) as EquityEvent["kind"][]).map((k) => (
+                <Pressable key={k} style={[styles.chip, evKind === k && styles.chipSelected]} onPress={() => setEvKind(k)}>
+                  <Text style={evKind === k ? styles.chipTextSelected : styles.chipText}>{EVENT_LABEL[k]}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <Text style={styles.line}>Date</Text>
+            <DateField value={evDate} onChange={setEvDate} />
+            <Text style={styles.line}>Amount ($)</Text>
+            <TextField value={evAmount} onChange={setEvAmount} keyboardType="numeric" placeholder="e.g. 12500" />
+            <Text style={styles.line}>Note (optional)</Text>
+            <TextField value={evNote} onChange={setEvNote} placeholder="e.g. Q4 bonus, Intel" />
+            <Pressable style={styles.button} onPress={saveEvent}>
+              <Text style={styles.buttonText}>Save event</Text>
+            </Pressable>
+            {state.events.length > 0 && (
+              <>
+                <Text style={styles.line}>Recorded:</Text>
+                {[...state.events].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5).map((e) => (
+                  <View key={e.id} style={styles.catHead}>
+                    <Text style={styles.line}>{EVENT_LABEL[e.kind]} - {isoToUs(e.date)}{e.amount > 0 ? ` - $${e.amount.toLocaleString()}` : ""}</Text>
+                    <Pressable onPress={() => update({ events: state.events.filter((x) => x.id !== e.id) })}>
+                      <Text style={styles.remove}>Remove</Text>
+                    </Pressable>
+                  </View>
+                ))}
+              </>
+            )}
+          </View>
+        )}
+      </View>
+
+      <Text style={styles.section}>What your household needs</Text>
+      <Text style={styles.note}>
+        Additional, one-time needs from your profile - the recurring documents live in the Ongoing center above,
+        so HomeTower never asks for the same document twice. Tap an item to upload it right there.
+      </Text>
+      {needsList.map((r) => {
+        const b = reqBadge(r.status);
+        const open = expandedReq === r.key;
+        return (
+          <View key={r.key} style={styles.reqCard}>
+            <Pressable
+              style={styles.reqRow}
+              onPress={() => { setSelectedType(r.docType); setExpandedReq(open ? null : r.key); }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.docType}>{r.label}</Text>
+                <Text style={styles.line}>{r.detail}</Text>
+              </View>
+              <Text style={{ color: b.c, fontWeight: "700", fontSize: 14 }}>{b.t}</Text>
+            </Pressable>
+            {open && r.key === "calibration_outcome" && (
+              <View style={styles.reqActions}>
+                <Text style={styles.line}>This one is not a document - it is the number the IRS and the state actually confirmed. Record it once in the Intake tab and the confidence score uses it as the calibration anchor.</Text>
+                <Pressable style={styles.button} onPress={() => navigation.navigate("Intake")}>
+                  <Text style={styles.buttonText}>Open Intake to record the outcome</Text>
+                </Pressable>
+              </View>
+            )}
+            {open && r.key !== "calibration_outcome" && (
+              <View style={styles.reqActions}>
+                <Pressable style={styles.button} onPress={() => setChooserFor(chooserFor === `req-${r.key}` ? null : `req-${r.key}`)}>
+                  <Text style={styles.buttonText}>Upload this document</Text>
+                </Pressable>
+                {sourceChooser(`req-${r.key}`, r.docType)}
+              </View>
+            )}
+          </View>
+        );
+      })}
+
+      {needsList.length === 0 && <Text style={styles.line}>Nothing else is needed right now - the Ongoing center above covers the rest.</Text>}
+
+      <Text style={styles.section}>History</Text>
+      <Text style={styles.note}>
+        Everything your household has provided. Freshness is computed per document type, and each document
+        counts toward the prediction confidence shown on Home.
+      </Text>
+      {docs.length === 0 && <Text style={styles.line}>No documents yet. Upload the first one at the top of this page.</Text>}
+      {docs.map((d, i) => {
+        const f = byKey.get(i);
+        return (
+          <View key={i} style={styles.row}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.docType}>{d.docType}</Text>
+              <Text style={styles.line}>Captured: {d.capturedOn ?? "unknown"} - status: {d.status}</Text>
+              {f && <Text style={[styles.line, { color: BADGE[f.status] }]}>{f.status.toUpperCase()} - {f.message}</Text>}
+              {indicators[i] && <Text style={[styles.line, { color: countsColor(indicators[i].counts), fontWeight: "600" }]}>{countsLabel(indicators[i].counts)} toward prediction confidence</Text>}
+            </View>
+            <Pressable onPress={() => removeDoc(i)}>
+              <Text style={styles.remove}>Remove</Text>
+            </Pressable>
+          </View>
+        );
+      })}
     </ScrollView>
   );
 }
