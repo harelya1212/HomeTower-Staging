@@ -9,22 +9,22 @@ import type { EquityEvent } from "../store.tsx";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { classifyDocument, type Classification } from "../../engine/classify.ts";
-import { pickImageUri, pickImageUris, recognizeImageBands, recognizeImageFile, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
+import { pickImageUri, pickImageUris, probeImageSize, recognizeImageBands, recognizeImageFile, recognizeImageUpscaled, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
 import type { RawField } from "../../engine/extract.ts";
 import { parseHoldings, parsePlanAccount, positionValue, type HoldingsParse, type PlanAccount } from "../holdings.ts";
 import { parseSpendingCsv, type CsvSpending } from "../spendingCsv.ts";
 import { parsePayslipRows } from "../payslipRows.ts";
-import { docEvidenceStatus, employerMatchFor, k401StatementFacts, k401StatementMatchFor, monthYearLabel } from "../goals.ts";
+import { docEvidenceStatus, employerMatchFor, k401StatementFacts, k401StatementMatchFor, monthYearLabel, statementMatchLine } from "../goals.ts";
 import { mergePayslipFields, payslip401kTotals, payslipDeductionTotals, payslipKey } from "../payslips.ts";
 import {
-  extractSectionReading, hsaDepositFields, k401DetailFields, parse401kDetail, parseHsaPageFields, parseSaForm,
+  extractSectionReading, hsaDepositFields, hsaPageDetectedFields, k401DetailFields, parse401kDetail, parseSaForm,
   portfolioTotalOf, segmentStatement, statementPeriodOf,
   type K401Detail, type SaFormParse, type StatementPeriod, type StatementSection,
 } from "../statementSections.ts";
-import { boundRawText, dateLabel, eduReconYearsFor, eduResolutionFor, eduVerifiedKey, EXTRACTOR_VERSION, fingerprintForSave, hsaBalanceSnapshots, hsaReconciliation, hsaResolution, monthNameOf, monthYearOf, sourceLabelFor, upsertDocument } from "../reconcile.ts";
+import { boundRawText, dateLabel, eduMonthlyTotal, eduReconYearsFor, eduResolutionFor, eduVerifiedKey, EXTRACTOR_VERSION, fingerprintForSave, hsaBalanceSnapshots, hsaContributionReconciliation, hsaReconciliation, hsaResolution, monthNameOf, monthYearOf, sourceLabelFor, upsertDocument } from "../reconcile.ts";
 import { ocrMapsPack } from "../../engine/packs.ts";
 import { pickFiles, pickImageFiles } from "../filePick";
-import { isEmptyRead } from "../textFields.ts";
+import { isEmptyRead, unmatchedExcerpt } from "../textFields.ts";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
@@ -276,7 +276,7 @@ export default function DocumentsScreen() {
     return true;
   };
 
-  const runExtraction = (text: string, namedType?: string, pages?: string[], columnByPage?: RawField[][]) => {
+  const runExtraction = (text: string, namedType?: string, pages?: string[], columnByPage?: RawField[][], opts?: { openUnmatchedCard?: boolean }) => {
     try {
       const textRaw = textToRawFields(text);
       if (!textRaw.length && isEmptyRead(text)) {
@@ -304,6 +304,28 @@ export default function DocumentsScreen() {
         return { result: empty, docType: "other" };
       }
       if (!textRaw.length) {
+        if (opts?.openUnmatchedCard) {
+          // ROUND 59 (TRACE A): text WAS read (the read is not
+          // empty - the branch above owns that case) but not one
+          // label-value pair could be formed: a recognition-quality
+          // outcome, and the confirm card must open in its honest
+          // unmatched form (it shows what was read) instead of the
+          // upload ending on a transient note with no card at all.
+          const empty = extractFields([], "other");
+          setDetection(classifyDocument([], text));
+          setPendingText(text);
+          setPendingColumns(null);
+          setPendingHoldings(null);
+          setPendingPlan(null);
+          setFanOut(null);
+          setPending401kDetail(null);
+          setPendingSaForm(null);
+          setPendingSpending(null);
+          setExtraction(empty);
+          setExtractionType("other");
+          setOcrNote(null);
+          return { result: empty, docType: "other" };
+        }
         setOcrNote("No label-value pairs found in that text. Check the text and try again.");
         setExtraction(null);
         return null;
@@ -343,7 +365,7 @@ export default function DocumentsScreen() {
       const form = parseSaForm(text);
       setPendingSaForm(form);
       const detected = classifyDocument([...textRaw, ...(form?.fields ?? [])], text);
-      const useType = form ? form.kind : (namedType ?? detected.docType);
+      let useType = form ? form.kind : (namedType ?? detected.docType);
       setDetection(detected);
       setPendingText(text);
       setPendingColumns(columnByPage ?? null);
@@ -405,15 +427,39 @@ export default function DocumentsScreen() {
       // balance the generic pairing missed gets the proximity read
       // - the Balance heading's own figure, fill-only, so a figure
       // the pairing DID find is never overridden.
-      if (useType === "hsa_statement" && result.fields["ending_balance"] === undefined) {
-        const pageRaw = parseHsaPageFields(text);
-        if (pageRaw.length) {
-          const extra = extractFields(pageRaw, "hsa_statement");
-          const mergedFields = { ...result.fields };
-          for (const [k, v] of Object.entries(extra.fields)) {
+      // ROUND 59 (TRACE A): the page signature is no longer gated
+      // on the type being known first. On device, a Fidelity HSA
+      // balances-page screenshot classified "other" with zero
+      // fields in three straight sessions while this exact read
+      // resolved its balance every time it was allowed to run -
+      // the gate made the rescue unreachable from the automatic
+      // path (the rehearsals passed only because they forced the
+      // type). Now: when no balance was found and the text carries
+      // the page signature, the page read runs; when the upload
+      // was automatic and the classifier missed the document
+      // entirely, the signature identifies it and the reading
+      // saves as an HSA statement.
+      const pageFields = result.fields["ending_balance"] === undefined ? hsaPageDetectedFields(text) : null;
+      if (pageFields && useType === "hsa_statement") {
+        const extra = extractFields(pageFields, "hsa_statement");
+        const mergedFields = { ...result.fields };
+        for (const [k, v] of Object.entries(extra.fields)) {
+          if (mergedFields[k] === undefined) mergedFields[k] = v;
+        }
+        result = { ...result, fields: mergedFields };
+      } else if (pageFields && namedType == null && !form && detected.docType === "other") {
+        const extra = extractFields(pageFields, "hsa_statement");
+        if (typeof extra.fields["ending_balance"] === "number") {
+          const mergedFields = { ...extra.fields };
+          for (const [k, v] of Object.entries(result.fields)) {
             if (mergedFields[k] === undefined) mergedFields[k] = v;
           }
-          result = { ...result, fields: mergedFields };
+          result = { ...extra, fields: mergedFields };
+          useType = "hsa_statement";
+          setDetection({
+            docType: "hsa_statement", level: "likely", score: detected.score,
+            signals: ["HSA account page - balance read by proximity"], runnerUp: null, runnerUpScore: 0,
+          });
         }
       }
       // Round 55 (workstream F): the 401(k) detail facts ride along
@@ -441,8 +487,46 @@ export default function DocumentsScreen() {
   // rescue a reading but never override it, and the user still
   // confirms the full reading before anything is saved.
   const runImageExtraction = async (text: string, namedType: string | undefined, file: File, batchLabel?: string) => {
-    const r = runExtraction(text, namedType);
+    let r = runExtraction(text, namedType, undefined, undefined, { openUnmatchedCard: true });
     if (!r) return;
+    // ROUND 59 (TRACE A): the wide-image retry ladder. The first
+    // pass read text but matched NOTHING (type "other", zero
+    // fields) - the exact signature of the HSA screenshot that
+    // failed on device three times. The band re-read below
+    // structurally refuses wide images, so a wide screenshot had
+    // no second pass at all. One enlarged re-read (rendered at
+    // roughly 2600 px wide, never below native) runs instead; it
+    // is accepted only when it resolves, and it is RESCUE-ONLY -
+    // it never overrides a first-pass read that matched. When it
+    // also fails to resolve, the honest unmatched card stands,
+    // showing the longer of the two texts as its excerpt.
+    if (r.docType === "other" && Object.keys(r.result.fields).length === 0) {
+      const size = await probeImageSize(file);
+      if (size && size.h < size.w * 1.2) {
+        const label = batchLabel ? `${batchLabel} - ` : "";
+        setOcrNote(`${label}the first read did not match a known document - re-reading the photo enlarged...`);
+        const up = await recognizeImageUpscaled(file, (pct) => setOcrNote(`${label}re-reading enlarged - ${pct}%`));
+        if (up && !up.error && up.text) {
+          const r2 = runExtraction(up.text, namedType, undefined, undefined, { openUnmatchedCard: true });
+          if (r2 && (r2.docType !== "other" || Object.keys(r2.result.fields).length > 0)) {
+            r = r2;
+            setOcrNote(`${label}the enlarged re-read worked - please check the full reading below.`);
+          } else if (up.text.length <= text.length) {
+            // The enlarged text is no better: restore the first
+            // read so the unmatched card shows the richer text.
+            runExtraction(text, namedType, undefined, undefined, { openUnmatchedCard: true });
+            setOcrNote(null);
+            return;
+          } else {
+            setOcrNote(null);
+            return;
+          }
+        } else {
+          setOcrNote(null);
+          return;
+        }
+      }
+    }
     const f = r.result.fields;
     const payslipHole = r.docType === "payslip" &&
       (typeof f.ytd_federal_withheld !== "number" || typeof f.ytd_taxable_wages !== "number");
@@ -1065,27 +1149,66 @@ export default function DocumentsScreen() {
       if (s && (!stmt || (s.capturedOn ?? "") >= (stmt.capturedOn ?? ""))) stmt = s;
     }
     const res = employerMatchFor({ payslipMonthly: slipMatch, statement: stmt, relevantDocsExist: docs.some((d) => d.docType === "payslip" || d.docType === "401k_statement") });
-    if (res.monthly > 0 && res.status === "from_statement") return `Employer match: $${Math.round(res.monthly).toLocaleString("en-US")}/mo · Source: 401(k) statement, ${monthYearLabel(res.statementOn)}`;
+    // ROUND 59 (TRACE E): the statement confirms a year-to-date
+    // total; the monthly pace is a derivation from it and the line
+    // labels it as one (statementMatchLine) - the old wording
+    // presented the derived pace as the headline figure with a
+    // bare source label, as if the statement stated it.
+    if (res.monthly > 0 && res.status === "from_statement" && stmt) return statementMatchLine({ periodTotal: stmt.periodTotal, months: stmt.months, monthly: res.monthly, statementLabel: monthYearLabel(res.statementOn) });
     if (res.monthly > 0) return `Employer match: $${Math.round(res.monthly).toLocaleString("en-US")}/mo (from your payslips)`;
     if (res.detectedNotPaced && stmt) return `Employer match: $${Math.round(stmt.periodTotal).toLocaleString("en-US")} on a 401(k) statement (${monthYearLabel(res.statementOn)}) - its period is not stated, so no monthly pace is counted yet`;
     if (res.status === "not_detected") return "Employer match: Not detected on your payslips - a 401(k) statement would show it";
     return "Employer match: Unknown - no payslip or 401(k) statement yet";
   })();
-  const hsaLine = (() => {
-    const st = docEvidenceStatus(docs, "hsa");
-    if (st === "from_payslip" && dedTotals) return `HSA contributions: $${Math.round(dedTotals.hsaYtd).toLocaleString("en-US")} so far this year (from your payslips)${dedTotals.hsaMonthlyPace ? ` · running at $${Math.round(dedTotals.hsaMonthlyPace).toLocaleString("en-US")}/mo` : ""}`;
-    if (st === "from_statement") return "HSA contributions: on your HSA statement";
-    if (st === "not_detected") return "HSA contributions: Not detected on your payslips";
-    return "HSA contributions: Unknown - no payslip or HSA statement yet";
+  // ROUND 59 (TRACE C, Copilot's remedy shape): the HSA card no
+  // longer blends every earner's payroll HSA into one figure
+  // presented as the account's. The reconciliation model keeps
+  // the statement's confirmed YTD separate from payroll YTD,
+  // breaks payroll down by owner, and names the delta; an
+  // unexplained delta also overrides the card's status chip
+  // below (no UP TO DATE over a disagreement).
+  const hsaRecon = hsaContributionReconciliation(docs, dedTotals.perEarner, state.family);
+  const hsaLines: string[] = (() => {
+    const money2 = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const lines: string[] = [];
+    if (hsaRecon.ownerPayrollYtd !== null && hsaRecon.ownerName) {
+      lines.push(`${hsaRecon.ownerName.split(" ")[0]} payroll HSA YTD ${money2(hsaRecon.ownerPayrollYtd)}`);
+    } else if (dedTotals.hsaYtd > 0) {
+      lines.push(`Payroll HSA YTD ${money2(dedTotals.hsaYtd)} (from your payslips)`);
+    }
+    if (hsaRecon.otherHouseholdYtd > 0) lines.push(`Other household HSA YTD ${money2(hsaRecon.otherHouseholdYtd)}`);
+    if (hsaRecon.statementYtd !== null) lines.push(`Statement confirmed YTD ${money2(hsaRecon.statementYtd)}`);
+    if (hsaRecon.delta !== null) {
+      lines.push(hsaRecon.explained
+        ? `Reconciliation delta ${money2(hsaRecon.delta)} - payroll and the statement agree`
+        : `Reconciliation delta ${money2(hsaRecon.delta)} - not yet explained: the payslips and the statement on file disagree, so check which one is current`);
+    }
+    if (!lines.length) {
+      const st = docEvidenceStatus(docs, "hsa");
+      if (st === "from_statement") return ["HSA contributions: on your HSA statement"];
+      if (st === "not_detected") return ["HSA contributions: Not detected on your payslips"];
+      return ["HSA contributions: Unknown - no payslip or HSA statement yet"];
+    }
+    if (dedTotals.hsaMonthlyPace !== null) {
+      const pacers = dedTotals.perEarner.filter((e) => e.hsaMonthlyPace !== null);
+      const who = pacers.length === 1 ? ` (${pacers[0].name.split(" ")[0]}'s payslips)` : " (from your payslips)";
+      lines.push(`Payroll pace: $${Math.round(dedTotals.hsaMonthlyPace)}/mo${who}`);
+    }
+    return lines;
   })();
   const edu529Line = (() => {
-    const stmts = docs.filter((d) => d.docType === "529_statement" && d.fields);
-    let monthly: number | null = null;
-    for (const d of stmts) {
-      const v = Number(String(d.fields?.["monthly_contribution"] ?? "").replace(/[^0-9.]/g, ""));
-      if (Number.isFinite(v) && v > 0) monthly = v;
+    // ROUND 59 (TRACE D): the headline is the household pace -
+    // the freshest statement's monthly contribution PER CHILD,
+    // summed (eduMonthlyTotal). The old loop kept whichever
+    // statement record was iterated LAST, so the headline showed
+    // one child's $150 while the per-child lines below correctly
+    // showed 350 / 200 / 150.
+    const pace = eduMonthlyTotal(docs, state.family.filter((m) => m.role === "child"));
+    if (pace.total > 0) {
+      return pace.perChild.length === 1
+        ? `529 contributions: $${Math.round(pace.total).toLocaleString("en-US")}/mo (from your 529 statement)`
+        : `529 contributions: $${Math.round(pace.total).toLocaleString("en-US")}/mo across ${pace.perChild.length} children (from your 529 statements)`;
     }
-    if (monthly !== null) return `529 contributions: $${Math.round(monthly).toLocaleString("en-US")}/mo (from your 529 statement)`;
     const st = docEvidenceStatus(docs, "529");
     if (st === "not_detected") return "529 contributions: Not detected on your statements";
     return "529 contributions: Unknown - no 529 statement yet";
@@ -1265,7 +1388,17 @@ export default function DocumentsScreen() {
             </Text>
           )}
           {detection && !extractionEmptyRead && detection.level === "unknown" && (
-            <Text style={styles.line}>The app could not identify this document from its content - pick the type below.</Text>
+            <View style={styles.mismatch}>
+              <Text style={styles.line}>
+                HomeTower read the text in this file, but could not match it to a known document. That is a recognition-quality problem, not a problem with your document - the beginning of what was read is shown below so you can judge the reading yourself. Pick the type below if you know it, or paste the text instead in the paste box just above this card.
+              </Text>
+              {pendingText ? (
+                <Text style={styles.note}>What HomeTower read: "{unmatchedExcerpt(pendingText)}"</Text>
+              ) : null}
+              <Pressable style={styles.button} onPress={() => setExtraction(null)}>
+                <Text style={styles.buttonText}>Close this card and paste the text instead</Text>
+              </Pressable>
+            </View>
           )}
           {detection && !extractionEmptyRead && detection.level !== "unknown" && detection.docType !== extractionType && (
             <View style={styles.mismatch}>
@@ -1510,7 +1643,12 @@ export default function DocumentsScreen() {
         .map((c) => ({ c, info: catInfo(c) }))
         .sort((a, b) => a.info.rank - b.info.rank)
         .map(({ c, info }) => {
-          const chip = chipFor(info.status);
+          // ROUND 59 (TRACE C): an unexplained HSA reconciliation
+          // delta overrides the freshness chip - the card must not
+          // say UP TO DATE while its two sources disagree.
+          const chip = c.key === "hsa" && hsaRecon.delta !== null && !hsaRecon.explained
+            ? { t: `NEEDS ATTENTION - $${Math.abs(hsaRecon.delta).toLocaleString("en-US")} UNRECONCILED`, bg: "#FDE3DF", fg: "#A02C1D" }
+            : chipFor(info.status);
           // 401(k) partial truth (owner, 2026-11-08): with no
           // statement yet, the card shows what payslips already
           // prove - this year's contributions - instead of a flat
@@ -1558,7 +1696,7 @@ export default function DocumentsScreen() {
                   {k401Facts.election && <Text style={styles.line}>Future contributions: {k401Facts.election} (current election, per the statement)</Text>}
                 </>
               )}
-              {c.key === "hsa" && <Text style={styles.line}>{hsaLine}</Text>}
+              {c.key === "hsa" && hsaLines.map((l, i) => <Text key={i} style={styles.line}>{l}</Text>)}
               {c.key === "hsa" && hsaSnap.current.value !== null && hsaSnap.current.source && (
                 <Text style={styles.line}>Current balance: {money2(hsaSnap.current.value)} - {sourceLabelFor(hsaSnap.current.source)}</Text>
               )}

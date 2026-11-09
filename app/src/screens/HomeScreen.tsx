@@ -8,7 +8,7 @@ import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { computeFederalTax } from "../../engine/federal.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
-import { ageOn, educationFunding, educationLine, faceStatusFor } from "../goals.ts";
+import { ageOn, educationLine, educationOutlookFor, faceStatusFor } from "../goals.ts";
 import RetirementDetails from "../components/RetirementDetails.tsx";
 import RetirementTimeline from "../components/RetirementTimeline.tsx";
 import { computeRetirementModel } from "../retirementModel.ts";
@@ -147,18 +147,12 @@ export default function HomeScreen() {
 
   // Education funding per child (owner QA round 18, SPEC45 sec. 32):
   // saved vs the real cost path - per child, with their own dates.
-  const thisYear = Number(today.slice(0, 4));
-  const eduOutlook = children.map((c) => {
-    const age = ageOn(c.dob, today);
-    let yearsToStart = 0;
-    if (!c.studentNow && c.collegeStartYear > 0) yearsToStart = Math.max(0, c.collegeStartYear - thisYear);
-    else if (!c.studentNow && age !== null) yearsToStart = Math.max(0, 18 - age);
-    const duration = c.studentNow && c.yearsLeftInCollege > 0 ? c.yearsLeftInCollege : c.eduDurationYears || 4;
-    const usingDefaultCost = !(c.eduAnnualCost > 0);
-    const effCost = usingDefaultCost ? DEFAULT_EDU_ANNUAL_COST : c.eduAnnualCost;
-    const funding = educationFunding(c.eduBalance || 0, c.eduMonthly || 0, yearsToStart, duration, effCost, c.eduScholarshipYear || 0, g.assumedReturnPct);
-    return { c, yearsToStart, duration, funding, usingDefaultCost, effCost };
-  });
+  // ROUND 59 (TRACE F): the model (and its accuracy gating - a
+  // child on default costs is early-estimate, never a red verdict)
+  // is built by goals.educationOutlookFor so it is pinned in the
+  // suite; this screen only renders it.
+  const eduOutlook = educationOutlookFor(children, today, g.assumedReturnPct, DEFAULT_EDU_ANNUAL_COST)
+    .map((e) => ({ ...e, c: e.child }));
 
   useEffect(() => {
     getPushStatus().then(setPush);
@@ -493,11 +487,11 @@ export default function HomeScreen() {
                   <Text style={styles.bigLabel}>Desired</Text>
                 </View>
                 <View style={styles.bigTile}>
-                  <Text style={styles.bigValue2}>{directional.rangeLabel}</Text>
+                  <Text style={styles.bigValue2}>{retModel.homeRangeLabel ?? directional.rangeLabel}</Text>
                   <Text style={styles.bigLabel}>Current path</Text>
                 </View>
               </View>
-              {retModel.timeline && <RetirementTimeline timeline={retModel.timeline} colorKey={retDisplay.colorKey} compact />}
+              {retModel.homeTimeline && <RetirementTimeline timeline={retModel.homeTimeline} colorKey={retDisplay.colorKey} compact />}
               {retModel.opportunityLine && <Text style={styles.line}>{retModel.opportunityLine}</Text>}
               <Pressable style={styles.button} onPress={() => { setWizardIntent(); navigation.navigate("Lifestyle"); }}>
                 <Text style={styles.buttonText}>Improve estimate</Text>
@@ -560,14 +554,14 @@ export default function HomeScreen() {
       {children.length > 0 && (
         <View style={styles.card}>
           <Text style={styles.cardLabel}>Education - timing and funding, per child **</Text>
-          {eduOutlook.map(({ c, yearsToStart, duration, funding, usingDefaultCost }) => {
+          {eduOutlook.map(({ c, yearsToStart, duration, funding, usingDefaultCost, earlyEstimate }) => {
             const pct = funding.pctFunded ?? 0;
             return (
               <View key={c.id} style={styles.personBlock}>
                 <Text style={styles.personName}>🎓 {educationLine(c.name || "Child", c.dob, c.studentNow, c.collegeStartYear, c.yearsLeftInCollege, today)}</Text>
                 <View style={styles.tilesRow}>
                   <View style={styles.tile}>
-                    <Text numberOfLines={1} style={[styles.tileValue, { color: funding.gap <= 0 ? GREEN : pct >= 70 ? YELLOW : RED }]}>{pct}%</Text>
+                    <Text numberOfLines={1} style={[styles.tileValue, { color: earlyEstimate ? YELLOW : funding.gap <= 0 ? GREEN : pct >= 70 ? YELLOW : RED }]}>{pct}%</Text>
                     <Text style={styles.tileLabel}>Funded</Text>
                   </View>
                   <View style={styles.tile}>
@@ -579,7 +573,13 @@ export default function HomeScreen() {
                     <Text style={styles.tileLabel}>Need ({duration} yrs)</Text>
                   </View>
                 </View>
-                <Text style={styles.line}>{funding.gap <= 0 ? "🟢 Covered." : yearsToStart > 0 ? `🔴 Gap ${money(funding.gap)} - save ${money(funding.requiredMonthly)}/mo (now ${money(c.eduMonthly || 0)}/mo) to close it.` : `🔴 Gap ${money(funding.gap)} - college is here: cash flow, loans, or a cheaper plan.`}{c.eduScholarshipYear ? ` After a ${money(c.eduScholarshipYear)}/yr scholarship.` : ""}</Text>
+                {earlyEstimate ? (
+                  <Text style={styles.line}>{funding.gap <= 0
+                    ? "🟡 Early estimate - default college costs: covered under those default assumptions - not yet a verdict."
+                    : `🟡 Early estimate - default college costs: projected gap about ${money(funding.gap)} under those default assumptions - set real costs in the ${state.intake.name || "My House"} tab for a firm verdict.`}{c.eduScholarshipYear ? ` After a ${money(c.eduScholarshipYear)}/yr scholarship.` : ""}</Text>
+                ) : (
+                  <Text style={styles.line}>{funding.gap <= 0 ? "🟢 Covered." : yearsToStart > 0 ? `🔴 Gap ${money(funding.gap)} - save ${money(funding.requiredMonthly)}/mo (now ${money(c.eduMonthly || 0)}/mo) to close it.` : `🔴 Gap ${money(funding.gap)} - college is here: cash flow, loans, or a cheaper plan.`}{c.eduScholarshipYear ? ` After a ${money(c.eduScholarshipYear)}/yr scholarship.` : ""}</Text>
+                )}
               </View>
             );
           })}
