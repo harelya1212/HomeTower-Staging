@@ -3,14 +3,27 @@
 // a shared age axis: a navy dot for TODAY, a teal diamond for the
 // GOAL (desired retirement age), and on the reference adult's row a
 // thick CURRENT PATH band spanning the reach range in the status
-// color (running to the axis end with an arrow when the path is
-// unreached, "80+"). Age ticks under the axis carry the goal age and
-// the range label; milestone chips sit below, and every chip comes
-// from data the model actually has (see retirementTimelineModel) -
-// no chip is ever invented.
-import React from "react";
+// color. Milestone chips sit below, and every chip comes from data
+// the model actually has (see retirementTimelineModel) - no chip is
+// ever invented.
+//
+// Round 54 (device QA): the tick strip is laid out by the pure
+// collision-aware timelineLabelLayout in goals.ts - labels carry
+// their own boxes, so the goal label can no longer land on a decade
+// tick and the range label can no longer land on the end tick. A
+// fully unreached path draws a faded run-off segment over the last
+// part of the axis with its "80+" label above the axis end, instead
+// of the solid pill at the edge that read as a stray toggle. The
+// legend glyphs are drawn shapes in fixed-width slots, so no glyph
+// can crowd the word next to it.
+import React, { useMemo, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import type { RetirementTimeline as TimelineModel, StatusColorKey } from "../goals.ts";
+import {
+  TIMELINE_REF_WIDTH,
+  timelineLabelLayout,
+  type RetirementTimeline as TimelineModel,
+  type StatusColorKey,
+} from "../goals.ts";
 
 const NAVY = "#12355B";
 const TEAL = "#0E7C7B";
@@ -35,6 +48,18 @@ export default function RetirementTimeline({ timeline, colorKey, compact }: {
   const bandColor = STATUS_HEX[colorKey];
   const reference = rows.find((r) => r.isReference) ?? rows[0];
   const trackH = compact ? 30 : 38;
+
+  // Label layout at the model's canonical width until the strip has
+  // been measured, then at the measured width - same pure function.
+  const [axisW, setAxisW] = useState(0);
+  const labels = useMemo(() => {
+    if (!reference || axisW <= 0) return timeline.labels;
+    return timelineLabelLayout({ minAge, maxAge, ticks, goalAge: reference.desiredAge, band, axisWidth: axisW, suppressEightyPlus: timeline.suppressEightyPlus });
+  }, [axisW, timeline, reference, minAge, maxAge, ticks, band]);
+  const denom = axisW > 0 ? axisW : TIMELINE_REF_WIDTH;
+  const stripLabels = labels.filter((l) => l.placement === "strip" && !l.dropped);
+  const aboveLabel = labels.find((l) => l.placement === "above" && !l.dropped) ?? null;
+
   return (
     <View style={compact ? styles.wrapCompact : styles.wrap}>
       {rows.map((r) => (
@@ -45,7 +70,22 @@ export default function RetirementTimeline({ timeline, colorKey, compact }: {
           </View>
           <View style={[styles.track, { height: trackH }]}>
             <View style={[styles.baseline, { top: trackH / 2 - 1 }]} />
-            {r.isReference && (
+            {r.isReference && (band.fadedStartAge !== null ? (
+              <View
+                style={[
+                  styles.band,
+                  styles.bandFaded,
+                  {
+                    top: trackH / 2 - 5,
+                    left: `${pct(band.fadedStartAge)}%`,
+                    width: `${100 - pct(band.fadedStartAge)}%`,
+                    backgroundColor: bandColor,
+                  },
+                ]}
+              >
+                <Text style={styles.bandArrow}>{"›"}</Text>
+              </View>
+            ) : (
               <View
                 style={[
                   styles.band,
@@ -59,35 +99,64 @@ export default function RetirementTimeline({ timeline, colorKey, compact }: {
               >
                 {band.unreached && <Text style={styles.bandArrow}>{"›"}</Text>}
               </View>
-            )}
+            ))}
             <View style={[styles.todayDot, { top: trackH / 2 - 6, left: `${pct(r.currentAge)}%` }]} />
             <View style={[styles.goalMarker, { top: trackH / 2 - 6, left: `${pct(r.desiredAge)}%` }]} />
           </View>
         </View>
       ))}
-      <View style={styles.tickStrip}>
-        {ticks.map((t) => (
-          <Text key={t} style={[styles.tickLabel, { left: `${pct(t)}%` }]}>{t}</Text>
-        ))}
-        {reference && (
-          <Text style={[styles.tickLabel, styles.goalTick, { left: `${pct(reference.desiredAge)}%` }]}>
-            Goal {reference.desiredAge}
+      {aboveLabel && (
+        <View style={styles.aboveRow}>
+          <Text style={[styles.aboveLabel, { color: bandColor }]}>{aboveLabel.text}</Text>
+        </View>
+      )}
+      <View
+        style={styles.tickStrip}
+        onLayout={(e) => {
+          const w = Math.round(e.nativeEvent.layout.width);
+          if (w > 0 && w !== axisW) setAxisW(w);
+        }}
+      >
+        {stripLabels.map((l) => (
+          <Text
+            key={`${l.kind}:${l.text}:${l.anchorAge}`}
+            style={[
+              styles.tickLabel,
+              {
+                left: `${(l.left / denom) * 100}%`,
+                width: `${((l.right - l.left) / denom) * 100}%`,
+                textAlign: l.align,
+              },
+              l.kind === "goal" ? styles.goalTick : null,
+              l.kind === "range" ? { color: bandColor, fontWeight: "800" as const } : null,
+            ]}
+          >
+            {l.text}
           </Text>
-        )}
-        <Text
-          style={[
-            styles.tickLabel,
-            styles.rangeTick,
-            { left: `${pct((band.startAge + band.endAge) / 2)}%`, color: bandColor },
-          ]}
-        >
-          {band.label}
-        </Text>
-        <Text style={[styles.tickLabel, styles.endTick]}>80+</Text>
+        ))}
       </View>
-      <Text style={styles.legend}>
-        <Text style={{ color: NAVY }}>{"●"}</Text> today · <Text style={{ color: TEAL }}>{"◆"}</Text> goal · the colored band is the current path
-      </Text>
+      <View style={styles.legendRow}>
+        <View style={styles.legendItem}>
+          <View style={styles.legendSlot}>
+            <View style={styles.legendDot} />
+          </View>
+          <Text style={styles.legendText}>today</Text>
+        </View>
+        <Text style={styles.legendSep}>·</Text>
+        <View style={styles.legendItem}>
+          <View style={styles.legendSlot}>
+            <View style={styles.legendDiamond} />
+          </View>
+          <Text style={styles.legendText}>goal</Text>
+        </View>
+        <Text style={styles.legendSep}>·</Text>
+        <View style={styles.legendItem}>
+          <View style={styles.legendSlot}>
+            <View style={[styles.legendSwatch, { backgroundColor: bandColor }]} />
+          </View>
+          <Text style={styles.legendText}>the colored band is the current path</Text>
+        </View>
+      </View>
       {chips.length > 0 && (
         <View style={styles.chipsRow}>
           {chips.map((c) => (
@@ -111,18 +180,26 @@ const styles = StyleSheet.create({
   track: { position: "relative", marginHorizontal: 2 },
   baseline: { position: "absolute", left: 0, right: 0, height: 2, backgroundColor: TRACK_LINE, borderRadius: 1 },
   band: { position: "absolute", height: 10, borderRadius: 5, justifyContent: "center" },
+  bandFaded: { opacity: 0.45, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 },
   bandArrow: { position: "absolute", right: 2, fontSize: 13, fontWeight: "900", color: "#FFFFFF", lineHeight: 13 },
   todayDot: { position: "absolute", width: 12, height: 12, borderRadius: 6, backgroundColor: NAVY, marginLeft: -6, borderWidth: 2, borderColor: "#FFFFFF" },
   goalMarker: {
     position: "absolute", width: 12, height: 12, backgroundColor: TEAL, marginLeft: -6,
     transform: [{ rotate: "45deg" }], borderWidth: 2, borderColor: "#FFFFFF",
   },
+  aboveRow: { marginHorizontal: 2, marginTop: 1, alignItems: "flex-end" },
+  aboveLabel: { fontSize: 12, fontWeight: "800" },
   tickStrip: { position: "relative", height: 20, marginHorizontal: 2, marginTop: 2 },
-  tickLabel: { position: "absolute", fontSize: 12, color: MUTED, fontWeight: "600", transform: [{ translateX: -8 }] },
+  tickLabel: { position: "absolute", fontSize: 12, color: MUTED, fontWeight: "600" },
   goalTick: { color: TEAL, fontWeight: "800" },
-  rangeTick: { fontWeight: "800", transform: [{ translateX: -14 }] },
-  endTick: { right: 0, transform: [{ translateX: 0 }], fontWeight: "800" },
-  legend: { fontSize: 12.5, color: MUTED, marginTop: 2 },
+  legendRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 6, marginTop: 3 },
+  legendItem: { flexDirection: "row", alignItems: "center" },
+  legendSlot: { width: 20, alignItems: "center", justifyContent: "center", marginRight: 4 },
+  legendDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: NAVY },
+  legendDiamond: { width: 10, height: 10, backgroundColor: TEAL, transform: [{ rotate: "45deg" }] },
+  legendSwatch: { width: 16, height: 8, borderRadius: 4 },
+  legendText: { fontSize: 12.5, color: MUTED },
+  legendSep: { fontSize: 12.5, color: MUTED },
   chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
   chip: { backgroundColor: "#EEF4F8", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
   chipText: { fontSize: 13, fontWeight: "700", color: NAVY },
