@@ -6,7 +6,7 @@ import type { DocumentRecord } from "./intake.ts";
 export const FRESHNESS_WINDOW_DAYS: Record<string, number> = {
   payslip: 35, brokerage_statement: 40, "401k_statement": 100, hsa_statement: 100,
   "529_statement": 100, w2: 400, "1099b": 400, "1098t": 400, "1099q": 400,
-  prior_return: 400, pension_statement: 400, other: 180,
+  prior_return: 400, pension_statement: 400, hsa_1099_sa: 400, hsa_5498_sa: 400, other: 180,
 };
 export const AGING_WARNING_DAYS = 7;
 

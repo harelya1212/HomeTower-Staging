@@ -23,11 +23,17 @@ const KEYWORDS: Record<string, string[]> = {
   // Round 49: SSA wording. "social security" appears throughout the
   // statement, so it out-scores the pension map's "monthly benefit".
   ssa_statement: ["social security", "social security administration", "estimated benefits", "full retirement age", "ssa.gov"],
+  // Round 55: the HSA tax forms are first-class types, not HSA
+  // statements - their own titles are the identity.
+  hsa_5498_sa: ["5498-sa", "form 5498", "fair market value of hsa", "total hsa contributions"],
+  hsa_1099_sa: ["1099-sa", "distributions from an hsa", "gross distribution", "distribution code", "earnings on excess contributions"],
   prior_return: ["1040", "adjusted gross income", "taxable income", "internal revenue service", "u.s. individual income tax return"],
 };
 
 const ANCHORS: Record<string, string[]> = {
   prior_return: ["form 1040", "form 8879", "e-file signature authorization"],
+  hsa_5498_sa: ["form 5498-sa"],
+  hsa_1099_sa: ["form 1099-sa"],
 };
 
 export interface Classification {

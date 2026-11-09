@@ -4,7 +4,7 @@
 export const FILING_STATUSES = new Set(["single", "married_filing_jointly", "married_filing_separately", "head_of_household"]);
 export const MEMBER_ROLES = new Set(["adult", "dependent", "student"]);
 export const PAY_FREQUENCIES = new Set(["weekly", "biweekly", "semimonthly", "monthly"]);
-export const DOCUMENT_TYPES = new Set(["w2", "payslip", "hsa_statement", "401k_statement", "1099b", "1098t", "1099q", "prior_return", "529_statement", "brokerage_statement", "pension_statement", "bank_statement", "card_statement", "ssa_statement", "other"]);
+export const DOCUMENT_TYPES = new Set(["w2", "payslip", "hsa_statement", "401k_statement", "1099b", "1098t", "1099q", "prior_return", "529_statement", "brokerage_statement", "pension_statement", "bank_statement", "card_statement", "ssa_statement", "hsa_1099_sa", "hsa_5498_sa", "other"]);
 export const DOCUMENT_STATUSES = new Set(["parsed", "pending_verify", "rejected"]);
 
 export interface Member { name: string; role: string; dateOfBirth?: string | null; payFrequency?: string | null }
@@ -17,7 +17,28 @@ export interface CalibrationRecord {
   outcomeVerified?: boolean; // checked against the IRS/state outcome
 }
 export interface Holding { ticker: string; name: string; quantity: number; pricePaid: number; lastPrice: number }
-export interface DocumentRecord { docType: string; status: string; confidence?: number; capturedOn?: string | null; ownerMemberId?: string | null; fields?: Record<string, string>; holdings?: Holding[]; spendingSummary?: SpendingSummary | null }
+export interface DocumentRecord {
+  docType: string; status: string; confidence?: number; capturedOn?: string | null;
+  ownerMemberId?: string | null; fields?: Record<string, string>; holdings?: Holding[];
+  spendingSummary?: SpendingSummary | null;
+  /** Round 55: fan-out linkage - every account reading cut from one
+   * uploaded document shares its uploadId; accountId is the account
+   * number the source printed (never a portfolio total). */
+  uploadId?: string | null;
+  accountId?: string | null;
+  /** Round 55: the extracted text of the source (bounded), retained
+   * so improved parsers can re-read the document without a
+   * re-upload (workstream G). Absent on records saved before round
+   * 55 - those cannot be reprocessed, only re-uploaded. */
+  rawText?: string | null;
+  /** Round 55: the ocr-field-maps version this record was extracted
+   * with; the reprocess pass re-reads records behind the current
+   * version when they carry rawText. */
+  mapsVersion?: string | null;
+  /** Round 55: structured tax-form boxes (hsa_1099_sa / hsa_5498_sa)
+   * - the numbered boxes exactly as the form printed them. */
+  formBoxes?: Record<string, string> | null;
+}
 /** Round 48: what a bank/card statement CSV proved about household
  * spending - months of evidence and annualized outflows per
  * Retirement Lifestyle category key (see src/goals.ts). Evidence
