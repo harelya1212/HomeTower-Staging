@@ -22,6 +22,16 @@ export function isEmptyRead(text: string): boolean {
   return alnumCount(text) < EMPTY_READ_MIN_ALNUM;
 }
 
+/** ROUND 59 (TRACE A) - what the honest unmatched card shows: the
+ * first characters of the text that WAS read, whitespace-folded,
+ * so the user can see the reading happened and judge its quality
+ * ("HomeTower read this, but could not match it") instead of
+ * being told the document could not be identified, full stop. */
+export function unmatchedExcerpt(text: string, maxChars = 200): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > maxChars ? `${flat.slice(0, maxChars)}...` : flat;
+}
+
 /** Turn OCR/plain text into label-value pairs the extractor understands.
  * Handles "Label: value", "Label value" and label-line/value-line layouts. */
 export function textToRawFields(text: string, confidence = 0.9): RawField[] {

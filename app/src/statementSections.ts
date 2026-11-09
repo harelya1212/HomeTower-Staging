@@ -543,3 +543,19 @@ export function parseHsaPageFields(text: string): RawField[] {
   proximity(/employer contribution/i, "employer contribution");
   return out;
 }
+
+/** ROUND 59 (TRACE A) - the HSA account-page signature, as a
+ * decision the upload path and the tests share: the text of a
+ * photographed or screenshotted HSA balances page (the function's
+ * own guards require the words "health savings account" AND a
+ * balance figure found by proximity). Returns the page fields
+ * when the signature holds, null when it does not. Through round
+ * 58 this read only ran when the user had already told HomeTower
+ * the upload was an HSA statement, so the automatic path could
+ * never reach it - a balances-page screenshot classified "other"
+ * with zero fields, three device sessions in a row, even though
+ * the balance was sitting in the read text. */
+export function hsaPageDetectedFields(text: string): RawField[] | null {
+  const fields = parseHsaPageFields(text);
+  return fields.some((f) => f.key === "statement ending balance") ? fields : null;
+}

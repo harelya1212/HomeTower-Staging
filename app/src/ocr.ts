@@ -10,7 +10,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { Platform } from "react-native";
 import type { RawField } from "../engine/extract.ts";
-import { recognizeBandsWebOcr, recognizeWithWebOcr } from "./webOcr.ts";
+import { probeWebImageSize, recognizeBandsWebOcr, recognizeUpscaledWebOcr, recognizeWithWebOcr } from "./webOcr.ts";
 
 export interface OcrOutcome {
   stage: string;
@@ -97,6 +97,22 @@ export async function recognizeImageFile(file: File | Blob, onProgress?: (pct: n
 /** Section re-read of a tall image file (web OCR): small, enlarged
  * horizontal bands, used to rescue tables the fast pass dropped.
  * Returns one text per band; the caller fills missing fields only. */
+/** The picked image's pixel size on web (null elsewhere). */
+export async function probeImageSize(file: File | Blob): Promise<{ w: number; h: number } | null> {
+  if (Platform.OS !== "web") return null;
+  return probeWebImageSize(file);
+}
+
+/** ROUND 59 (TRACE A): the wide-image enlarged re-read. Returns
+ * null when no enlarged pass applies (native, tall image, or the
+ * image is already at the ladder's target width). */
+export async function recognizeImageUpscaled(file: File | Blob, onProgress?: (pct: number) => void): Promise<OcrOutcome | null> {
+  if (Platform.OS !== "web") return null;
+  const r = await recognizeUpscaledWebOcr(file, onProgress);
+  if (!r) return null;
+  return { stage: r.stage, text: r.text, error: r.error, source: r.error ? "none" : "paste", failure: r.failure ?? (r.error ? "engine" : null) };
+}
+
 export async function recognizeImageBands(file: File | Blob, onProgress?: (pct: number) => void): Promise<{ texts: string[]; stage: string; error: string | null }> {
   if (Platform.OS !== "web") {
     return { texts: [], stage: "file", error: "Section re-read runs on web; the native app reads with ML Kit." };

@@ -195,6 +195,82 @@ const BAND_OVERLAP = 0.24;
 const BAND_SCALE = 2; // enlarge: phone screenshots are ~150 dpi
 const MAX_BANDS = 6;
 
+/** The pixel size of an image the browser can decode, or null. */
+export async function probeWebImageSize(file: File | Blob): Promise<{ w: number; h: number } | null> {
+  try {
+    const { img, url } = await decodeImage(file);
+    try {
+      return img.naturalWidth && img.naturalHeight ? { w: img.naturalWidth, h: img.naturalHeight } : null;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  } catch {
+    return null;
+  }
+}
+
+// ROUND 59 (TRACE A) - the wide-image retry ladder. The diagnosis
+// (engine-tests/round59-harness.ts, the app's own pinned stack):
+// recognition quality on a balances-page screenshot is governed
+// by effective resolution - the same file at half width returns
+// ~120 characters with the balance destroyed, while rendering it
+// enlarged to roughly 2600 px wide returns the full page with the
+// balance verbatim. Tall images already have their rescue (the
+// band re-read above, which by design refuses wide images), so a
+// wide screenshot whose first pass matches nothing had NO second
+// pass at all. This pass renders the whole image enlarged on a
+// canvas - never smaller than native - and recognizes that.
+export const WIDE_RETRY_TARGET_WIDTH = 2600;
+
+/** The scale the wide retry renders at, or 0 when no retry
+ * applies: tall images belong to the band path, and an image
+ * already at (or above) the target width gains nothing. Pure, so
+ * the ladder's decisions are pinned in the test suite. */
+export function wideRetryScale(naturalWidth: number, naturalHeight: number): number {
+  if (!naturalWidth || !naturalHeight) return 0;
+  if (naturalHeight >= naturalWidth * 1.2) return 0; // tall - the band re-read owns it
+  if (naturalWidth >= WIDE_RETRY_TARGET_WIDTH) return 0;
+  return WIDE_RETRY_TARGET_WIDTH / naturalWidth;
+}
+
+export async function recognizeUpscaledWebOcr(file: File | Blob, onProgress?: (pct: number) => void): Promise<WebOcrOutcome | null> {
+  let dims: { img: HTMLImageElement; url: string } | null = null;
+  try {
+    dims = await decodeImage(file);
+  } catch {
+    return null;
+  }
+  try {
+    const scale = wideRetryScale(dims.img.naturalWidth, dims.img.naturalHeight);
+    if (scale <= 1) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(dims.img.naturalWidth * scale);
+    canvas.height = Math.round(dims.img.naturalHeight * scale);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(dims.img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) return null;
+    let worker: Awaited<ReturnType<typeof getWorker>>;
+    try {
+      worker = await getWorker(onProgress);
+    } catch (e) {
+      return { text: "", stage: "web-ocr-upscale-load", error: e instanceof Error ? e.message : String(e), failure: "engine" };
+    }
+    try {
+      const { data } = await worker.recognize(blob);
+      if (!data.text.trim()) {
+        return { text: "", stage: "web-ocr-upscaled", error: "Web OCR found no text in the enlarged reading.", failure: "no_text" };
+      }
+      return { text: data.text, stage: "web-ocr-upscaled", error: null, failure: null };
+    } catch (e) {
+      return { text: "", stage: "web-ocr-upscaled", error: e instanceof Error ? e.message : String(e), failure: "engine" };
+    }
+  } finally {
+    URL.revokeObjectURL(dims.url);
+  }
+}
+
 export async function recognizeBandsWebOcr(file: File | Blob, onProgress?: (pct: number) => void): Promise<WebBandsOutcome> {
   try {
     const { img, url } = await decodeImage(file);

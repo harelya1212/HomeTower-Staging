@@ -174,6 +174,98 @@ export function eduResolutionFor(docs: DocumentRecord[], childId: string): Accou
   return resolveFields(docs.filter((d) => d.docType === "529_statement" && d.ownerMemberId === childId));
 }
 
+/** ROUND 59 (TRACE D) - the household 529 pace: the freshest
+ * statement's stated monthly contribution PER CHILD, summed
+ * across children. The headline used to keep whichever statement
+ * record happened to be iterated LAST (one child's pace - $150
+ * for the youngest - presented as the household figure while the
+ * per-child lines below it were all correct). A child with a
+ * newer statement replaces their own pace, never adds to it. */
+export function eduMonthlyTotal(
+  docs: DocumentRecord[],
+  children: { id: string; name: string }[],
+): { total: number; perChild: { childId: string; name: string; monthly: number }[] } {
+  const perChild: { childId: string; name: string; monthly: number }[] = [];
+  for (const child of children) {
+    let owned = docs.filter((d) => d.docType === "529_statement" && d.ownerMemberId === child.id);
+    if (!owned.length && firstName(child.name)) {
+      owned = docs.filter((d) => d.docType === "529_statement" && !d.ownerMemberId
+        && firstName(d.fields?.["beneficiary_name"] ?? "") === firstName(child.name));
+    }
+    let best: { monthly: number; asOf: string } | null = null;
+    for (const d of owned) {
+      const v = fieldNum(d.fields ?? {}, "monthly_contribution");
+      if (v === null || v <= 0) continue;
+      const asOf = docAsOf(d);
+      if (!best || asOf >= best.asOf) best = { monthly: v, asOf };
+    }
+    if (best) perChild.push({ childId: child.id, name: child.name, monthly: best.monthly });
+  }
+  const total = Math.round(perChild.reduce((s, p) => s + p.monthly, 0) * 100) / 100;
+  return { total, perChild };
+}
+
+/** ROUND 59 (TRACE C, Copilot's remedy shape) - the HSA
+ * contribution reconciliation the card renders. The governing
+ * rule: "HSA household contribution YTD != blindly sum every
+ * historical payroll HSA line." The statement on file confirms
+ * ONE account (its owner's); payroll YTD is resolved per earner
+ * from each earner's FRESHEST slip snapshot (never a sum of
+ * snapshots - payslipDeductionTotals already resolves it that
+ * way); the delta reconciles the ACCOUNT OWNER's payroll YTD
+ * against the statement's confirmed YTD for that same account.
+ * A second earner's payroll HSA is a different account and is
+ * reported on its own line - it never enters the delta. The
+ * delta is "explained" when it is zero within rounding (the two
+ * sources agree); any other delta is unexplained and the card's
+ * status badge must say so instead of UP TO DATE. */
+export interface HsaContributionRecon {
+  ownerName: string | null;
+  ownerPayrollYtd: number | null;
+  otherHouseholdYtd: number;
+  statementYtd: number | null;
+  statementAsOf: string | null;
+  delta: number | null;
+  explained: boolean;
+}
+export function hsaContributionReconciliation(
+  docs: DocumentRecord[],
+  perEarner: { name: string; hsaYtd: number | null }[],
+  members: { id: string; name: string }[],
+): HsaContributionRecon {
+  // The freshest HSA statement reading on file: its owner and its
+  // own confirmed contributions YTD.
+  let stmt: DocumentRecord | null = null;
+  for (const d of docs) {
+    if (d.docType !== "hsa_statement") continue;
+    if (!stmt || docAsOf(d) >= docAsOf(stmt)) stmt = d;
+  }
+  const statementYtd = stmt ? fieldNum(stmt.fields ?? {}, "contributions_ytd") : null;
+  const ownerMember = stmt?.ownerMemberId ? members.find((m) => m.id === stmt!.ownerMemberId) ?? null : null;
+  const ownerFirst = ownerMember ? firstName(ownerMember.name) : "";
+  const ownerEntry = ownerFirst
+    ? perEarner.find((e) => firstName(e.name ?? "") === ownerFirst) ?? null
+    : null;
+  const ownerPayrollYtd = ownerEntry ? ownerEntry.hsaYtd : null;
+  const otherHouseholdYtd = Math.round(
+    perEarner
+      .filter((e) => e !== ownerEntry && e.hsaYtd !== null && e.hsaYtd > 0)
+      .reduce((s, e) => s + (e.hsaYtd ?? 0), 0) * 100,
+  ) / 100;
+  const delta = ownerPayrollYtd !== null && statementYtd !== null
+    ? Math.round((ownerPayrollYtd - statementYtd) * 100) / 100
+    : null;
+  return {
+    ownerName: ownerMember?.name ?? ownerEntry?.name ?? null,
+    ownerPayrollYtd,
+    otherHouseholdYtd,
+    statementYtd,
+    statementAsOf: stmt ? docAsOf(stmt) : null,
+    delta,
+    explained: delta === null || Math.abs(delta) <= 0.5,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Reconciliations (workstreams C and D)
 // ---------------------------------------------------------------------------
@@ -388,13 +480,18 @@ export function recordFingerprint(d: DocumentRecord): string | null {
  * section header). Null when the reading does not carry the facts
  * its kind's key needs - such a reading dedupes by fingerprint
  * only, and a genuinely new document always appends. */
+/** Account strings compare without punctuation or spacing: the
+ * same account can be stored as "231-851100" by one build and
+ * read back with different spacing by another (round 59). */
+const normAcctForKey = (s: string): string => s.replace(/[^0-9A-Za-z]/g, "");
+
 export function semanticKeyFor(d: DocumentRecord): string | null {
   const f = d.fields ?? {};
   const asOf = f["statement_as_of"] ?? "";
   if (d.docType === "hsa_1099_sa" || d.docType === "hsa_5498_sa") {
     const year = f["tax_year"] ?? "";
     if (!year) return null;
-    return `${d.docType}|yr:${year}|acct:${f["account_id"] ?? d.accountId ?? ""}`;
+    return `${d.docType}|yr:${year}|acct:${normAcctForKey(f["account_id"] ?? d.accountId ?? "")}`;
   }
   if (d.docType === "payslip") {
     const k = payslipKey(f);
@@ -414,6 +511,114 @@ export function semanticKeyFor(d: DocumentRecord): string | null {
     return d.ownerMemberId && date ? `ssa_statement|owner:${d.ownerMemberId}|${date}` : null;
   }
   return null;
+}
+
+/** ROUND 59 (TRACE B) - the figure-fallback identity, for records
+ * whose primary key cannot be computed on one side: a form saved
+ * before round 58 whose fields never carried an account_id, a
+ * 401(k) reading never assigned an owner, a fanned section whose
+ * accountId was not stored. When the account/owner half of the
+ * primary key is missing, the document's own headline figures ARE
+ * its identity: tax year + contribution total + market value for
+ * a 5498-SA, tax year + gross distribution for a 1099-SA, period
+ * end + ending balance for a statement reading. Two genuinely
+ * different documents colliding here would need the same kind,
+ * the same period, and every headline figure identical to the
+ * cent - and a refresh between two such readings replaces
+ * like with like. */
+const keyNum = (v: string | undefined): string => {
+  if (v === undefined || v === "") return "";
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(n) ? String(n) : "";
+};
+export function fallbackKeyFor(d: DocumentRecord): string | null {
+  const f = d.fields ?? {};
+  if (d.docType === "hsa_5498_sa") {
+    const b2 = keyNum(f["box_2_total_contributions"]);
+    const b5 = keyNum(f["box_5_fair_market_value"]);
+    return f["tax_year"] && b2 && b5 ? `hsa_5498_sa|fig:${f["tax_year"]}:${b2}:${b5}` : null;
+  }
+  if (d.docType === "hsa_1099_sa") {
+    const b1 = keyNum(f["box_1_gross_distribution"]);
+    return f["tax_year"] && b1 ? `hsa_1099_sa|fig:${f["tax_year"]}:${b1}:${f["box_3_distribution_code"] ?? ""}` : null;
+  }
+  if (d.docType === "401k_statement") {
+    const bal = keyNum(f["ending_balance"]);
+    return f["statement_as_of"] && bal ? `401k_statement|fig:${f["statement_as_of"]}:${bal}` : null;
+  }
+  if (d.docType === "529_statement" || d.docType === "hsa_statement") {
+    // Computed whether or not an accountId is stored: the rung is
+    // only consulted when the primary keys already missed, which
+    // is exactly the asymmetric case (one side carries the
+    // accountId in its key, the other keyed by owner).
+    const bal = keyNum(f["ending_balance"]);
+    return f["statement_as_of"] && bal
+      ? `${d.docType}|fig:${f["statement_as_of"]}:${bal}:${(f["beneficiary_name"] ?? "").trim().toLowerCase()}`
+      : null;
+  }
+  return null;
+}
+
+/** Every identity a record carries, strongest first - shared by
+ * the save path and the load-time sweep so both dedupe by exactly
+ * the same ladder. */
+function identityKeysFor(d: DocumentRecord): string[] {
+  const keys: string[] = [];
+  const fp = recordFingerprint(d);
+  if (fp) keys.push(`${d.docType}|fp:${fp}`);
+  const sk = semanticKeyFor(d);
+  if (sk) keys.push(`sk:${sk}`);
+  const fb = fallbackKeyFor(d);
+  if (fb) keys.push(`fb:${fb}`);
+  return keys;
+}
+
+/** ROUND 59 (TRACE B) - the load-time dedupe sweep. Round 58's
+ * upsert only dedupes NEW saves; a duplicate pair already sitting
+ * in stored state (a pre-round-58 form record the semantic key
+ * missed, re-saved as a second record) would render twice
+ * forever. On every load, records whose identities collide on
+ * ANY rung of the ladder merge into one: the fuller reading wins
+ * field conflicts, the union of both readings' fields survives,
+ * and text/stamps come from whichever record carries them. This
+ * is the dedupe step of the standing governance flow (reprocess
+ * -> dedupe -> reconcile), applied to state as loaded, so
+ * existing duplicates heal without any re-upload. */
+export function dedupeStoredDocuments(docs: DocumentRecord[]): { docs: DocumentRecord[]; merged: number } {
+  const seen = new Map<string, number>();
+  const out: DocumentRecord[] = [];
+  let merged = 0;
+  for (const d of docs) {
+    const keys = identityKeysFor(d);
+    let slot = -1;
+    for (const k of keys) {
+      const s = seen.get(k);
+      if (s !== undefined) { slot = s; break; }
+    }
+    if (slot < 0) {
+      for (const k of keys) seen.set(k, out.length);
+      out.push(d);
+      continue;
+    }
+    const prev = out[slot];
+    const count = (r: DocumentRecord) => Object.keys(r.fields ?? {}).length;
+    const fuller = count(d) > count(prev) ? d : prev;
+    const other = fuller === d ? prev : d;
+    const combined: DocumentRecord = {
+      ...other,
+      ...fuller,
+      fields: { ...(other.fields ?? {}), ...(fuller.fields ?? {}) },
+      rawText: fuller.rawText ?? other.rawText,
+      fingerprint: fuller.fingerprint ?? other.fingerprint,
+      capturedOn: fuller.capturedOn ?? other.capturedOn,
+      ownerMemberId: fuller.ownerMemberId ?? other.ownerMemberId,
+      accountId: fuller.accountId ?? other.accountId,
+    };
+    out[slot] = combined;
+    for (const k of identityKeysFor(combined)) if (!seen.has(k)) seen.set(k, slot);
+    merged++;
+  }
+  return { docs: merged > 0 ? out : docs, merged };
 }
 
 export interface UpsertResult {
@@ -439,6 +644,13 @@ export function upsertDocument(docs: DocumentRecord[], record: DocumentRecord): 
   if (idx < 0) {
     const key = semanticKeyFor(record);
     if (key) idx = docs.findIndex((d) => semanticKeyFor(d) === key);
+  }
+  if (idx < 0) {
+    // Round 59 (TRACE B): the figure-fallback identity - a legacy
+    // record whose primary key cannot be computed (no account_id
+    // stored, no owner assigned) still dedupes on re-upload.
+    const fb = fallbackKeyFor(record);
+    if (fb) idx = docs.findIndex((d) => fallbackKeyFor(d) === fb);
   }
   if (idx < 0) return { docs: [...docs, record], index: docs.length, refreshed: false };
   const existing = docs[idx];
@@ -656,5 +868,12 @@ export function reprocessDocuments(
       notes.push(`Re-read ${label}: the statement's deposit detail shows a per-payroll HSA contribution of $${Number(merged["per_payroll_contribution"]).toFixed(2)}, read from the statement's own deposit lines. It is on the HSA card now, beside the period total it adds up to.`);
     }
   });
-  return { docs: out, notes };
+  // Round 59 (TRACE B): the dedupe sweep runs on EVERY load, not
+  // only when a re-read fired - a duplicate pair already in stored
+  // state heals here even at current versions.
+  const swept = dedupeStoredDocuments(out);
+  if (swept.merged > 0) {
+    notes.push(`HomeTower found ${swept.merged} duplicate reading${swept.merged === 1 ? "" : "s"} of documents already on file and merged them - no document is counted twice.`);
+  }
+  return { docs: swept.docs, notes };
 }

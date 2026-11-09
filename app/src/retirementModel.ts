@@ -115,6 +115,16 @@ export interface RetirementModel {
    * the details surfaces (null unless the directional outlook has
    * enough data to draw). Chips only from data the model has. */
   timeline: RetirementTimeline | null;
+  /** ROUND 59 (TRACE G): the Home card's Current-path tile label.
+   * At accuracy X the numeric "80+" is replaced with words -
+   * "Outside current estimate range" - because the eye remembers
+   * the number, not the "Too early to confirm" beside it. The
+   * details surfaces keep directional.rangeLabel itself. */
+  homeRangeLabel: string | null;
+  /** ROUND 59 (TRACE G): the Home card's timeline - at accuracy X
+   * the same model with the "80+" band label and end-tick text
+   * suppressed (the band still draws). At X+/X++ it IS `timeline`. */
+  homeTimeline: RetirementTimeline | null;
   /** Round 53: the X face's one opportunity line, composed from the
    * accuracy missing list (null when nothing is missing). */
   opportunityLine: string | null;
@@ -338,6 +348,22 @@ export function computeRetirementModel(input: {
     });
   })();
 
+  // ROUND 59 (TRACE G): at accuracy X, the Home card's tile and
+  // timeline callout drop the numeric "80+" (the details surfaces
+  // keep the full model untouched).
+  const atX = accuracy.level === "X";
+  const homeRangeLabel = directional
+    ? atX && directional.rangeLabel.includes("80+") ? "Outside current estimate range" : directional.rangeLabel
+    : null;
+  const homeTimeline = timeline && atX
+    ? {
+        ...timeline,
+        suppressEightyPlus: true,
+        band: { ...timeline.band, label: timeline.band.label.includes("80+") ? "" : timeline.band.label },
+        labels: timeline.labels.map((l) => (l.text === "80+" ? { ...l, text: "", dropped: true } : l)),
+      }
+    : timeline;
+
   return {
     adults, adultOutlook, incomeBasis, budgetTotalR, spendingChoice, spendingTier, lifestyleConfirmed,
     spendingFromBudget, spendingSet, spendingFromDefault, spendingAnnual, ssPerAdult, ssAnnualTotal,
@@ -346,6 +372,6 @@ export function computeRetirementModel(input: {
     realReturnPct, hhShort, hhReqMo, accuracy, projDelay, delayReadiness, showSensitivity,
     futureNeed, supportAnnual, accuracyLine, coveredByDependable, retHeadline, spendingKnown,
     personalizeParts, personalizeSentence, phases, updatedLabel, monthlyNet, directional,
-    timeline, opportunityLine,
+    timeline, opportunityLine, homeRangeLabel, homeTimeline,
   };
 }

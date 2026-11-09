@@ -63,6 +63,41 @@ export interface PayslipForecast {
 
 const PERIODS_PER_YEAR: Record<string, number> = { weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 };
 
+/** ROUND 59 (TRACE C) - the frequency a pace is annualized with is
+ * read from the earner's OWN slip period ends before the job record
+ * is believed: a job record still carrying the form's "biweekly"
+ * default turned a real semi-monthly $44.65/check into $97/mo on
+ * the HSA card while every piece of payroll evidence (slips ending
+ * on the 15th and at month-end; statement deposits twice a month)
+ * said 24 periods a year. Decisive signatures, in order: ends on
+ * BOTH the 15th and a month-end (the semi-monthly signature - a
+ * biweekly cycle lands 14 days apart and cannot produce that pair
+ * in adjacent periods); all ends on one day-of-month or all at
+ * month-end across 2+ months (monthly); median spacing of about a
+ * week, about two weeks, or about a month. Anything indecisive
+ * falls back to the job record, then to semi-monthly (the app's
+ * standing default - see the forecast's signature comment). */
+export function periodsPerYearForEarner(ends: string[], jobFrequency?: string | null): number {
+  const sorted = [...new Set(ends.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)))].sort();
+  if (sorted.length >= 2) {
+    const parts = sorted.map((e) => ({ y: Number(e.slice(0, 4)), m: Number(e.slice(5, 7)), d: Number(e.slice(8, 10)) }));
+    const lastDay = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const isLast = parts.map((p) => p.d === lastDay(p.y, p.m));
+    const allSemiDays = parts.every((p, i) => p.d === 15 || isLast[i]);
+    if (allSemiDays && parts.some((p) => p.d === 15) && isLast.some(Boolean)) return 24;
+    const months = new Set(parts.map((p) => `${p.y}-${p.m}`));
+    if (months.size >= 2 && (parts.every((p) => p.d === parts[0].d) || isLast.every(Boolean))) return 12;
+    const gaps: number[] = [];
+    for (let i = 1; i < sorted.length; i++) gaps.push(Math.round((Date.parse(sorted[i]) - Date.parse(sorted[i - 1])) / 86400000));
+    gaps.sort((a, b) => a - b);
+    const median = gaps[Math.floor(gaps.length / 2)];
+    if (median >= 6 && median <= 8) return 52;
+    if (median >= 13 && median <= 15) return 26;
+    if (median >= 27 && median <= 32) return 12;
+  }
+  return PERIODS_PER_YEAR[(jobFrequency ?? "semimonthly").toLowerCase()] ?? 24;
+}
+
 function normName(s: string): string {
   return s.toLowerCase().replace(/[^a-z ]+/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -185,7 +220,7 @@ export function payslipDeductionTotals(
       return null;
     };
     const job = jobs.find((j) => normName(j.memberName) === key);
-    const perYear = ({ weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 } as Record<string, number>)[(job?.payFrequency ?? "semimonthly").toLowerCase()] ?? 24;
+    const perYear = periodsPerYearForEarner(withEnd.map((x) => x.end), job?.payFrequency);
     const pace = (field: string) => {
       for (const x of withEnd) {
         const f = x.d.fields ?? {};
@@ -301,7 +336,7 @@ export function payslip401kTotals(documents: DocumentRecord[], todayIso: string,
     // not a pace, so they never set it.
     let monthlyPace: number | null = null;
     const job = jobs.find((j) => normName(j.memberName) === key);
-    const perYear = ({ weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 } as Record<string, number>)[(job?.payFrequency ?? "semimonthly").toLowerCase()] ?? 24;
+    const perYear = periodsPerYearForEarner(withEnd.map((x) => x.end), job?.payFrequency);
     for (const x of withEnd) {
       const f = x.d.fields ?? {};
       if ((f["payslip_kind"] ?? "regular") === "bonus") continue;
