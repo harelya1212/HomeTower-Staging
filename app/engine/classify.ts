@@ -20,6 +20,9 @@ const KEYWORDS: Record<string, string[]> = {
   "529_statement": ["529 plan", "college savings plan", "education account"],
   brokerage_statement: ["brokerage", "securities account", "portfolio value", "holdings", "client statement", "account summary", "asset allocation", "total ending value", "ending total value", "price paid", "last price", "stock plan", "net account value"],
   pension_statement: ["pension", "defined benefit", "monthly benefit", "retirement benefit"],
+  // Round 49: SSA wording. "social security" appears throughout the
+  // statement, so it out-scores the pension map's "monthly benefit".
+  ssa_statement: ["social security", "social security administration", "estimated benefits", "full retirement age", "ssa.gov"],
   prior_return: ["1040", "adjusted gross income", "taxable income", "internal revenue service", "u.s. individual income tax return"],
 };
 
