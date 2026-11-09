@@ -12,6 +12,7 @@ import { ageOn, educationFunding, educationLine, faceStatusFor } from "../goals.
 import RetirementDetails from "../components/RetirementDetails.tsx";
 import RetirementTimeline from "../components/RetirementTimeline.tsx";
 import { computeRetirementModel } from "../retirementModel.ts";
+import { reconciliationTasks } from "../reconcile.ts";
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
@@ -344,6 +345,17 @@ export default function HomeScreen() {
   for (const r of requests) {
     if (r.status !== "missing" || r.key === "prior_return" || r.key === "calibration_outcome" || r.key === "payslip") continue;
     tasks.push({ key: `req-${r.key}`, icon: "📄", title: `Add the ${r.label.charAt(0).toLowerCase()}${r.label.slice(1)}`, detail: r.detail, target: "Documents" });
+  }
+  // Round 55 (workstreams C and D): distribution reconciliations
+  // are derived from the saved documents - one task per child per
+  // tax year for 529 distributions, one per year for HSA receipts,
+  // by construction (re-uploads cannot duplicate them).
+  for (const t of reconciliationTasks(
+    state.intake.documents ?? [],
+    state.family.filter((m) => m.role === "child").map((m) => ({ id: m.id, name: m.name })),
+    state.hsaReceiptsMatched ?? {},
+  )) {
+    tasks.push({ key: t.key, icon: t.icon, title: t.title, detail: t.detail, target: t.target });
   }
   const allClear = tasks.length === 1 && actionTarget === null;
 

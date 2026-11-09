@@ -14,8 +14,15 @@ import type { RawField } from "../../engine/extract.ts";
 import { parseHoldings, parsePlanAccount, positionValue, type HoldingsParse, type PlanAccount } from "../holdings.ts";
 import { parseSpendingCsv, type CsvSpending } from "../spendingCsv.ts";
 import { parsePayslipRows } from "../payslipRows.ts";
-import { docEvidenceStatus, employerMatchFor, k401StatementMatchFor, monthYearLabel } from "../goals.ts";
+import { docEvidenceStatus, employerMatchFor, k401StatementFacts, k401StatementMatchFor, monthYearLabel } from "../goals.ts";
 import { mergePayslipFields, payslip401kTotals, payslipDeductionTotals, payslipKey } from "../payslips.ts";
+import {
+  extractSectionReading, k401DetailFields, parse401kDetail, parseHsaPageFields, parseSaForm,
+  portfolioTotalOf, segmentStatement, statementPeriodOf,
+  type K401Detail, type SaFormParse, type StatementPeriod, type StatementSection,
+} from "../statementSections.ts";
+import { boundRawText, dateLabel, eduResolutionFor, hsaReconciliation, hsaResolution, sourceLabelFor } from "../reconcile.ts";
+import { ocrMapsPack } from "../../engine/packs.ts";
 import { pickFile, pickImageFiles } from "../filePick";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
@@ -82,6 +89,35 @@ export default function DocumentsScreen() {
   }, [state.eduAssignChildId]);
   const [extraction, setExtraction] = useState<ExtractionResult | null>(null);
   const [extractionType, setExtractionType] = useState("payslip");
+  // Round 55 fan-out: one upload, several account readings. The
+  // confirm card lists every detected account with its facts and
+  // its assignment (child / adult), correctable before save.
+  interface FanSectionState {
+    section: StatementSection;
+    fields: Record<string, number | string>;
+    status: string;
+    confidence: number;
+    childId: string | null;
+    memberId: string | null;
+  }
+  const [fanOut, setFanOut] = useState<{ sections: FanSectionState[]; period: StatementPeriod | null; portfolioTotal: number | null } | null>(null);
+  const [pending401kDetail, setPending401kDetail] = useState<K401Detail | null>(null);
+  const [pendingSaForm, setPendingSaForm] = useState<SaFormParse | null>(null);
+  const [receiptInputs, setReceiptInputs] = useState<Record<string, string>>({});
+  const firstNameOf = (s: string) => (s ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  const matchChildByName = (printed: string | null): string | null => {
+    if (!printed) return null;
+    const fn = firstNameOf(printed);
+    return eduChildren.find((c) => firstNameOf(c.name ?? "") === fn && fn !== "")?.id ?? null;
+  };
+  const matchAdultByName = (printed: string | null): string | null => {
+    if (!printed) return null;
+    const p = printed.trim().toLowerCase().replace(/\s+/g, " ");
+    return adults.find((m) => {
+      const n = (m.name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+      return n !== "" && (n === p || firstNameOf(n) === firstNameOf(p));
+    })?.id ?? null;
+  };
   const [detection, setDetection] = useState<Classification | null>(null);
   const [pendingText, setPendingText] = useState<string | null>(null);
   const [pendingColumns, setPendingColumns] = useState<RawField[][] | null>(null);
@@ -167,6 +203,9 @@ export default function DocumentsScreen() {
     setPendingColumns(null);
     setPendingHoldings(null);
     setPendingPlan(null);
+    setFanOut(null);
+    setPending401kDetail(null);
+    setPendingSaForm(null);
     setDetection(null);
     setExtraction({ documentType: useType, fields, fieldConfidence: {}, confidence: 1, status: "parsed" });
     setExtractionType(useType);
@@ -182,8 +221,42 @@ export default function DocumentsScreen() {
         setExtraction(null);
         return null;
       }
-      const detected = classifyDocument(textRaw, text);
-      const useType = namedType ?? detected.docType;
+      // Round 55 fan-out (workstream A): a statement carrying
+      // several account sections becomes one reading PER ACCOUNT.
+      // A portfolio total printed on the document is never stored
+      // as an account's balance - only a section's own figures are.
+      const sections = segmentStatement(text);
+      if (sections.length >= 1) {
+        const period = statementPeriodOf(text);
+        setPendingText(text);
+        setFanOut({
+          sections: sections.map((s) => {
+            const reading = extractSectionReading(s, period);
+            return {
+              section: s,
+              fields: reading.fields,
+              status: reading.status,
+              confidence: reading.confidence,
+              childId: s.kind === "529" ? matchChildByName(s.personName) : null,
+              memberId: s.kind === "hsa" ? matchAdultByName(s.personName) : null,
+            };
+          }),
+          period,
+          portfolioTotal: portfolioTotalOf(text),
+        });
+        setExtraction(null);
+        setPending401kDetail(null);
+        setPendingSaForm(null);
+        setOcrNote(`Found ${sections.length} account${sections.length === 1 ? "" : "s"} in this document - check each one below, then confirm.`);
+        return null;
+      }
+      // Round 55 (workstream E): an HSA tax form is identified by
+      // its own title - the form decides its type, and its numbered
+      // boxes join the extraction input.
+      const form = parseSaForm(text);
+      setPendingSaForm(form);
+      const detected = classifyDocument([...textRaw, ...(form?.fields ?? [])], text);
+      const useType = form ? form.kind : (namedType ?? detected.docType);
       setDetection(detected);
       setPendingText(text);
       setPendingColumns(columnByPage ?? null);
@@ -207,6 +280,9 @@ export default function DocumentsScreen() {
           raw = [...slip.fields, ...textToRawFields(restText), ...colFlat];
         }
       }
+      // The SA form's box fields LEAD its read: the numbered boxes
+      // are the canonical labels for these forms.
+      if (form) raw = [...form.fields, ...raw];
       let result = extractFields(raw, useType);
       // Prior-return scoping (real-file rehearsal, 2026-11-07): a full
       // client copy runs 100+ pages of schedules whose repeated labels
@@ -238,6 +314,24 @@ export default function DocumentsScreen() {
           if (anchors(scoped.fields) > anchors(result.fields)) result = scoped;
         }
       }
+      // Round 55 (workstream B): a photographed HSA page whose
+      // balance the generic pairing missed gets the proximity read
+      // - the Balance heading's own figure, fill-only, so a figure
+      // the pairing DID find is never overridden.
+      if (useType === "hsa_statement" && result.fields["ending_balance"] === undefined) {
+        const pageRaw = parseHsaPageFields(text);
+        if (pageRaw.length) {
+          const extra = extractFields(pageRaw, "hsa_statement");
+          const mergedFields = { ...result.fields };
+          for (const [k, v] of Object.entries(extra.fields)) {
+            if (mergedFields[k] === undefined) mergedFields[k] = v;
+          }
+          result = { ...result, fields: mergedFields };
+        }
+      }
+      // Round 55 (workstream F): the 401(k) detail facts ride along
+      // with the confirm card and are saved with the record.
+      setPending401kDetail(useType === "401k_statement" ? parse401kDetail(text) : null);
       setExtraction(result);
       setExtractionType(useType);
       setOcrNote(null);
@@ -305,6 +399,7 @@ export default function DocumentsScreen() {
     if (pendingSpending) setPendingSpending(null);
     try {
       const colFlat = pendingColumns ? pendingColumns.flat() : [];
+      const formNow = parseSaForm(pendingText);
       let raw = [...textToRawFields(pendingText), ...colFlat];
       if (docType === "payslip") {
         const slip = parsePayslipRows(pendingText);
@@ -313,8 +408,11 @@ export default function DocumentsScreen() {
           raw = [...slip.fields, ...textToRawFields(restText), ...colFlat];
         }
       }
+      if (formNow && formNow.kind === docType) raw = [...formNow.fields, ...raw];
       setExtraction(extractFields(raw, docType));
       setExtractionType(docType);
+      setPending401kDetail(docType === "401k_statement" ? parse401kDetail(pendingText) : null);
+      setPendingSaForm(formNow);
     } catch (e) {
       setOcrNote(e instanceof Error ? e.message : String(e));
     }
@@ -501,9 +599,33 @@ export default function DocumentsScreen() {
       // apart by this marker.
       savedFields["payslip_kind"] = pendingText && /on demand/i.test(pendingText) ? "bonus" : "regular";
     }
+    // Round 55 (workstream F): the 401(k) detail facts are saved
+    // with the record, and statement records carry their period end
+    // so provenance can resolve per field by as-of date.
+    if (extractionType === "401k_statement" && pending401kDetail) {
+      Object.assign(savedFields, k401DetailFields(pending401kDetail));
+    }
+    if (pendingText && ["401k_statement", "529_statement", "hsa_statement"].includes(extractionType) && !savedFields["statement_as_of"]) {
+      const period = statementPeriodOf(pendingText);
+      if (period) savedFields["statement_as_of"] = period.endIso;
+    }
+    // Round 55 (workstream E): an SA tax form saves its boxes as a
+    // structured set plus its tax year, account and source date.
+    // These are historical tax facts - saving one changes no
+    // current balance anywhere (balances resolve from statements).
+    let formBoxes: Record<string, string> | undefined;
+    if (pendingSaForm && pendingSaForm.kind === extractionType) {
+      if (pendingSaForm.taxYear) savedFields["tax_year"] = String(pendingSaForm.taxYear);
+      if (pendingSaForm.accountId) savedFields["account_id"] = pendingSaForm.accountId;
+      if (pendingSaForm.accountOwner) savedFields["account_owner"] = pendingSaForm.accountOwner;
+      if (pendingSaForm.sourceDate) savedFields["source_date"] = pendingSaForm.sourceDate;
+      formBoxes = {};
+      for (const [k, v] of Object.entries(savedFields)) if (k.startsWith("box_")) formBoxes[k] = v;
+    }
     const ssaOwner = extractionType === "ssa_statement" ? (assignMemberId ?? (adults.length === 1 ? adults[0].id : null)) : null;
     const k401Owner = extractionType === "401k_statement" ? (assign401kMemberId ?? (adults.length === 1 ? adults[0].id : null)) : null;
-    const docOwner = ssaOwner ?? k401Owner;
+    const eduOwner = extractionType === "529_statement" ? (assignChildId ?? null) : null;
+    const docOwner = ssaOwner ?? k401Owner ?? eduOwner;
     const record: DocumentRecord = {
       docType: extractionType,
       status: extraction.status,
@@ -515,6 +637,12 @@ export default function DocumentsScreen() {
       ...(pendingSpending && (extractionType === "bank_statement" || extractionType === "card_statement")
         ? { spendingSummary: { months: pendingSpending.months, byCategory: pendingSpending.byCategory } }
         : {}),
+      // Round 55 (workstream G): the extracted text is retained
+      // (bounded) with the maps version that read it, so a later
+      // reader improvement can re-read this document on load.
+      ...(pendingText ? { rawText: boundRawText(pendingText), mapsVersion: String(ocrMapsPack().version ?? "") } : {}),
+      uploadId: `up-${Date.now()}`,
+      ...(formBoxes ? { formBoxes } : {}),
     };
     // Multi-page payslips (owner, 2026-11-08): a slip spans several
     // screenshots. Inside one batch, a reading whose earner + period
@@ -556,6 +684,19 @@ export default function DocumentsScreen() {
           handled = true;
           if (photoBatch) batchSaveRef.current = { key, index: idx };
         }
+      }
+    }
+    // Round 55: the same discipline for account statements -
+    // re-saving the same owner's statement for the same period
+    // replaces the earlier reading instead of stacking a duplicate.
+    if (!handled && (extractionType === "529_statement" || extractionType === "hsa_statement" || extractionType === "401k_statement") && savedFields["statement_as_of"]) {
+      const idx = docs.findIndex((d) => d.docType === extractionType
+        && (d.fields?.["statement_as_of"] ?? "") === savedFields["statement_as_of"]
+        && (d.ownerMemberId ?? null) === (docOwner ?? null));
+      if (idx >= 0) {
+        updateIntake({ documents: docs.map((d, i) => (i === idx ? record : d)) });
+        mergedNote = ` Replaced the earlier reading of this statement (period ending ${savedFields["statement_as_of"]}) - the new reading takes its place.`;
+        handled = true;
       }
     }
     if (!handled) {
@@ -611,11 +752,68 @@ export default function DocumentsScreen() {
     setPendingHoldings(null);
     setPendingPlan(null);
     setPendingSpending(null);
+    setPending401kDetail(null);
+    setPendingSaForm(null);
     setPasteText("");
     setAutoPaste("");
     const moreComing = photoBatch && photoBatch.queue.length > 0 ? ` Screenshot ${photoBatch.done + 1} of ${photoBatch.total} is being read now.` : "";
     setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).${assignNote}${mergedNote}${moreComing}`);
     advanceBatch();
+  };
+
+  // Round 55 (workstreams A + C): save every detected account as
+  // its own document, linked to the one upload. Re-saving the same
+  // account's statement for the same period replaces the earlier
+  // reading (the payslip discipline, per account). A 529 reading
+  // with a child assigned refreshes that child's education funding
+  // - balance and monthly pace move from the statement itself, per
+  // child, independently.
+  const confirmFanOut = () => {
+    if (!fanOut) return;
+    const uploadId = `up-${Date.now()}`;
+    const version = String(ocrMapsPack().version ?? "");
+    const newDocs = [...docs];
+    const eduPatch = new Map<string, { eduBalance: number; eduMonthly?: number }>();
+    const savedNames: string[] = [];
+    for (const fs of fanOut.sections) {
+      const fields: Record<string, string> = Object.fromEntries(Object.entries(fs.fields).map(([k, v]) => [k, String(v)]));
+      if (fanOut.period) fields["statement_as_of"] = fanOut.period.endIso;
+      if (fs.section.kind === "529" && fs.section.personName) fields["beneficiary_name"] = fs.section.personName;
+      const owner = fs.section.kind === "529" ? fs.childId : fs.memberId;
+      const record: DocumentRecord = {
+        docType: fs.section.docType,
+        status: fs.status as DocumentRecord["status"],
+        confidence: fs.confidence,
+        capturedOn: today,
+        fields,
+        ...(owner ? { ownerMemberId: owner } : {}),
+        uploadId,
+        accountId: fs.section.accountId,
+        rawText: boundRawText(fs.section.text),
+        mapsVersion: version,
+      };
+      const idx = fs.section.accountId
+        ? newDocs.findIndex((d) => d.docType === record.docType && d.accountId === fs.section.accountId
+          && (d.fields?.["statement_as_of"] ?? "") === (fields["statement_as_of"] ?? ""))
+        : -1;
+      if (idx >= 0) newDocs[idx] = record; else newDocs.push(record);
+      savedNames.push(fs.section.kind === "529" ? `529 for ${fs.section.personName ?? "a beneficiary"}` : "the HSA");
+      if (fs.section.kind === "529" && fs.childId) {
+        const bal = Number(fs.fields["ending_balance"]);
+        const mo = Number(fs.fields["monthly_contribution"]);
+        if (Number.isFinite(bal) && bal > 0) {
+          eduPatch.set(fs.childId, { eduBalance: bal, ...(Number.isFinite(mo) && mo > 0 ? { eduMonthly: mo } : {}) });
+        }
+      }
+    }
+    updateIntake({ documents: newDocs });
+    if (eduPatch.size) {
+      update({ family: state.family.map((m) => (eduPatch.has(m.id) ? { ...m, ...eduPatch.get(m.id)! } : m)) });
+    }
+    const n = fanOut.sections.length;
+    setFanOut(null);
+    setPendingText(null);
+    setOcrNote(`Saved ${n} account reading${n === 1 ? "" : "s"} from one document (${savedNames.join("; ")}). Each account keeps its own balance, contributions and distributions - the document's combined total was not saved as any account's balance. Check the Tasks page: distributions start their reconciliation there.`);
   };
 
   const addManual = () => {
@@ -702,6 +900,14 @@ export default function DocumentsScreen() {
     if (st === "not_detected") return "ESPP: Not detected on your payslips";
     return "ESPP: Unknown - no payslip shows an employee stock purchase plan yet";
   })();
+  // ROUND 55 displays: field-level resolution (workstream B), the
+  // HSA distribution reconciliation (D), the SA tax forms (E) and
+  // the expanded 401(k) fact set (F).
+  const hsaRes = useMemo(() => hsaResolution(docs), [docs]);
+  const hsaReconYears = useMemo(() => hsaReconciliation(docs, state.hsaReceiptsMatched ?? {}), [docs, state.hsaReceiptsMatched]);
+  const saForms = useMemo(() => docs.filter((d) => d.docType === "hsa_1099_sa" || d.docType === "hsa_5498_sa"), [docs]);
+  const k401Facts = useMemo(() => k401StatementFacts(docs), [docs]);
+  const money2 = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   // Needs list = profile requests BEYOND the Ongoing center (owner,
   // 2026-11-08): a document type the Ongoing center already tracks
   // never appears in the needs list too - no asking twice.
@@ -747,6 +953,16 @@ export default function DocumentsScreen() {
             Filling college savings for {state.family.find((m) => m.id === assignChildId)?.name || "your child"}: upload their 529 statement below (file, photo, or camera) and confirm - the saved balance goes onto their card, and the monthly contribution too if the statement shows one.
           </Text>
           <Pressable onPress={() => setAssignChildId(null)}><Text style={styles.remove}>Cancel assignment</Text></Pressable>
+        </View>
+      )}
+
+      {state.reprocessNotes.length > 0 && (
+        <View style={styles.assignBanner}>
+          <Text style={styles.assignText}>HomeTower re-read your saved documents with its improved reader:</Text>
+          {state.reprocessNotes.map((n, i) => (
+            <Text key={i} style={styles.assignText}>- {n}</Text>
+          ))}
+          <Pressable onPress={() => update({ reprocessNotes: [] })}><Text style={styles.remove}>Dismiss</Text></Pressable>
         </View>
       )}
 
@@ -829,6 +1045,22 @@ export default function DocumentsScreen() {
           {Object.entries(extraction.fields).map(([k, v]) => (
             <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
           ))}
+          {extractionType === "401k_statement" && pending401kDetail && (pending401kDetail.pretaxBalance !== null || pending401kDetail.holdings.length > 0 || pending401kDetail.election) && (
+            <>
+              <Text style={styles.line}>Also read from this statement - saved with it, each figure with this statement as its source:</Text>
+              {pending401kDetail.pretaxBalance !== null && <Text style={styles.line}>Balance mix: pre-tax {money2(pending401kDetail.pretaxBalance)}{pending401kDetail.matchBalance !== null ? ` - employer match ${money2(pending401kDetail.matchBalance)}` : ""}{pending401kDetail.rothConversionBalance !== null ? ` - Roth conversions ${money2(pending401kDetail.rothConversionBalance)}` : ""}{pending401kDetail.afterTaxBalance !== null ? ` - after-tax ${money2(pending401kDetail.afterTaxBalance)}` : ""}</Text>}
+              {pending401kDetail.rothConversionBalance !== null && <Text style={styles.line}>Mega Backdoor Roth: the after-tax balance above and the Roth conversion balance form this picture - shown on the 401(k) card and in the retirement details.</Text>}
+              {pending401kDetail.holdings.map((h) => (
+                <Text key={h.label} style={styles.line}>Invested in: {h.label} - {money2(h.value)}</Text>
+              ))}
+              {pending401kDetail.election && <Text style={styles.line}>Future contributions: {pending401kDetail.election} (your current election)</Text>}
+            </>
+          )}
+          {pendingSaForm && pendingSaForm.kind === extractionType && (
+            <Text style={styles.line}>
+              Tax year {pendingSaForm.taxYear ?? ""}{pendingSaForm.accountId ? ` - account ${pendingSaForm.accountId}` : ""}. This form is historical tax evidence: saving it changes no current balance anywhere. {extractionType === "hsa_1099_sa" ? "Its gross distribution feeds the HSA receipts reconciliation for its own year." : "Its contributions and fair market value are shown on the HSA card with their date."}
+            </Text>
+          )}
           {extractionType === "brokerage_statement" && pendingPlan && (
             <>
               <Text style={styles.line}>Stock plan account: {pendingPlan.ticker}{pendingPlan.company ? ` - ${pendingPlan.company}` : ""}</Text>
@@ -921,8 +1153,57 @@ export default function DocumentsScreen() {
                 : `Confirm and save as ${extractionType}`}
             </Text>
           </Pressable>
-          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); setPendingPlan(null); setPendingSpending(null); advanceBatch(); }}>
+          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); setPendingPlan(null); setPendingSpending(null); setPending401kDetail(null); setPendingSaForm(null); advanceBatch(); }}>
             <Text style={styles.remove}>{photoBatch ? `Discard (${photoBatch.done} of ${photoBatch.total})` : "Discard"}</Text>
+          </Pressable>
+        </View>
+      )}
+      {fanOut && !extraction && (
+        <View style={styles.confirmCard}>
+          <Text style={styles.section}>Confirm HomeTower's reading - {fanOut.sections.length} accounts in one document</Text>
+          {fanOut.portfolioTotal !== null && (
+            <Text style={styles.line}>The document's combined portfolio total is {money2(fanOut.portfolioTotal)} - that total belongs to all the accounts together and is never saved as one account's balance.</Text>
+          )}
+          {fanOut.sections.map((fs, i) => (
+            <View key={i} style={styles.fanSection}>
+              <Text style={styles.line}>
+                {fs.section.kind === "529" ? `529 account ${fs.section.accountId ?? ""} - ${fs.section.personName ?? "beneficiary not printed"}` : `Health Savings Account ${fs.section.accountId ?? ""} - ${fs.section.personName ?? ""}`}
+                {fanOut.period ? ` - statement period ending ${dateLabel(fanOut.period.endIso)}` : ""}
+              </Text>
+              {Object.entries(fs.fields).map(([k, v]) => (
+                <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
+              ))}
+              {fs.section.kind === "529" && eduChildren.length > 0 && (
+                <>
+                  <Text style={styles.line}>Whose 529 is this? The balance and monthly pace fill that child's college funding:</Text>
+                  <View style={styles.chips}>
+                    {eduChildren.map((c) => (
+                      <Pressable key={c.id} style={[styles.chip, fs.childId === c.id && styles.chipSelected]} onPress={() => setFanOut((f) => (f ? { ...f, sections: f.sections.map((s, j) => (j === i ? { ...s, childId: s.childId === c.id ? null : c.id } : s)) } : f))}>
+                        <Text style={fs.childId === c.id ? styles.chipTextSelected : styles.chipText}>{c.name || "Child"}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </>
+              )}
+              {fs.section.kind === "hsa" && adults.length > 0 && (
+                <>
+                  <Text style={styles.line}>Whose HSA is this?</Text>
+                  <View style={styles.chips}>
+                    {adults.map((m) => (
+                      <Pressable key={m.id} style={[styles.chip, fs.memberId === m.id && styles.chipSelected]} onPress={() => setFanOut((f) => (f ? { ...f, sections: f.sections.map((s, j) => (j === i ? { ...s, memberId: s.memberId === m.id ? null : m.id } : s)) } : f))}>
+                        <Text style={fs.memberId === m.id ? styles.chipTextSelected : styles.chipText}>{m.name || (m.role === "self" ? "You" : "Spouse")}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </>
+              )}
+            </View>
+          ))}
+          <Pressable style={styles.button} onPress={confirmFanOut}>
+            <Text style={styles.buttonText}>Confirm and save {fanOut.sections.length} account readings</Text>
+          </Pressable>
+          <Pressable onPress={() => { setFanOut(null); setPendingText(null); }}>
+            <Text style={styles.remove}>Discard</Text>
           </Pressable>
         </View>
       )}
@@ -984,8 +1265,74 @@ export default function DocumentsScreen() {
                 {c.extra ? `\n${c.extra}` : ""}
               </Text>
               {c.key === "401k" && <Text style={styles.line}>{matchHouseholdLine}</Text>}
+              {c.key === "401k" && k401Facts && (
+                <>
+                  {k401Facts.balance !== null && <Text style={styles.line}>401(k) balance: {money2(k401Facts.balance)} - 401(k) statement, period ending {dateLabel(k401Facts.statementAsOf ?? k401Facts.capturedOn ?? "")}</Text>}
+                  {(k401Facts.pretaxRothYtd !== null || k401Facts.afterTaxYtd !== null || k401Facts.matchYtd !== null || k401Facts.total415Ytd !== null) && (
+                    <Text style={styles.line}>Contributions this year, confirmed by the statement:{k401Facts.pretaxRothYtd !== null ? ` pre-tax/Roth ${money2(k401Facts.pretaxRothYtd)}` : ""}{k401Facts.afterTaxYtd !== null ? ` - after-tax ${money2(k401Facts.afterTaxYtd)}` : ""}{k401Facts.matchYtd !== null ? ` - employer match ${money2(k401Facts.matchYtd)}` : ""}{k401Facts.total415Ytd !== null ? ` - total ${money2(k401Facts.total415Ytd)}` : ""}. The monthly pace still comes from the freshest regular payslip - the statement confirms the year's totals.</Text>
+                  )}
+                  {(k401Facts.pretaxBalance !== null || k401Facts.matchBalance !== null || k401Facts.rothConversionBalance !== null || k401Facts.afterTaxBalance !== null) && (
+                    <Text style={styles.line}>Balance mix: {k401Facts.pretaxBalance !== null ? `pre-tax ${money2(k401Facts.pretaxBalance)}` : ""}{k401Facts.matchBalance !== null ? ` - employer match ${money2(k401Facts.matchBalance)}` : ""}{k401Facts.rothConversionBalance !== null ? ` - Roth conversions ${money2(k401Facts.rothConversionBalance)}` : ""}{k401Facts.afterTaxBalance !== null ? ` - after-tax ${money2(k401Facts.afterTaxBalance)}` : ""} (401(k) statement, {dateLabel(k401Facts.statementAsOf ?? k401Facts.capturedOn ?? "")})</Text>
+                  )}
+                  {(k401Facts.afterTaxYtd !== null || k401Facts.rothConversionBalance !== null || k401Facts.afterTaxBalance !== null) && (
+                    <Text style={styles.line}>Mega Backdoor Roth: {k401Facts.afterTaxYtd !== null ? `after-tax contributions ${money2(k401Facts.afterTaxYtd)} this year` : ""}{k401Facts.rothConversionBalance !== null ? ` - Roth in-plan conversion balance ${money2(k401Facts.rothConversionBalance)}` : ""}{k401Facts.afterTaxBalance !== null ? ` - after-tax balance still unconverted ${money2(k401Facts.afterTaxBalance)}${k401Facts.afterTaxBalance === 0 ? " (the statement prints $0.00 - a confirmed zero)" : ""}` : ""}. Source: 401(k) statement, {dateLabel(k401Facts.statementAsOf ?? k401Facts.capturedOn ?? "")}.</Text>
+                  )}
+                  {k401Facts.holdings.map((h) => (
+                    <Text key={h.label} style={styles.line}>Invested in: {h.label} - {money2(h.value)} (401(k) statement)</Text>
+                  ))}
+                  {k401Facts.election && <Text style={styles.line}>Future contributions: {k401Facts.election} (current election, per the statement)</Text>}
+                </>
+              )}
               {c.key === "hsa" && <Text style={styles.line}>{hsaLine}</Text>}
+              {c.key === "hsa" && hsaRes.fields.ending_balance.value !== null && hsaRes.fields.ending_balance.source && (
+                <Text style={styles.line}>HSA balance: {money2(hsaRes.fields.ending_balance.value)} - {sourceLabelFor(hsaRes.fields.ending_balance.source)}</Text>
+              )}
+              {c.key === "hsa" && hsaRes.conflicts.map((cf) => (
+                <Text key={cf.field} style={styles.line}>Two readings of the HSA {cf.field.replace(/_/g, " ")} disagree for the same date ({cf.entries.map((e) => money2(e.value)).join(" vs ")}) - HomeTower shows the first and flags it here rather than choosing silently.</Text>
+              ))}
+              {c.key === "hsa" && hsaReconYears.map((y) => (
+                <View key={y.year}>
+                  <Text style={styles.line}>{y.year} HSA distributions: {money2(y.distributions)} ({y.source === "1099-SA" ? "per Form 1099-SA" : "from statements"}) - receipts matched {money2(y.matched)} - still unverified {money2(y.unverified)}. Unverified is not the same as taxable - this is an evidence tracker.</Text>
+                  <View style={styles.reqActions}>
+                    <TextInput
+                      style={[styles.pasteBox, { flex: 1, minHeight: 44 }]}
+                      keyboardType="numeric"
+                      placeholder="Receipts matched so far ($)"
+                      value={receiptInputs[String(y.year)] ?? ""}
+                      onChangeText={(t) => setReceiptInputs({ ...receiptInputs, [String(y.year)]: t })}
+                    />
+                    <Pressable style={styles.buttonAlt} onPress={() => {
+                      const amt = Number((receiptInputs[String(y.year)] ?? "").replace(/[^0-9.]/g, ""));
+                      if (Number.isFinite(amt) && amt >= 0) update({ hsaReceiptsMatched: { ...(state.hsaReceiptsMatched ?? {}), [String(y.year)]: amt } });
+                    }}>
+                      <Text style={styles.buttonText}>Save matched</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+              {c.key === "hsa" && saForms.map((d, i) => (
+                <Text key={i} style={styles.line}>
+                  {d.docType === "hsa_1099_sa"
+                    ? `Form 1099-SA (${d.fields?.["tax_year"] ?? ""}): gross distribution ${money2(Number(d.fields?.["box_1_gross_distribution"] ?? 0))} - tax evidence for that year; it feeds that year's receipts reconciliation above and changes no balance.`
+                    : `Form 5498-SA (${d.fields?.["tax_year"] ?? ""}): contributions ${money2(Number(d.fields?.["box_2_contributions"] ?? 0))}, fair market value ${money2(Number(d.fields?.["box_5_fair_market_value"] ?? 0))} at year end - historical evidence shown with its date; it changes no current balance.`}
+                </Text>
+              ))}
               {c.key === "529" && <Text style={styles.line}>{edu529Line}</Text>}
+              {c.key === "529" && eduChildren.map((child) => {
+                const r = eduResolutionFor(docs, child.id);
+                const bal = r.fields.ending_balance;
+                if (bal.value === null || !bal.source) return null;
+                return (
+                  <Text key={child.id} style={styles.line}>
+                    {child.name || "Child"}: {money2(bal.value)} - {sourceLabelFor(bal.source)}
+                    {typeof r.fields.contributions_ytd.value === "number" ? ` - contributed ${money2(r.fields.contributions_ytd.value)} this year` : ""}
+                    {typeof r.fields.distributions_ytd.value === "number" && r.fields.distributions_ytd.value > 0 ? ` - distributions ${money2(r.fields.distributions_ytd.value)} this year (reconciliation on the Tasks page)` : ""}
+                  </Text>
+                );
+              })}
+              {c.key === "529" && eduChildren.flatMap((child) => eduResolutionFor(docs, child.id).conflicts.map((cf) => (
+                <Text key={`${child.id}-${cf.field}`} style={styles.line}>Two readings of {child.name || "your child"}'s {cf.field.replace(/_/g, " ")} disagree for the same date - flagged here rather than chosen silently.</Text>
+              )))}
               <View style={styles.catActions}>
                 <Pressable style={[styles.button, { flex: 1 }]} onPress={() => setChooserFor(chooserFor === c.key ? null : c.key)}>
                   <Text style={styles.buttonText}>Upload {c.key === "payslip" ? "a payslip" : "a statement"}</Text>
@@ -1200,6 +1547,7 @@ const styles = StyleSheet.create({
   buttonText: { color: "#FFFFFF", fontWeight: "700" },
   pasteBox: { backgroundColor: "#FFFFFF", borderRadius: 8, padding: 12, minHeight: 90, textAlignVertical: "top", fontSize: 13 },
   confirmCard: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 14, gap: 6, borderWidth: 1, borderColor: TEAL },
+  fanSection: { borderTopWidth: 1, borderTopColor: "#D8E2E8", paddingTop: 8, gap: 4 },
   batchLine: { fontSize: 16.5, fontWeight: "700", color: "#0f766e", marginBottom: 6 },
   mismatch: { backgroundColor: "#FEF7E0", borderRadius: 10, padding: 10, gap: 8 },
   manualLink: { color: TEAL, fontSize: 13, fontWeight: "600", marginTop: 6 },
