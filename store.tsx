@@ -21,6 +21,14 @@ export interface GoalInputs {
   pensionAnnual: number; // expected pension $/yr, 0 = unset (a pension statement's monthly benefit feeds it when unset)
   otherRetirementIncomeAnnual: number; // other dependable $/yr (net rent, annuities), 0 = unset
   retirementSpendingAnnual: number; // target retirement spending $/yr, 0 = unset (default: 70% of projected income, a starting assumption)
+  // Round 47: how the spending target is set, the budget worksheet
+  // behind "build a budget", the inflation assumption behind
+  // today's-dollars figures, and the no-pension declaration that
+  // lets a household with no pension reach the top accuracy level.
+  spendingMode: "estimate" | "custom" | "budget";
+  retirementBudget: { housing: number; food: number; healthcare: number; travel: number; other: number };
+  inflationPct: number; // labelled assumption, default 2.5
+  noPension: boolean; // household declares it has no pension (pension then counts as known)
   stateRefundTargetLow: number;
   stateRefundTargetHigh: number;
 }
@@ -37,6 +45,9 @@ export interface UiMember {
   retireAge: number; // adults: planned retirement age
   retireTarget: number; // adults: personal retirement target $, 0 = unset (owner QA round 8: per person, not one household figure)
   ssAnnual: number; // adults: expected Social Security $/yr in retirement, 0 = unset (round 46: feeds the household retirement need)
+  ssClaimAge: number; // adults: planned Social Security claiming age (round 47; 67 = full retirement age)
+  retireFlex: "fixed" | "plus1" | "plus3" | "flexible"; // adults: retirement-age flexibility (round 47 - powers the "work a little longer" sensitivity line)
+  pensionAnnual: number; // adults: this person's own pension $/yr, 0 = unset (round 47: pension is per adult; a statement feeds the household when no one has entered one)
   eduTarget: number; // children: education target for THIS child $, 0 = unset (owner QA round 8: per child)
   studentNow: boolean; // children: currently in college
   collegeStartYear: number; // children: 0 = unknown
@@ -149,6 +160,10 @@ export function defaultState(): HouseholdState {
       pensionAnnual: 0,
       otherRetirementIncomeAnnual: 0,
       retirementSpendingAnnual: 0,
+      spendingMode: "estimate",
+      retirementBudget: { housing: 0, food: 0, healthcare: 0, travel: 0, other: 0 },
+      inflationPct: 2.5,
+      noPension: false,
     },
     onboarded: false,
     payrollCheck: { lastConfirmedOn: null, consecutive: 0 },
@@ -210,7 +225,7 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     ...parsed,
     intake: { ...d.intake, ...(parsed.intake ?? {}) },
     goals: { ...d.goals, ...(parsed.goals ?? {}) },
-    family: (parsed.family ?? []).map((m) => ({ retireTarget: 0, ssAnnual: 0, eduTarget: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4, ...m })),
+    family: (parsed.family ?? []).map((m) => ({ retireTarget: 0, ssAnnual: 0, ssClaimAge: 67, retireFlex: "fixed" as const, pensionAnnual: 0, eduTarget: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4, ...m })),
     jobs: parsed.jobs ?? [],
     assets: parsed.assets ?? [],
     payrollCheck: parsed.payrollCheck ?? { lastConfirmedOn: null, consecutive: 0 },

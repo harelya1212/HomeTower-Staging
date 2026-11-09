@@ -94,6 +94,64 @@ export function householdRetirement(input: {
   };
 }
 
+/** Value of one person's savings at a COMMON household date (round
+ * 47, the timeline fix): contributions stop at their own retirement,
+ * then the balance keeps growing - no draws - until the common date.
+ * Summing two projections taken at different dates was the round-46
+ * shortcut Copilot flagged; every household figure is now valued at
+ * the later retirement date. */
+export function projectToCommonDate(balance: number, monthly: number, yearsContributing: number, yearsTotal: number, annualReturnPct: number): number {
+  const atOwn = projectValue(balance, monthly, yearsContributing, annualReturnPct);
+  return projectValue(atOwn, 0, Math.max(0, yearsTotal - yearsContributing), annualReturnPct);
+}
+
+/** Today's purchasing power of a future amount, and its inverse
+ * (round 47): retirement figures are presented in today's dollars
+ * first, with the future-dollar equivalent shown second. */
+export function deflateToToday(amount: number, years: number, inflationPct: number): number {
+  if (years <= 0 || inflationPct <= 0) return amount;
+  return amount / Math.pow(1 + inflationPct / 100, years);
+}
+export function inflateToFuture(amount: number, years: number, inflationPct: number): number {
+  if (years <= 0 || inflationPct <= 0) return amount;
+  return amount * Math.pow(1 + inflationPct / 100, years);
+}
+
+export type RetirementAccuracyLevel = "X" | "X+" | "X++";
+export interface RetirementAccuracy {
+  level: RetirementAccuracyLevel;
+  label: string; // "Early estimate" | "Planning forecast" | "High-confidence planning forecast"
+  missing: string[]; // the personalization asks, in the order to present them
+}
+
+/** Accuracy levels for the retirement forecast (round 47, Copilot's
+ * scale): X = only age + income known, the card is an early estimate
+ * and must not read as a verdict; X+ = the funding path and at least
+ * one personal input are known; X++ = a real spending target, Social
+ * Security for every adult, pension known (or none, by declaration)
+ * and balances on file. */
+export function retirementAccuracy(input: {
+  spendingSet: boolean;
+  ssEnteredAdults: number;
+  adultCount: number;
+  pensionKnown: boolean;
+  hasBalances: boolean;
+  hasPace: boolean;
+}): RetirementAccuracy {
+  const missing: string[] = [];
+  if (!input.spendingSet) missing.push("a retirement spending target of your own");
+  if (input.adultCount > 0 && input.ssEnteredAdults < input.adultCount) missing.push("a Social Security estimate for each adult");
+  if (!input.pensionKnown) missing.push("pension or other dependable retirement income");
+  const hasFunding = input.hasBalances || input.hasPace;
+  if (input.spendingSet && input.adultCount > 0 && input.ssEnteredAdults >= input.adultCount && input.pensionKnown && input.hasBalances) {
+    return { level: "X++", label: "High-confidence planning forecast", missing };
+  }
+  if (hasFunding && (input.spendingSet || input.ssEnteredAdults > 0 || input.pensionKnown)) {
+    return { level: "X+", label: "Planning forecast", missing };
+  }
+  return { level: "X", label: "Early estimate", missing };
+}
+
 /** Monthly contribution needed to reach a target from a balance in a
  * given number of years (the inverse of projectValue). */
 export function requiredMonthly(balance: number, target: number, years: number, annualReturnPct: number): number {

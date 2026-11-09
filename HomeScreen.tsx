@@ -8,7 +8,7 @@ import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { computeFederalTax } from "../../engine/federal.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
-import { ageOn, educationFunding, educationLine, householdRetirement, projectValue, requiredMonthly } from "../goals.ts";
+import { ageOn, deflateToToday, educationFunding, educationLine, householdRetirement, inflateToFuture, projectToCommonDate, projectValue, requiredMonthly, retirementAccuracy, WITHDRAWAL_RATES } from "../goals.ts";
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
@@ -47,6 +47,7 @@ export default function HomeScreen() {
   const [push, setPush] = useState<PushStatus | null>(null);
   const [tasksOpen, setTasksOpen] = useState(false);
   const [showCalc, setShowCalc] = useState(false);
+  const [showAssumptions, setShowAssumptions] = useState(false);
 
   const today = todayIso();
   // Payslip-driven forecast (owner QA, 2026-11-08): when saved
@@ -122,7 +123,7 @@ export default function HomeScreen() {
   const adults = state.family.filter((m) => m.role === "self" || m.role === "spouse");
   const adultOutlook = adults.map((m) => {
     const age = ageOn(m.dob, today);
-    const owned = state.assets.filter((a) => (a.kind === "401k" || a.kind === "ira") && m.name.trim() !== "" && a.ownerName.trim().toLowerCase() === m.name.trim().toLowerCase());
+    const owned = state.assets.filter((a) => (a.kind === "401k" || a.kind === "ira" || a.kind === "hsa") && m.name.trim() !== "" && a.ownerName.trim().toLowerCase() === m.name.trim().toLowerCase());
     const bal = owned.length ? owned.reduce((s, a) => s + a.value, 0) : m.role === "self" ? retBalance : 0;
     const assetMo = owned.length ? owned.reduce((s, a) => s + a.monthly, 0) : m.role === "self" ? retMonthly : 0;
     // Payslip evidence (owner QA, 2026-11-08): when no asset row
@@ -148,22 +149,60 @@ export default function HomeScreen() {
   // shares housing, utilities, insurance and food. Per-person rows
   // below stay as attribution: balances and accounts ARE personal.
   const incomeBasis = slipFc ? slipFc.projectedGross : effIncome;
-  const spendingFromDefault = !(g.retirementSpendingAnnual > 0);
-  const spendingAnnual = spendingFromDefault ? Math.round(incomeBasis * 0.7) : g.retirementSpendingAnnual;
+  const budgetTotalR = (g.retirementBudget.housing || 0) + (g.retirementBudget.food || 0) + (g.retirementBudget.healthcare || 0) + (g.retirementBudget.travel || 0) + (g.retirementBudget.other || 0);
+  const spendingSet = g.spendingMode === "custom" ? g.retirementSpendingAnnual > 0 : g.spendingMode === "budget" ? budgetTotalR > 0 : false;
+  const spendingFromDefault = !spendingSet;
+  const spendingAnnual = g.spendingMode === "custom" && g.retirementSpendingAnnual > 0 ? g.retirementSpendingAnnual : g.spendingMode === "budget" && budgetTotalR > 0 ? budgetTotalR : Math.round(incomeBasis * 0.7);
   const ssAnnualTotal = adults.reduce((sum, m) => sum + (m.ssAnnual || 0), 0);
+  const ssEnteredAdults = adults.filter((m) => (m.ssAnnual || 0) > 0).length;
   const pensionStmtMonthly = state.intake.documents.reduce((best, d) => {
     if (d.docType !== "pension_statement" || !d.fields) return best;
     const v = Number(String(d.fields["monthly_benefit"] ?? "").replace(/[^0-9.]/g, ""));
     return Number.isFinite(v) && v > best ? v : best;
   }, 0);
-  const pensionFromStatement = !(g.pensionAnnual > 0) && pensionStmtMonthly > 0;
-  const pensionAnnualEff = g.pensionAnnual > 0 ? g.pensionAnnual : Math.round(pensionStmtMonthly * 12);
-  const projectedPortfolio = adultOutlook.reduce((sum, a) => sum + a.projected, 0);
+  const memberPension = adults.reduce((sum, m) => sum + (m.pensionAnnual || 0), 0);
+  const pensionFromStatement = memberPension <= 0 && !(g.pensionAnnual > 0) && pensionStmtMonthly > 0;
+  const pensionAnnualEff = memberPension > 0 ? memberPension : g.pensionAnnual > 0 ? g.pensionAnnual : Math.round(pensionStmtMonthly * 12);
+  const pensionKnown = memberPension > 0 || g.pensionAnnual > 0 || pensionStmtMonthly > 0 || g.noPension;
   const currentRetBalance = adultOutlook.reduce((sum, a) => sum + a.bal, 0);
-  const hhRet = householdRetirement({ spendingAnnual, socialSecurityAnnual: ssAnnualTotal, pensionAnnual: pensionAnnualEff, otherAnnual: g.otherRetirementIncomeAnnual || 0, projectedPortfolio });
-  const maxRetYears = adultOutlook.reduce((sum, a) => Math.max(sum, a.years), 0);
-  const hhShort = Math.max(0, hhRet.needBase - projectedPortfolio);
-  const hhReqMo = hhRet.needBase > 0 && maxRetYears > 0 ? Math.round(requiredMonthly(currentRetBalance, hhRet.needBase, maxRetYears, g.assumedReturnPct)) : 0;
+  // Timeline (round 47): every adult is valued at the LATER
+  // retirement date - contributions stop at their own date, the
+  // balance keeps growing, no bridge draws (the working spouse's
+  // income covers the bridge years; the assumptions drawer says so).
+  // All household figures are then deflated to today's dollars,
+  // because the spending target is in today's dollars.
+  const flexYearsOf = (m: (typeof adults)[number]) => (m.retireFlex === "plus1" ? 1 : m.retireFlex === "plus3" || m.retireFlex === "flexible" ? 3 : 0);
+  const projectHousehold = (delay: boolean) => {
+    const yearsOwn = adultOutlook.map((a) => a.years + (delay ? flexYearsOf(a.m) : 0));
+    const laterYears = yearsOwn.reduce((mx, y) => Math.max(mx, y), 0);
+    const perAtLater = adultOutlook.map((a, i) => projectToCommonDate(a.bal, a.mo, yearsOwn[i], laterYears, g.assumedReturnPct));
+    const nominal = perAtLater.reduce((sum, v) => sum + v, 0);
+    return { yearsOwn, laterYears, perAtLater, nominal, todays: deflateToToday(nominal, laterYears, g.inflationPct) };
+  };
+  const projNow = projectHousehold(false);
+  const projectedToday = projNow.todays;
+  const thisYearR = Number(today.slice(0, 4));
+  const laterYear = thisYearR + Math.round(projNow.laterYears);
+  const hhRet = householdRetirement({ spendingAnnual, socialSecurityAnnual: ssAnnualTotal, pensionAnnual: pensionAnnualEff, otherAnnual: g.otherRetirementIncomeAnnual || 0, projectedPortfolio: projectedToday });
+  const readinessPct = hhRet.needBase > 0 ? Math.round((projectedToday / hhRet.needBase) * 100) : null;
+  const realReturnPct = Math.max(0, ((1 + g.assumedReturnPct / 100) / (1 + (g.inflationPct || 0) / 100) - 1) * 100);
+  const hhShort = Math.max(0, hhRet.needBase - projectedToday);
+  const hhReqMo = hhRet.needBase > 0 && projNow.laterYears > 0 ? Math.round(requiredMonthly(currentRetBalance, hhRet.needBase, projNow.laterYears, realReturnPct)) : 0;
+  const accuracy = retirementAccuracy({ spendingSet, ssEnteredAdults, adultCount: adults.length, pensionKnown, hasBalances: currentRetBalance > 0, hasPace: adultOutlook.some((a) => a.mo > 0) });
+  const projDelay = projectHousehold(true);
+  const delayReadiness = hhRet.needBase > 0 ? Math.round((projDelay.todays / hhRet.needBase) * 100) : null;
+  const showSensitivity = projDelay.laterYears > projNow.laterYears && readinessPct !== null && readinessPct < 100 && delayReadiness !== null && delayReadiness > readinessPct;
+  const futureNeed = Math.round(inflateToFuture(hhRet.needBase, projNow.laterYears, g.inflationPct));
+  const supportAnnual = Math.round(projectedToday * WITHDRAWAL_RATES.base);
+  const phases = (() => {
+    if (adultOutlook.length < 2) return null;
+    const order = projNow.yearsOwn.map((y, i) => ({ y, i })).sort((x, z) => x.y - z.y);
+    if (order.length < 2 || Math.abs(order[0].y - order[1].y) < 0.5) return null;
+    const early = adultOutlook[order[0].i];
+    const late = adultOutlook[order[1].i];
+    return { earlyName: early.m.name || "One spouse", lateName: late.m.name || "the other", y1: thisYearR + Math.round(order[0].y), y2: thisYearR + Math.round(order[1].y) };
+  })();
+  const updatedLabel = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][Number(today.slice(5, 7)) - 1] + " " + today.slice(0, 4);
 
   // Education funding per child (owner QA round 18, SPEC45 sec. 32):
   // saved vs the real cost path - per child, with their own dates.
@@ -359,6 +398,9 @@ export default function HomeScreen() {
   for (const gp of gaps) {
     tasks.push({ key: `gap-${gp.name}`, icon: "🧾", title: `${gp.name}: a payslip reading is missing ${gp.missing.join(" and ")}`, detail: "One regular slip per earner completes the forecast - a Workday PDF always contains both figures.", target: "Documents" });
   }
+  if (adults.length > 0 && accuracy.level !== "X++" && accuracy.missing.length > 0) {
+    tasks.push({ key: "ret-personalize", icon: "\u{1F3AF}", title: "Personalize your retirement forecast", detail: `Still missing: ${accuracy.missing.join(", ")}. Adding them moves the retirement card from ${accuracy.label.toLowerCase()} toward a high-confidence forecast.`, target: "MyHouse" });
+  }
   for (const r of requests) {
     if (r.status !== "missing" || r.key === "prior_return" || r.key === "calibration_outcome" || r.key === "payslip") continue;
     tasks.push({ key: `req-${r.key}`, icon: "📄", title: `Add the ${r.label.charAt(0).toLowerCase()}${r.label.slice(1)}`, detail: r.detail, target: "Documents" });
@@ -450,7 +492,9 @@ export default function HomeScreen() {
 
       {adults.length > 0 && (
         <View style={styles.card}>
-          <Text style={styles.cardLabel}>Retirement - household goal **</Text>
+          <Text style={styles.cardLabel}>Retirement Readiness **</Text>
+          <Text style={styles.line}>Can this household support the life it wants after work ends?</Text>
+          <Text style={styles.line}>{accuracy.level === "X" ? "Retirement estimate - early estimate, personalization needed." : accuracy.level === "X+" ? "Planning forecast." : "High-confidence planning forecast."}</Text>
           {adultOutlook.every((a) => a.age === null) ? (
             <Text style={styles.line}>Add dates of birth in the {state.intake.name || "My House"} tab and HomeTower can time this.</Text>
           ) : spendingAnnual <= 0 ? (
@@ -458,42 +502,80 @@ export default function HomeScreen() {
           ) : hhRet.portfolioGapAnnual <= 0 ? (
             <>
               <Text style={styles.line}>{"\u{1F7E2}"} Your dependable income covers the spending target on its own - {money(hhRet.dependableAnnual)}/year of Social Security, pension and other income against a target of {money(spendingAnnual)}/year. Your savings sit on top of that.</Text>
-              <Text style={styles.line}>Projected portfolio at retirement: {money(projectedPortfolio)}.</Text>
+              <Text style={styles.line}>Projected portfolio at retirement: {money(projectedToday)} in today's dollars.</Text>
             </>
           ) : (
             <>
+              <Text style={styles.line}>Target retirement: {laterYear}</Text>
+              <Text style={styles.line}>Desired lifestyle: {money(spendingAnnual)}/year</Text>
+              <Text style={styles.line}>Social Security: {ssAnnualTotal > 0 ? `${money(ssAnnualTotal)}/year` : "not entered yet"}</Text>
+              <Text style={styles.line}>Pension and other dependable income: {money(pensionAnnualEff + (g.otherRetirementIncomeAnnual || 0))}/year</Text>
+              <Text style={styles.line}>Portfolio needs to fund: {money(hhRet.portfolioGapAnnual)}/year</Text>
+              <Text style={styles.line}>Projected portfolio support: {money(supportAnnual)}/year</Text>
+              <Text style={styles.line}>{supportAnnual - hhRet.portfolioGapAnnual >= 0 ? `Projected surplus: ${money(supportAnnual - hhRet.portfolioGapAnnual)}/year` : `Projected shortfall: ${money(hhRet.portfolioGapAnnual - supportAnnual)}/year`}</Text>
               <View style={styles.tilesRow}>
                 <View style={styles.tile}>
-                  <Text numberOfLines={1} style={[styles.tileValue, { color: projectedPortfolio >= hhRet.needBase ? GREEN : Math.round((projectedPortfolio / hhRet.needBase) * 100) >= 50 ? YELLOW : RED }]}>{Math.round((projectedPortfolio / hhRet.needBase) * 100)}%</Text>
-                  <Text style={styles.tileLabel}>Funded</Text>
-                </View>
-                <View style={styles.tile}>
-                  <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(projectedPortfolio)}</Text>
-                  <Text style={styles.tileLabel}>Projected</Text>
+                  <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(projectedToday)}</Text>
+                  <Text style={styles.tileLabel}>Projected (today's $)</Text>
                 </View>
                 <View style={styles.tile}>
                   <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(hhRet.needBase)}</Text>
-                  <Text style={styles.tileLabel}>Need (household)</Text>
+                  <Text style={styles.tileLabel}>Target (household)</Text>
+                </View>
+                <View style={styles.tile}>
+                  <Text numberOfLines={1} style={[styles.tileValue, accuracy.level !== "X" ? { color: projectedToday >= hhRet.needBase ? GREEN : (readinessPct ?? 0) >= 50 ? YELLOW : RED } : {}]}>{readinessPct}%</Text>
+                  <Text style={styles.tileLabel}>Readiness</Text>
                 </View>
               </View>
-              <Text style={styles.line}>{projectedPortfolio >= hhRet.needBase ? "\u{1F7E2} On track as a household at the base 4.0% withdrawal rate." : `\u{1F534} Short by ${money(hhShort)} as a household${hhReqMo > 0 ? ` - saving about ${money(hhReqMo)}/mo more across the household closes it` : ""}.`}</Text>
-              <Text style={styles.line}>Projected retirement income: {money(hhRet.projectedIncomeAnnual)}/year</Text>
-              <Text style={styles.line}>Target lifestyle: {money(spendingAnnual)}/year</Text>
-              <Text style={styles.line}>{hhRet.incomeGapAnnual > 0 ? `Projected gap: ${money(hhRet.incomeGapAnnual)}/year` : `That covers the target, with ${money(-hhRet.incomeGapAnnual)}/year to spare.`}</Text>
-              <Text style={styles.line}>Based on household retirement spending of {money(spendingAnnual)}/year{spendingFromDefault ? ` (70% of projected income - a starting assumption; set your own in the ${state.intake.name || "My House"} tab)` : ""}, expected Social Security of {money(ssAnnualTotal)}/year, pension of {money(pensionAnnualEff)}/year{pensionFromStatement ? " (from your pension statement)" : ""}{(g.otherRetirementIncomeAnnual || 0) > 0 ? `, and other dependable income of ${money(g.otherRetirementIncomeAnnual)}/year` : ""}, at a 4.0% starting withdrawal rate.</Text>
-              {ssAnnualTotal <= 0 && pensionAnnualEff <= 0 && (
-                <Text style={styles.line}>No Social Security or pension is entered yet - add them in the {state.intake.name || "My House"} tab and the need comes down.</Text>
+              {accuracy.level === "X" ? (
+                <>
+                  <Text style={styles.line}>This is a fallback estimate, not a verdict. With no spending target of your own and no Social Security or pension entered, HomeTower assumes spending of 70% of income and dependable income of $0 - a very conservative placeholder that makes the target look far larger than it will once the real inputs are in.</Text>
+                  <Text style={styles.line}>To personalize it, add: {accuracy.missing.join("; ")} - in the {state.intake.name || "My House"} tab.</Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.line}>{projectedToday >= hhRet.needBase ? "\u{1F7E2} On track as a household at the Balanced 4.0% withdrawal rate." : `\u{1F534} Short by ${money(hhShort)} as a household${hhReqMo > 0 ? ` - saving about ${money(hhReqMo)}/mo more across the household closes it` : ""}.`}</Text>
+                  {showSensitivity && <Text style={styles.line}>Working longer, where you marked flexibility, lifts readiness from {readinessPct}% to {delayReadiness}% (the target year moves to {thisYearR + Math.round(projDelay.laterYears)}).</Text>}
+                  {accuracy.level === "X+" && accuracy.missing.length > 0 && (
+                    <Text style={styles.line}>Still missing: {accuracy.missing.join("; ")} - adding them sharpens this forecast.</Text>
+                  )}
+                </>
               )}
-              <Text style={styles.line}>At a conservative 3.5% withdrawal rate the need is {money(hhRet.needConservative)}; at a flexible 4.5%, {money(hhRet.needFlexible)}.</Text>
+              <Text style={styles.line}>In future dollars, the {laterYear} target is about {money(futureNeed)}; every figure above is in today's purchasing power.</Text>
+              <Text style={styles.line}>More Safety (3.5%): {money(hhRet.needConservative)} - Balanced (4.0%): {money(hhRet.needBase)} - More Flexible Spending (4.5%): {money(hhRet.needFlexible)}</Text>
+              {phases && (
+                <Text style={styles.line}>Timeline: both working until {phases.y1}; then {phases.earlyName} is retired while {phases.lateName} works, until {phases.y2}; both retired from {phases.y2}.</Text>
+              )}
+              <Text style={styles.line}>Based on a 4.0% starting withdrawal rate (Balanced) and today's purchasing power.</Text>
             </>
           )}
-          {adultOutlook.map(({ m, age, years, projected, mo, paceFromSlips }) => (
-            <View key={m.id} style={styles.personBlock}>
-              <Text style={styles.personName}>{m.name || (m.role === "self" ? "You" : "Spouse")} - retire at {m.retireAge || 67}</Text>
-              {age === null ? (
+          <Pressable onPress={() => setShowAssumptions(!showAssumptions)}>
+            <Text style={styles.manualLink}>Forecast assumptions {showAssumptions ? "(hide)" : "(show)"}</Text>
+          </Pressable>
+          {showAssumptions && (
+            <>
+              <Text style={styles.line}>Retirement ages: {adults.map((m) => `${m.name || (m.role === "self" ? "You" : "Spouse")} - ${m.retireAge || 67}`).join(", ")}</Text>
+              <Text style={styles.line}>Annual spending: {money(spendingAnnual)} - today's dollars{spendingFromDefault ? " (70% estimate)" : g.spendingMode === "budget" ? " (from your budget)" : ""}</Text>
+              <Text style={styles.line}>Investment return: {g.assumedReturnPct}% - Inflation: {g.inflationPct}%</Text>
+              <Text style={styles.line}>Withdrawal rate: 4.0% (Balanced)</Text>
+              {adults.map((m) => (
+                <Text key={m.id} style={styles.line}>Social Security - {m.name || (m.role === "self" ? "You" : "Spouse")}: {(m.ssAnnual || 0) > 0 ? `${money(m.ssAnnual)}/year, claim at ${m.ssClaimAge || 67}` : "not entered"}</Text>
+              ))}
+              <Text style={styles.line}>Pension: {money(pensionAnnualEff)}/year{pensionFromStatement ? " (from your pension statement)" : ""}</Text>
+              <Text style={styles.line}>Net rental / other dependable: {money(g.otherRetirementIncomeAnnual || 0)}/year</Text>
+              <Text style={styles.line}>Home equity: excluded from the investable portfolio</Text>
+              {phases && <Text style={styles.line}>Bridge years ({phases.y1}-{phases.y2}): the retired spouse's portfolio keeps growing and is not drawn - the working spouse's income covers those years</Text>}
+              <Text style={styles.line}>Healthcare: not included yet</Text>
+              <Text style={styles.line}>Last updated: {updatedLabel}</Text>
+            </>
+          )}
+          {adultOutlook.map((a, i) => (
+            <View key={a.m.id} style={styles.personBlock}>
+              <Text style={styles.personName}>{a.m.name || (a.m.role === "self" ? "You" : "Spouse")} - retire at {a.m.retireAge || 67}</Text>
+              {a.age === null ? (
                 <Text style={styles.line}>Add a date of birth in the {state.intake.name || "My House"} tab and HomeTower can time this.</Text>
               ) : (
-                <Text style={styles.line}>Age {age}, {years} years to go. Projected {moneyShort(projected)} by then - saving {money(mo)}/mo{paceFromSlips ? " (pace from payslips)" : ""}.{m.retireTarget > 0 ? ` Personal target: ${money(m.retireTarget)}.` : ""}</Text>
+                <Text style={styles.line}>Projected contribution to household retirement: {moneyShort(deflateToToday(projNow.perAtLater[i], projNow.laterYears, g.inflationPct))} by {laterYear} - saving {money(a.mo)}/mo{a.paceFromSlips ? " (pace from payslips)" : ""}.{a.m.retireTarget > 0 ? ` Personal target: ${money(a.m.retireTarget)}.` : ""}</Text>
               )}
             </View>
           ))}
@@ -648,7 +730,7 @@ export default function HomeScreen() {
             </Text>
           )}
           {(adults.length > 0 || children.length > 0) && (
-            <Text style={styles.footnote}>** Outlooks assume {g.assumedReturnPct}% yearly growth - an editable assumption in Intake, not a promise. The retirement need uses a 4.0% starting withdrawal rate (25x is just 1 / 4%); at 3.5% the need is higher, at 4.5% lower.</Text>
+            <Text style={styles.footnote}>** Retirement figures are in today's dollars (inflation {g.inflationPct}%) and assume {g.assumedReturnPct}% yearly growth - editable assumptions in My House and Intake, not promises. The retirement need uses the Balanced 4.0% starting withdrawal rate; More Safety (3.5%) needs more saved, More Flexible Spending (4.5%) needs less.</Text>
           )}
         </View>
       )}
