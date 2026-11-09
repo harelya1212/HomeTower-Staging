@@ -17,7 +17,7 @@ import {
   ssForMember,
   LIFESTYLE_NOT_ESTIMATED,
   type LifestyleData,
-  type LifestyleExceptionsData,
+  type LifestyleExceptions,
   type QuickEstimateData,
 } from "../src/goals.ts";
 import { payslip401kTotals } from "../src/payslips.ts";
@@ -37,7 +37,7 @@ function ok(name: string, cond: boolean) {
 
 const lifeBase: LifestyleData = { amounts: {}, states: {}, adjusted: {}, additionsAnnual: 0, confirmed: false };
 const qBase: QuickEstimateData = { monthlySpend: 0, mortgageEndsMonthly: 0, collegeEndsAnnual: 0, travelAdjustPct: 0, healthcareBridgeAnnual: 0, done: false };
-const exBase: LifestyleExceptionsData = { mortgageAtRetirement: "", mortgageMonthly: 0, collegeContinuesAnnual: 0, healthcareBridgeAnnual: 0, majorChangeAnnual: 0, travel: "" };
+const exBase: LifestyleExceptions = { mortgageAtRetirement: "", mortgageMonthly: 0, collegeContinuesAnnual: 0, healthcareBridgeAnnual: 0, majorChangeAnnual: 0, travel: "" };
 
 // ---- (a) Group-2 only: the device defect --------------------------
 // ONLY the payslip 401(k) prefill in the model. Round 49 showed the
