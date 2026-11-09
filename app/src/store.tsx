@@ -377,6 +377,18 @@ let wizardIntent = false;
 export function setWizardIntent(): void { wizardIntent = true; }
 export function consumeWizardIntent(): boolean { const v = wizardIntent; wizardIntent = false; return v; }
 
+/** ROUND 52 - one-shot Retirement-section intent, same discipline as
+ * the wizard intent. The Home retirement card sets the section
+ * before navigating to the Plan tab (the tap target is Plan ->
+ * Retirement -> Readiness); the Plan screen consumes it on focus,
+ * scrolls to the Retirement section and routes on to the Retirement
+ * screen at that section. Direct Plan visits never set it, so the
+ * hub shows plain. */
+export type RetirementSection = "readiness" | "scenarios" | "social";
+let retirementIntent: RetirementSection | null = null;
+export function setRetirementIntent(section: RetirementSection): void { retirementIntent = section; }
+export function consumeRetirementIntent(): RetirementSection | null { const v = retirementIntent; retirementIntent = null; return v; }
+
 export function useHousehold(): Store {
   const store = useContext(Ctx);
   if (!store) throw new Error("useHousehold outside provider");

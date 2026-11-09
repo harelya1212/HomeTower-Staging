@@ -133,6 +133,88 @@ export function mergePayslipFields(prev: Record<string, string>, next: Record<st
 // gate component and NOTHING in the app said so. This reports, per
 // earner, exactly which components no saved slip provided - the
 // Home screen shows it instead of a silent blank.
+export interface PayslipDeductionTotals {
+  esppYtd: number;
+  /** Monthly ESPP pace from the freshest REGULAR slip per earner,
+   * annualized - bonus slips never set pace (same rule as 401(k)). */
+  esppMonthlyPace: number | null;
+  hsaYtd: number;
+  hsaMonthlyPace: number | null;
+  perEarner: { name: string; esppYtd: number; esppMonthlyPace: number | null; hsaYtd: number; hsaMonthlyPace: number | null }[];
+}
+
+/**
+ * ROUND 52 - ESPP and HSA read off the payslips, with exactly the
+ * evidence discipline of payslip401kTotals: slips grouped per
+ * earner, freshest first (a fuller reading wins a same-date tie);
+ * year-to-date from the freshest slip that carries it (YTD figures
+ * are cumulative - never summed across one earner's slips); pace
+ * from the freshest REGULAR slip carrying the item, annualized by
+ * the pay frequency. The parsed fields have existed since the
+ * first field maps; nothing read them until the provenance round.
+ * Null when there are no payslips at all; pace null when no regular
+ * slip carries the item - an absent item is Unknown/Not detected
+ * downstream, never a $0 finding.
+ */
+export function payslipDeductionTotals(
+  documents: DocumentRecord[],
+  todayIso: string,
+  jobs: JobLike[] = [],
+): PayslipDeductionTotals | null {
+  const slips = documents.filter((d) => d.docType === "payslip" && d.fields && (d.fields["employee_name"] ?? "").trim() !== "");
+  if (slips.length === 0) return null;
+  const thisYear = todayIso.slice(0, 4);
+  const byEarner = new Map<string, DocumentRecord[]>();
+  for (const s of slips) {
+    const key = normName(s.fields!["employee_name"]);
+    const arr = byEarner.get(key) ?? [];
+    arr.push(s);
+    byEarner.set(key, arr);
+  }
+  const fieldCount = (d: DocumentRecord) => Object.values(d.fields ?? {}).filter((v) => v !== "").length;
+  const perEarner: PayslipDeductionTotals["perEarner"] = [];
+  for (const [key, docs] of byEarner) {
+    const withEnd = docs.map((d) => ({ d, end: slipEnd(d) })).filter((x) => x.end !== null && x.end.slice(0, 4) === thisYear) as Array<{ d: DocumentRecord; end: string }>;
+    if (withEnd.length === 0) continue;
+    withEnd.sort((a, b) => (a.end > b.end ? -1 : a.end < b.end ? 1 : fieldCount(b.d) - fieldCount(a.d) || (a.d.capturedOn > b.d.capturedOn ? -1 : 1)));
+    const pick = (field: string) => {
+      for (const x of withEnd) {
+        const v = num((x.d.fields ?? {})[field]);
+        if (v !== null) return v;
+      }
+      return null;
+    };
+    const job = jobs.find((j) => normName(j.memberName) === key);
+    const perYear = ({ weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 } as Record<string, number>)[(job?.payFrequency ?? "semimonthly").toLowerCase()] ?? 24;
+    const pace = (field: string) => {
+      for (const x of withEnd) {
+        const f = x.d.fields ?? {};
+        if ((f["payslip_kind"] ?? "regular") === "bonus") continue;
+        const cur = num(f[field]);
+        if (cur !== null) return Math.round(((cur * perYear) / 12) * 100) / 100;
+      }
+      return null;
+    };
+    const esppYtd = pick("ytd_espp");
+    const hsaYtd = pick("ytd_hsa");
+    const esppMonthlyPace = pace("espp_contribution");
+    const hsaMonthlyPace = pace("hsa_contribution");
+    if (esppYtd === null && hsaYtd === null && esppMonthlyPace === null && hsaMonthlyPace === null) continue;
+    perEarner.push({ name: docs[0].fields!["employee_name"] || key, esppYtd: esppYtd ?? 0, esppMonthlyPace, hsaYtd: hsaYtd ?? 0, hsaMonthlyPace });
+  }
+  const paceSum = (pickFn: (e: PayslipDeductionTotals["perEarner"][number]) => number | null) => {
+    const vals = perEarner.map(pickFn).filter((v): v is number => v !== null);
+    return vals.length > 0 ? Math.round(vals.reduce((sum, v) => sum + v, 0) * 100) / 100 : null;
+  };
+  return {
+    esppYtd: Math.round(perEarner.reduce((sum, e) => sum + e.esppYtd, 0) * 100) / 100,
+    esppMonthlyPace: paceSum((e) => e.esppMonthlyPace),
+    hsaYtd: Math.round(perEarner.reduce((sum, e) => sum + e.hsaYtd, 0) * 100) / 100,
+    hsaMonthlyPace: paceSum((e) => e.hsaMonthlyPace),
+    perEarner,
+  };
+}
+
 export interface PayslipGap { name: string; missing: string[] }
 
 export function payslipGaps(documents: DocumentRecord[], todayIso: string): PayslipGap[] {

@@ -549,6 +549,524 @@ export function adultStartingBalance(input: {
   return { balance: input.fallback, statementApplied: false, replaced401k: 0 };
 }
 
+// ---------------------------------------------------------------------------
+// ROUND 52 - Directional Retirement Outlook, Provenance and Navigation
+// (Copilot's full spec, approved verbatim by the owner). Three pieces:
+// (1) provenance - every document-derived value carries a status and
+// a source, and an unknown value is NEVER a $0; (2) the directional
+// outlook - at low accuracy the household still gets an answer to
+// "am I heading toward the retirement age I asked for?", computed
+// deterministically from three return scenarios (5% / 6% / 7%), with
+// NO numeric probability anywhere; (3) the one recommended action,
+// chosen from three computed levers by the spec's plausibility order.
+// ---------------------------------------------------------------------------
+
+/** Provenance statuses (spec section F). A value the source confirms
+ * is zero renders as $0; a value nobody has supplied renders as
+ * Unknown; a value a parser looked for and did not find renders as
+ * Not detected. UNKNOWN != 0 and NOT_DETECTED != 0 are hard rules
+ * across all of HomeTower, not only Retirement. */
+export type ValueStatus = "confirmed" | "user_confirmed" | "from_payslip" | "from_statement" | "estimated" | "not_detected" | "unknown" | "stale";
+
+export function valueStatusLabel(status: ValueStatus): string {
+  switch (status) {
+    case "from_payslip": return "From payslip";
+    case "from_statement": return "From statement";
+    case "user_confirmed": return "Entered by you";
+    case "estimated": return "Estimated";
+    case "not_detected": return "Not detected";
+    case "stale": return "Stale";
+    case "confirmed": return "Confirmed";
+    default: return "Unknown";
+  }
+}
+
+function docFieldNum(d: SsDocLike, key: string): number | null {
+  const raw = d.fields?.[key];
+  if (raw === undefined || raw === "") return null;
+  const v = Number(String(raw).replace(/[^0-9.]/g, ""));
+  return Number.isFinite(v) ? v : null;
+}
+
+function docHasPositive(d: SsDocLike, keys: string[]): boolean {
+  return keys.some((k) => (docFieldNum(d, k) ?? 0) > 0);
+}
+
+/** Whether the household's documents carry an item at all - the
+ * badge logic behind the Documents cards and the Lifestyle savings
+ * rows (GT7: ESPP not found renders "Unknown", never "$0"). Returns
+ * the source status when a document carries the item, "not_detected"
+ * when a relevant document exists but the item is absent from it,
+ * and "unknown" when no relevant document exists yet. A value the
+ * USER typed is not this helper's business - typed values are real
+ * values (user_confirmed), including a typed 0. */
+export function docEvidenceStatus(docs: SsDocLike[], item: "espp" | "hsa" | "529" | "match"): ValueStatus {
+  const slips = docs.filter((d) => d.docType === "payslip");
+  if (item === "espp") {
+    if (slips.some((d) => docHasPositive(d, ["espp_contribution", "ytd_espp"]))) return "from_payslip";
+    return slips.length > 0 ? "not_detected" : "unknown";
+  }
+  if (item === "hsa") {
+    if (slips.some((d) => docHasPositive(d, ["hsa_contribution", "ytd_hsa"]))) return "from_payslip";
+    const stmts = docs.filter((d) => d.docType === "hsa_statement");
+    if (stmts.some((d) => docHasPositive(d, ["employee_contribution", "employer_contribution", "total_contributions"]))) return "from_statement";
+    return slips.length > 0 || stmts.length > 0 ? "not_detected" : "unknown";
+  }
+  if (item === "529") {
+    const stmts = docs.filter((d) => d.docType === "529_statement");
+    if (stmts.some((d) => docHasPositive(d, ["monthly_contribution", "contributions_total"]))) return "from_statement";
+    return stmts.length > 0 ? "not_detected" : "unknown";
+  }
+  // Employer match: payslip first, then an owned-or-any 401(k)
+  // statement's employer line (detection only - the per-adult
+  // resolution below is owner-strict, AC-D3).
+  if (slips.some((d) => docHasPositive(d, ["k401_employer_match", "ytd_k401_employer_match"]))) return "from_payslip";
+  const k401 = docs.filter((d) => d.docType === "401k_statement");
+  if (k401.some((d) => docHasPositive(d, ["employer_contribution_period", "employer_contributions"]))) return "from_statement";
+  return slips.length > 0 || k401.length > 0 ? "not_detected" : "unknown";
+}
+
+/** Whole months covered by a statement's own period fields, when the
+ * extractor captured them: an explicit months figure, a start/end
+ * pair, or a period range string ("07/01/2026 - 09/30/2026"). Null
+ * when the statement does not say how long its period is - a total
+ * without a period length is detected, never paced by guessing. */
+export function statementPeriodMonths(fields: Record<string, string>): number | null {
+  const explicit = Number(String(fields["statement_period_months"] ?? "").replace(/[^0-9.]/g, ""));
+  if (Number.isFinite(explicit) && explicit > 0) return Math.round(explicit);
+  const parseDate = (s: string | undefined): number | null => {
+    if (!s) return null;
+    const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    if (iso) return Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+    const us = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);
+    if (us) return Date.UTC(Number(us[3]), Number(us[1]) - 1, Number(us[2]));
+    return null;
+  };
+  const monthsBetween = (a: number, b: number): number | null => {
+    if (b <= a) return null;
+    const months = Math.round((b - a) / (30.4375 * 86400000));
+    return months >= 1 ? months : null;
+  };
+  const start = parseDate(fields["statement_period_start"]);
+  const end = parseDate(fields["statement_period_end"]);
+  if (start !== null && end !== null) return monthsBetween(start, end);
+  const range = fields["statement_period"];
+  if (range) {
+    const dates = range.match(/\d{1,2}\/\d{1,2}\/\d{4}|\d{4}-\d{2}-\d{2}/g);
+    if (dates && dates.length >= 2) {
+      const a = parseDate(dates[0]);
+      const b = parseDate(dates[dates.length - 1]);
+      if (a !== null && b !== null) return monthsBetween(a, b);
+    }
+  }
+  return null;
+}
+
+export interface StatementMatch {
+  /** Monthly employer match derived from the statement's period
+   * total; null when the total was detected but the statement does
+   * not state its period length, so no pace may be derived. */
+  monthly: number | null;
+  periodTotal: number;
+  months: number | null;
+  capturedOn: string | null;
+}
+
+/** The freshest 401(k) statement OWNED by a member that carries an
+ * employer-contribution figure (spec section F: the statement is
+ * the fallback source for employer match when the payslip has
+ * none). AC-D3: a statement with no identified owner is never used
+ * for a person - no guessing whose match it is. */
+export function k401StatementMatchFor(docs: SsDocLike[], memberId: string): StatementMatch | null {
+  let best: (StatementMatch & { capturedKey: string }) | null = null;
+  for (const d of docs) {
+    if (d.docType !== "401k_statement" || d.ownerMemberId !== memberId || !d.fields) continue;
+    const total = docFieldNum(d, "employer_contribution_period") ?? docFieldNum(d, "employer_contributions");
+    if (total === null || total <= 0) continue;
+    const key = d.capturedOn ?? "";
+    if (!best || key >= best.capturedKey) {
+      const months = statementPeriodMonths(d.fields);
+      best = {
+        monthly: months !== null ? Math.round((total / months) * 100) / 100 : null,
+        periodTotal: total,
+        months,
+        capturedOn: d.capturedOn ?? null,
+        capturedKey: key,
+      };
+    }
+  }
+  if (!best) return null;
+  const { monthly, periodTotal, months, capturedOn } = best;
+  return { monthly, periodTotal, months, capturedOn };
+}
+
+export interface MatchResolution {
+  monthly: number;
+  status: ValueStatus;
+  /** The exact source line for details surfaces, e.g. "From
+   * statement" (the amount line above it carries the figure). */
+  sourceLabel: string;
+  statementOn: string | null;
+  /** A statement shows an employer total but not its period
+   * length: detected, honestly not paced. */
+  detectedNotPaced: boolean;
+}
+
+/** Employer match resolution (spec section F order): the latest
+ * regular payslip with a match line wins (AC-D1); else the member's
+ * own 401(k) statement (AC-D2, GT6); else a user-confirmed figure;
+ * else unknown - never $0 dressed as proof (AC-D4). A payslip that
+ * prints a $0 match line IS a confirmed zero (from_payslip). */
+export function employerMatchFor(input: {
+  payslipMonthly: number | null;
+  statement: StatementMatch | null;
+  userMonthly?: number | null;
+  /** True when payslips or 401(k) statements exist to be searched:
+   * the item was looked for and not found (Not detected), as
+   * opposed to no document existing at all (Unknown). */
+  relevantDocsExist?: boolean;
+}): MatchResolution {
+  if (input.payslipMonthly !== null) {
+    return { monthly: input.payslipMonthly, status: "from_payslip", sourceLabel: "from your payslips", statementOn: null, detectedNotPaced: false };
+  }
+  if (input.statement && input.statement.monthly !== null && input.statement.monthly > 0) {
+    return { monthly: input.statement.monthly, status: "from_statement", sourceLabel: "From statement", statementOn: input.statement.capturedOn, detectedNotPaced: false };
+  }
+  if (input.userMonthly != null && input.userMonthly > 0) {
+    return { monthly: input.userMonthly, status: "user_confirmed", sourceLabel: "entered by you", statementOn: null, detectedNotPaced: false };
+  }
+  if (input.statement) {
+    return { monthly: 0, status: "not_detected", sourceLabel: "on your 401(k) statement - period length not shown", statementOn: input.statement.capturedOn, detectedNotPaced: true };
+  }
+  if (input.relevantDocsExist) {
+    return { monthly: 0, status: "not_detected", sourceLabel: "Not detected", statementOn: null, detectedNotPaced: false };
+  }
+  return { monthly: 0, status: "unknown", sourceLabel: "Unknown", statementOn: null, detectedNotPaced: false };
+}
+
+// --- The directional outlook engine ---------------------------------
+
+export interface DirectionalAdult {
+  name: string;
+  currentAge: number | null;
+  retireAge: number;
+  /** Planned years until this adult retires (0 when their age is
+   * unknown, mirroring the household projection: no date of birth,
+   * no timed contributions). */
+  yearsToRetire: number;
+  startingBalance: number;
+  /** The full monthly contribution stream: employee pace + employer
+   * match pace, already resolved by the caller. */
+  monthly: number;
+}
+
+export interface DirectionalInput {
+  adults: DirectionalAdult[];
+  /** The active spending figure, today's dollars (the placeholder
+   * at accuracy X - the caller flags it; the engine only computes). */
+  spendingAnnual: number;
+  /** Dependable income known today (Social Security + pension +
+   * other), today's dollars per year. */
+  dependableAnnual: number;
+  withdrawalRate: number; // 0.04 Balanced
+  inflationPct: number; // 2.5 default
+  /** Household monthly net for the action plausibility rule (10%
+   * of net). 0 = unknown: the saving lever then cannot be verified
+   * as plausible and the selection falls through, per spec. */
+  monthlyNet: number;
+}
+
+export interface ReachAges { r7: number | null; r6: number | null; r5: number | null }
+
+export type OutlookRating = "on_track" | "close" | "needs_improvement" | "off_track" | "not_enough_data";
+
+export const OUTLOOK_RATING_LABEL: Record<OutlookRating, string> = {
+  on_track: "On track",
+  close: "Close to target",
+  needs_improvement: "Needs improvement",
+  off_track: "Current path misses target",
+  not_enough_data: "Not enough data",
+};
+
+/** RequiredPortfolio(t) (spec section B): the spending the portfolio
+ * must fund after dependable income, divided by the withdrawal
+ * rate. Today's dollars, like every figure in this engine. */
+export function requiredPortfolioFor(spendingAnnual: number, dependableAnnual: number, withdrawalRate: number, spendingCutAnnual = 0): number {
+  const need = Math.max(0, spendingAnnual - Math.max(0, spendingCutAnnual) - dependableAnnual);
+  return withdrawalRate > 0 ? need / withdrawalRate : 0;
+}
+
+/** The reference adult (spec section 5): the adult whose retirement
+ * DATE is earliest - their age is the one the card expresses.
+ * Requested is their planned retirement age; Current path is the
+ * range of ages at which THAT person can retire without breaking
+ * the household plan (everyone else keeps their planned date, and
+ * the household is valued at the common later date). Only adults
+ * with a known age can anchor an age; ties go to the first adult. */
+export function referenceAdultIndex(adults: DirectionalAdult[]): number {
+  let best = -1;
+  for (let i = 0; i < adults.length; i++) {
+    if (adults[i].currentAge === null) continue;
+    if (best === -1 || adults[i].yearsToRetire < adults[best].yearsToRetire) best = i;
+  }
+  return best;
+}
+
+/** Household assets at the common horizon, in today's dollars, when
+ * the reference adult retires refYears from now and everyone else
+ * keeps their planned date (the three-phase timeline of spec
+ * section D, valued the way the household projection already values
+ * it: contributions stop at each adult's own date, balances keep
+ * growing to the common date - projectToCommonDate semantics). */
+export function directionalProjected(input: DirectionalInput, refIdx: number, refYears: number, returnPct: number, addedMonthly = 0): number {
+  const yearsArr = input.adults.map((a, i) => (i === refIdx ? Math.max(0, refYears) : Math.max(0, a.yearsToRetire)));
+  const horizon = yearsArr.reduce((mx, y) => Math.max(mx, y), 0);
+  let nominal = 0;
+  input.adults.forEach((a, i) => {
+    nominal += projectToCommonDate(a.startingBalance, a.monthly + (i === refIdx ? addedMonthly : 0), yearsArr[i], horizon, returnPct);
+  });
+  return deflateToToday(nominal, horizon, input.inflationPct);
+}
+
+/** ReachAge(r) (spec sections B/3): the earliest age of the
+ * reference adult at which projected household assets reach the
+ * required portfolio, searching whole years from today to age 80.
+ * Null when the goal is not reached by 80 (displayed as 80+). */
+export function reachAgeFor(input: DirectionalInput, refIdx: number, returnPct: number, opts?: { addedMonthly?: number; spendingCutAnnual?: number }): number | null {
+  const ref = input.adults[refIdx];
+  if (ref.currentAge === null) return null;
+  const required = requiredPortfolioFor(input.spendingAnnual, input.dependableAnnual, input.withdrawalRate, opts?.spendingCutAnnual ?? 0);
+  if (required <= 0) return ref.currentAge; // dependable income covers the target on its own
+  const maxYears = Math.max(0, 80 - ref.currentAge);
+  for (let y = 0; y <= maxYears; y++) {
+    if (directionalProjected(input, refIdx, y, returnPct, opts?.addedMonthly ?? 0) >= required) return ref.currentAge + y;
+  }
+  return null;
+}
+
+export function reachAgesFor(input: DirectionalInput, refIdx: number, opts?: { addedMonthly?: number; spendingCutAnnual?: number }): ReachAges {
+  return {
+    r7: reachAgeFor(input, refIdx, 7, opts),
+    r6: reachAgeFor(input, refIdx, 6, opts),
+    r5: reachAgeFor(input, refIdx, 5, opts),
+  };
+}
+
+/** The displayed range: ReachAge(7%) to ReachAge(5%), whole years,
+ * 80+ when a scenario never reaches (GT4). A single age when the
+ * band collapses. */
+export function reachRangeLabel(reach: ReachAges): string {
+  if (reach.r7 === null) return "80+";
+  if (reach.r5 === null) return `${reach.r7}-80+`;
+  if (reach.r7 === reach.r5) return `${reach.r7}`;
+  return `${reach.r7}-${reach.r5}`;
+}
+
+/** The outlook rating (spec section C), driven by how many of the
+ * three scenarios reach the desired age on time. No probability
+ * percentages, ever - there is no Monte Carlo behind this. The
+ * golden tests pin the boundary readings: when NO scenario is on
+ * time, the earliest scenario's lateness grades the result (1 year
+ * late is still Close; 2-4 years is Needs improvement; more, or
+ * never, is Off track) - GT3 (reach 64/66/69 against a desired 60)
+ * is Needs improvement by exactly this reading. */
+export function outlookRating(desiredAge: number, reach: ReachAges): OutlookRating {
+  const ages = [reach.r7, reach.r6, reach.r5];
+  const onTime = ages.filter((a) => a !== null && a <= desiredAge).length;
+  if (onTime === 3) return "on_track";
+  const earliest = ages.reduce<number | null>((min, a) => (a === null ? min : min === null ? a : Math.min(min, a)), null);
+  const earliestLateness = earliest === null ? Number.POSITIVE_INFINITY : earliest - desiredAge;
+  if (onTime === 2 || earliestLateness === 1) return "close";
+  if (onTime === 1 || (earliestLateness >= 2 && earliestLateness <= 4)) return "needs_improvement";
+  return "off_track";
+}
+
+export interface RecommendedAction {
+  kind: "none" | "save" | "delay" | "spend" | "combo";
+  text: string;
+  impactText: string;
+  addedMonthly: number;
+  yearsLater: number;
+  spendingCutAnnual: number;
+}
+
+export interface DirectionalOutlook {
+  sufficient: boolean;
+  referenceIndex: number;
+  desiredAge: number;
+  reach: ReachAges;
+  rangeLabel: string;
+  rating: OutlookRating;
+  ratingLabel: string;
+  requiredPortfolio: number;
+  projectedAtDesired: number;
+  gapAtDesired: number;
+  levers: { saveMonthly: number | null; yearsLater: number | null; spendingCutAnnual: number };
+  action: RecommendedAction;
+}
+
+const NOT_ENOUGH: DirectionalOutlook = {
+  sufficient: false,
+  referenceIndex: -1,
+  desiredAge: 0,
+  reach: { r7: null, r6: null, r5: null },
+  rangeLabel: "",
+  rating: "not_enough_data",
+  ratingLabel: OUTLOOK_RATING_LABEL.not_enough_data,
+  requiredPortfolio: 0,
+  projectedAtDesired: 0,
+  gapAtDesired: 0,
+  levers: { saveMonthly: null, yearsLater: null, spendingCutAnnual: 0 },
+  action: { kind: "none", text: "", impactText: "", addedMonthly: 0, yearsLater: 0, spendingCutAnnual: 0 },
+};
+
+/** The directional outlook (spec sections B, C, E). Sufficient data
+ * means: a requested retirement age exists AND the household has
+ * SOME accumulation evidence - a balance or a contribution pace.
+ * (The owner's own fixture state is pace-only: five payslips, no
+ * balances yet - the outlook must still answer there, with balances
+ * honestly $0, exactly as the household projection already treats
+ * them. With neither balance nor pace there is no path to draw, and
+ * the answer is Not enough data - never an invented range.) */
+export function directionalOutlook(input: DirectionalInput, moneyFmt: (n: number) => string): DirectionalOutlook {
+  const refIdx = referenceAdultIndex(input.adults);
+  if (refIdx === -1) return NOT_ENOUGH;
+  const ref = input.adults[refIdx];
+  const hasBalance = input.adults.some((a) => a.startingBalance > 0);
+  const hasPace = input.adults.some((a) => a.monthly > 0);
+  if (!hasBalance && !hasPace) return NOT_ENOUGH;
+  const desiredAge = ref.retireAge;
+  const desiredYears = Math.max(0, ref.yearsToRetire);
+  const reach = reachAgesFor(input, refIdx);
+  const rangeLabel = reachRangeLabel(reach);
+  const rating = outlookRating(desiredAge, reach);
+  const required = requiredPortfolioFor(input.spendingAnnual, input.dependableAnnual, input.withdrawalRate);
+  const projectedAtDesired = directionalProjected(input, refIdx, desiredYears, 6);
+  const gap = Math.max(0, required - projectedAtDesired);
+
+  // The three levers (spec section E).
+  // A: minimal added monthly saving (binary search, $0-$20,000 in
+  // $25 steps) that makes ReachAge(6%) reach the desired age. Null
+  // when even the cap cannot do it.
+  const reachesWith = (added: number) => {
+    const age = reachAgeFor(input, refIdx, 6, { addedMonthly: added });
+    return age !== null && age <= desiredAge;
+  };
+  let saveMonthly: number | null = null;
+  if (reachesWith(0)) saveMonthly = 0;
+  else if (reachesWith(20000)) {
+    let lo = 0;
+    let hi = 800; // in $25 steps
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (reachesWith(mid * 25)) hi = mid; else lo = mid + 1;
+    }
+    saveMonthly = lo * 25;
+  }
+  // B: delay to the base reach age.
+  const yearsLater = reach.r6 !== null && reach.r6 > desiredAge ? reach.r6 - desiredAge : null;
+  // C: the spending reduction that closes the gap at the desired
+  // date by construction (gap x withdrawal rate).
+  const spendingCut = Math.round(gap * input.withdrawalRate);
+
+  const rangeWith = (opts: { addedMonthly?: number; spendingCutAnnual?: number }) => reachRangeLabel(reachAgesFor(input, refIdx, opts));
+  const impactFrom = (newLabel: string) =>
+    newLabel !== rangeLabel
+      ? `Estimated current path improves from ${rangeLabel} to ${newLabel}.`
+      : `This reaches the goal by age ${desiredAge} on the base (6%) scenario.`;
+
+  let action: RecommendedAction;
+  if (reach.r6 !== null && reach.r6 <= desiredAge) {
+    action = { kind: "none", text: "No action needed - review once a year", impactText: "", addedMonthly: 0, yearsLater: 0, spendingCutAnnual: 0 };
+  } else if (saveMonthly !== null && saveMonthly > 0 && input.monthlyNet > 0 && saveMonthly < 0.1 * input.monthlyNet) {
+    action = {
+      kind: "save",
+      text: `Save about ${moneyFmt(saveMonthly)} more per month`,
+      impactText: impactFrom(rangeWith({ addedMonthly: saveMonthly })),
+      addedMonthly: saveMonthly, yearsLater: 0, spendingCutAnnual: 0,
+    };
+  } else if (yearsLater !== null && yearsLater <= 2) {
+    action = {
+      kind: "delay",
+      text: `Retire about ${yearsLater} year${yearsLater === 1 ? "" : "s"} later, at ${reach.r6}`,
+      impactText: `The current path (${rangeLabel}) reaches the goal when retirement moves to ${reach.r6} - the path itself does not change.`,
+      addedMonthly: 0, yearsLater, spendingCutAnnual: 0,
+    };
+  } else if (spendingCut > 0 && spendingCut <= 0.1 * input.spendingAnnual) {
+    action = {
+      kind: "spend",
+      text: `Reduce retirement spending by about ${moneyFmt(spendingCut)} per year`,
+      impactText: impactFrom(rangeWith({ spendingCutAnnual: spendingCut })),
+      addedMonthly: 0, yearsLater: 0, spendingCutAnnual: spendingCut,
+    };
+  } else {
+    // The combination (AC-C6): the extra saving that, together with
+    // retiring yearsLater later (or at the age-80 model cap when
+    // the base scenario never reaches), reaches the goal. If the
+    // delay alone does it, the action is the delay, stated plainly.
+    const delayYears = yearsLater ?? Math.max(0, 80 - desiredAge);
+    const comboReaches = (added: number) => {
+      const age = reachAgeFor(input, refIdx, 6, { addedMonthly: added });
+      return age !== null && age <= desiredAge + delayYears;
+    };
+    let comboSave: number | null = null;
+    if (comboReaches(0)) comboSave = 0;
+    else if (comboReaches(20000)) {
+      let lo = 0;
+      let hi = 800;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (comboReaches(mid * 25)) hi = mid; else lo = mid + 1;
+      }
+      comboSave = lo * 25;
+    }
+    if (comboSave === 0 && yearsLater !== null) {
+      action = {
+        kind: "delay",
+        text: `Retire about ${yearsLater} year${yearsLater === 1 ? "" : "s"} later, at ${reach.r6}`,
+        impactText: `The current path (${rangeLabel}) reaches the goal when retirement moves to ${reach.r6} - the path itself does not change.`,
+        addedMonthly: 0, yearsLater, spendingCutAnnual: 0,
+      };
+    } else if (comboSave !== null && comboSave > 0) {
+      action = {
+        kind: "combo",
+        text: `Save about ${moneyFmt(comboSave)} more per month and retire about ${delayYears} year${delayYears === 1 ? "" : "s"} later`,
+        impactText: impactFrom(rangeWith({ addedMonthly: comboSave })),
+        addedMonthly: comboSave, yearsLater: delayYears, spendingCutAnnual: 0,
+      };
+    } else if (spendingCut > 0) {
+      // Last resort: the spending lever is the only finite one left
+      // (even $20,000/month more and retiring at 80 do not reach).
+      // Its impact is real by construction: cutting the target by
+      // the gap x the withdrawal rate closes the gap at the
+      // desired date.
+      action = {
+        kind: "spend",
+        text: `Reduce retirement spending by about ${moneyFmt(spendingCut)} per year`,
+        impactText: impactFrom(rangeWith({ spendingCutAnnual: spendingCut })),
+        addedMonthly: 0, yearsLater: 0, spendingCutAnnual: spendingCut,
+      };
+    } else {
+      action = { kind: "none", text: "No single action closes this gap yet - add the missing inputs to sharpen the forecast", impactText: "", addedMonthly: 0, yearsLater: 0, spendingCutAnnual: 0 };
+    }
+  }
+
+  return {
+    sufficient: true,
+    referenceIndex: refIdx,
+    desiredAge,
+    reach,
+    rangeLabel,
+    rating,
+    ratingLabel: OUTLOOK_RATING_LABEL[rating],
+    requiredPortfolio: Math.round(required),
+    projectedAtDesired: Math.round(projectedAtDesired),
+    gapAtDesired: Math.round(gap),
+    levers: { saveMonthly, yearsLater, spendingCutAnnual: spendingCut },
+    action,
+  };
+}
+
 /** Monthly contribution needed to reach a target from a balance in a
  * given number of years (the inverse of projectValue). */
 export function requiredMonthly(balance: number, target: number, years: number, annualReturnPct: number): number {
