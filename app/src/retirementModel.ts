@@ -9,6 +9,7 @@
 import {
   adultStartingBalance,
   ageOn,
+  biggestOpportunityLine,
   chooseSpending,
   deflateToToday,
   directionalOutlook,
@@ -21,10 +22,12 @@ import {
   projectValue,
   requiredMonthly,
   retirementAccuracy,
+  retirementTimelineModel,
   ssForMember,
   WITHDRAWAL_RATES,
   type DirectionalOutlook,
   type MatchResolution,
+  type RetirementTimeline,
   type StatementMatch,
 } from "./goals.ts";
 import type { Payslip401k, PayslipForecast } from "./payslips.ts";
@@ -100,6 +103,13 @@ export interface RetirementModel {
    * adults at all - directionalOutlook itself reports
    * sufficient:false for the not-enough-data state). */
   directional: DirectionalOutlook | null;
+  /** Round 53: the visual timeline model for the X card face and
+   * the details surfaces (null unless the directional outlook has
+   * enough data to draw). Chips only from data the model has. */
+  timeline: RetirementTimeline | null;
+  /** Round 53: the X face's one opportunity line, composed from the
+   * accuracy missing list (null when nothing is missing). */
+  opportunityLine: string | null;
 }
 
 export function computeRetirementModel(input: {
@@ -274,6 +284,52 @@ export function computeRetirementModel(input: {
       }, moneyFmt)
     : null;
 
+  // Round 53: the X face's opportunity line and the visual
+  // timeline. Chips only from data the model actually has: a Social
+  // Security chip per adult with a figure on file, the mortgage
+  // chip when the household data says the mortgage ends, a college
+  // chip per child whose college end year can be derived.
+  const opportunityLine = biggestOpportunityLine(accuracy.missing);
+  const timeline = (() => {
+    if (!directional || !directional.sufficient || directional.referenceIndex < 0) return null;
+    const refAge = adultOutlook[directional.referenceIndex]?.age;
+    if (refAge === null || refAge === undefined) return null;
+    const tlAdults: { name: string; currentAge: number; retireAge: number }[] = [];
+    let refIdx = -1;
+    adultOutlook.forEach((a, i) => {
+      if (a.age === null) return;
+      if (i === directional.referenceIndex) refIdx = tlAdults.length;
+      tlAdults.push({ name: a.m.name || (a.m.role === "self" ? "You" : "Spouse"), currentAge: a.age, retireAge: a.m.retireAge || 67 });
+    });
+    if (refIdx < 0) return null;
+    const ssClaimAges = adults
+      .map((m, i) => (ssPerAdult[i] && ssPerAdult[i].annual > 0 ? m.ssClaimAge || 67 : null))
+      .filter((v): v is number => v !== null);
+    const mortgageEnds = g.exceptions.mortgageAtRetirement === "ends" || g.lifestyle.states["housing"] === "ends";
+    const thisYear = Number(today.slice(0, 4));
+    const collegeEnds: { label: string; age: number }[] = [];
+    for (const child of state.family) {
+      if (child.role !== "child") continue;
+      let endYear: number | null = null;
+      if (child.studentNow && (child.yearsLeftInCollege || 0) > 0) endYear = thisYear + (child.yearsLeftInCollege || 0);
+      else if ((child.collegeStartYear || 0) > 0) endYear = (child.collegeStartYear || 0) + (child.eduDurationYears || 4);
+      else if (child.dob) {
+        const by = Number(child.dob.slice(0, 4));
+        if (by > 1900) endYear = by + 18 + (child.eduDurationYears || 4);
+      }
+      if (endYear !== null) collegeEnds.push({ label: `College ends ${endYear}`, age: refAge + (endYear - thisYear) });
+    }
+    return retirementTimelineModel({
+      adults: tlAdults,
+      referenceIndex: refIdx,
+      reach: directional.reach,
+      rangeLabel: directional.rangeLabel,
+      ssClaimAges,
+      mortgageEndsAge: mortgageEnds ? directional.desiredAge : null,
+      collegeEnds,
+    });
+  })();
+
   return {
     adults, adultOutlook, incomeBasis, budgetTotalR, spendingChoice, spendingTier, lifestyleConfirmed,
     spendingFromBudget, spendingSet, spendingFromDefault, spendingAnnual, ssPerAdult, ssAnnualTotal,
@@ -282,5 +338,6 @@ export function computeRetirementModel(input: {
     realReturnPct, hhShort, hhReqMo, accuracy, projDelay, delayReadiness, showSensitivity,
     futureNeed, supportAnnual, accuracyLine, coveredByDependable, retHeadline, spendingKnown,
     personalizeParts, personalizeSentence, phases, updatedLabel, monthlyNet, directional,
+    timeline, opportunityLine,
   };
 }

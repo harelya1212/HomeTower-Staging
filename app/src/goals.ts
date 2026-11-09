@@ -600,8 +600,14 @@ function docHasPositive(d: SsDocLike, keys: string[]): boolean {
  * and "unknown" when no relevant document exists yet. A value the
  * USER typed is not this helper's business - typed values are real
  * values (user_confirmed), including a typed 0. */
-export function docEvidenceStatus(docs: SsDocLike[], item: "espp" | "hsa" | "529" | "match"): ValueStatus {
+export function docEvidenceStatus(docs: SsDocLike[], item: "espp" | "hsa" | "529" | "match" | "payroll_taxes"): ValueStatus {
   const slips = docs.filter((d) => d.docType === "payslip");
+  if (item === "payroll_taxes") {
+    // Payroll taxes live on the payslip itself: federal, state and
+    // Medicare withholding lines, current or year-to-date.
+    if (slips.some((d) => docHasPositive(d, ["federal_withheld", "ytd_federal_withheld", "state_withheld", "ytd_state_withheld", "medicare_withheld", "ytd_medicare_withheld"]))) return "from_payslip";
+    return slips.length > 0 ? "not_detected" : "unknown";
+  }
   if (item === "espp") {
     if (slips.some((d) => docHasPositive(d, ["espp_contribution", "ytd_espp"]))) return "from_payslip";
     return slips.length > 0 ? "not_detected" : "unknown";
@@ -1065,6 +1071,230 @@ export function directionalOutlook(input: DirectionalInput, moneyFmt: (n: number
     levers: { saveMonthly, yearsLater, spendingCutAnnual: spendingCut },
     action,
   };
+}
+
+// ---------------------------------------------------------------------------
+// ROUND 53 - Visual status card, retirement timeline, sharpness
+// gating, provenance everywhere (Copilot's focused feedback on round
+// 52's device output). The round-52 engine math stands untouched:
+// everything here is presentation - what may be SHOWN at each
+// accuracy level, with what wording, and where each displayed value
+// came from. Unknown is never zero, here or anywhere else.
+// ---------------------------------------------------------------------------
+
+/** Display color keys shared by the status line and the timeline
+ * band - the same four verdict colors the gauges already use. */
+export type StatusColorKey = "green" | "yellow" | "orange" | "red";
+
+export function ratingColorKey(rating: OutlookRating): StatusColorKey {
+  switch (rating) {
+    case "on_track": return "green";
+    case "close": return "yellow";
+    case "needs_improvement": return "orange";
+    default: return "red";
+  }
+}
+
+/** The status shown on the Home card FACE (round 53, item 3). The
+ * engine rating is never changed; only the FACE softens the harshest
+ * verdict while the forecast is still an early estimate (accuracy X):
+ * an off-track rating there reads "Too early to confirm", because key
+ * inputs are still missing by definition at X. Everywhere else -
+ * details, Scenarios, and the face at X+/X++ - the computed label
+ * shows as computed. */
+export function faceStatusFor(level: RetirementAccuracyLevel, rating: OutlookRating, desiredAge: number): { label: string; colorKey: StatusColorKey; support: string | null } {
+  if (level === "X" && rating === "off_track") {
+    return {
+      label: "Too early to confirm",
+      colorKey: "yellow",
+      support: `Preliminary models do not yet support age ${desiredAge}, but key retirement inputs are still missing.`,
+    };
+  }
+  return { label: OUTLOOK_RATING_LABEL[rating], colorKey: ratingColorKey(rating), support: null };
+}
+
+/** The one opportunity line on the X face (round 53, item 1), composed
+ * from the accuracy missing list so it stays truthful for any
+ * household: the first two missing inputs, in the sentence pattern
+ * "Biggest opportunity: personalize spending + Social Security."
+ * Returns null when nothing is missing. */
+export function biggestOpportunityLine(missing: string[]): string | null {
+  const parts: string[] = [];
+  for (const m of missing) {
+    if (/spending/i.test(m)) parts.push("spending");
+    else if (/social security/i.test(m)) parts.push("Social Security");
+    else if (/pension|dependable/i.test(m)) parts.push("pension and reliable income");
+    if (parts.length === 2) break;
+  }
+  if (parts.length === 0) return null;
+  return `Biggest opportunity: personalize ${parts.join(" + ")}. Current estimate is based on incomplete data.`;
+}
+
+// ---------------------------------------------------------------------------
+// Accuracy controls sharpness (round 53, item 4). A precise dollar
+// prescription - "$X/month more", "work N years longer" AS a
+// recommendation - is earned only when the forecast is personalized:
+//   X   - no lever figures at all outside the age range;
+//   X+  - the recommended SAVINGS CHANGE figure is allowed (plus
+//         projected portfolio, target portfolio, approximate gap);
+//   X++ - full precise prescriptions.
+// Delay and spending prescriptions stay qualitative until X++.
+// ---------------------------------------------------------------------------
+
+export type PrescriptionLevel = "none" | "savings" | "full";
+
+export function prescriptionLevel(level: RetirementAccuracyLevel): PrescriptionLevel {
+  return level === "X" ? "none" : level === "X+" ? "savings" : "full";
+}
+
+/** The recommendation text a surface may show at this accuracy level,
+ * or null when no prescription text may appear. The engine's action
+ * is never altered - only its display is gated. */
+export function recommendedActionText(action: RecommendedAction, level: RetirementAccuracyLevel): string | null {
+  if (action.kind === "none") return null;
+  const p = prescriptionLevel(level);
+  if (p === "none") return null;
+  if (p === "savings") return action.kind === "save" ? action.text : null;
+  return action.text;
+}
+
+// ---------------------------------------------------------------------------
+// Provenance badges (round 53, item 6). One subtle uppercase badge
+// vocabulary for every surface: PAYSLIP / STATEMENT / USER / ESTIMATE
+// when a value has a source; "Not detected" when documents exist but
+// the item was not found in them; "Unknown" when there is no document
+// context at all. A user-typed value - including a typed zero - is
+// USER: a real value, never relabelled.
+// ---------------------------------------------------------------------------
+
+export function valueStatusBadge(status: ValueStatus): string {
+  switch (status) {
+    case "from_payslip": return "PAYSLIP";
+    case "from_statement": return "STATEMENT";
+    case "user_confirmed": case "confirmed": return "USER";
+    case "estimated": return "ESTIMATE";
+    case "not_detected": return "Not detected";
+    case "stale": return "Stale";
+    default: return "Unknown";
+  }
+}
+
+/** Evidence for one Lifestyle group-2 (savings / work-cost) row key.
+ * 401(k), HSA, ESPP, 529 and payroll taxes are document-backed;
+ * work & commuting, college support and mortgage ending have no
+ * document source in the app today, so they are Not detected when
+ * documents exist and Unknown when none do - never zero. */
+export function group2EvidenceStatus(docs: SsDocLike[], key: string): ValueStatus {
+  switch (key) {
+    case "k401": {
+      const slips = docs.filter((d) => d.docType === "payslip");
+      if (slips.some((d) => docHasPositive(d, ["k401_contribution", "ytd_k401"]))) return "from_payslip";
+      return slips.length > 0 ? "not_detected" : "unknown";
+    }
+    case "hsa_contrib": return docEvidenceStatus(docs, "hsa");
+    case "espp": return docEvidenceStatus(docs, "espp");
+    case "contrib529": return docEvidenceStatus(docs, "529");
+    case "payroll_taxes": return docEvidenceStatus(docs, "payroll_taxes");
+    default: return docs.length > 0 ? "not_detected" : "unknown";
+  }
+}
+
+export interface RowProvenance {
+  /** Subtle source badge when the shown value has one. */
+  badge: string | null;
+  /** The honest state word when there is no value and no source. */
+  stateLabel: string | null;
+}
+
+/** Provenance for one editable group-2 row. `amount` is what the row
+ * currently shows; `derivedAnnual` is the document-derived annual
+ * figure for the same row (0 when the documents say nothing). */
+export function group2RowProvenance(input: { amount: number; derivedAnnual: number; evidence: ValueStatus }): RowProvenance {
+  const { amount, derivedAnnual, evidence } = input;
+  if (amount > 0) {
+    if (derivedAnnual > 0 && amount === derivedAnnual && (evidence === "from_payslip" || evidence === "from_statement" || evidence === "estimated")) {
+      return { badge: valueStatusBadge(evidence), stateLabel: null };
+    }
+    return { badge: "USER", stateLabel: null };
+  }
+  // A zero shown against positive document evidence is a deliberate
+  // user zero - USER, never Unknown.
+  if (derivedAnnual > 0) return { badge: "USER", stateLabel: null };
+  if (evidence === "from_payslip" || evidence === "from_statement" || evidence === "estimated") {
+    return { badge: valueStatusBadge(evidence), stateLabel: null };
+  }
+  return { badge: null, stateLabel: evidence === "not_detected" ? "Not detected" : "Unknown" };
+}
+
+// ---------------------------------------------------------------------------
+// The visual retirement timeline model (round 53, item 2). Pure data:
+// the component draws it with plain Views. Axis: from two years below
+// the youngest relevant age (current ages and desired ages) to 82,
+// the right end labelled "80+". Milestone chips come ONLY from data
+// the caller actually has - Medicare at 65 is an age fact and is
+// always present; everything else is passed in only when known.
+// ---------------------------------------------------------------------------
+
+export interface TimelineAdultInput { name: string; currentAge: number; retireAge: number }
+export interface TimelineChip { label: string; age: number }
+export interface TimelineRow { name: string; firstName: string; currentAge: number; desiredAge: number; isReference: boolean }
+export interface TimelineBand { startAge: number; endAge: number; label: string; unreached: boolean }
+
+export interface RetirementTimeline {
+  minAge: number;
+  /** Always 82 - the axis runs two years past 80 so "80+" has room. */
+  maxAge: number;
+  rows: TimelineRow[];
+  band: TimelineBand;
+  chips: TimelineChip[];
+  ticks: number[];
+}
+
+export function retirementTimelineModel(input: {
+  adults: TimelineAdultInput[];
+  referenceIndex: number;
+  reach: ReachAges;
+  rangeLabel: string;
+  /** One claim age per adult who HAS a Social Security figure. */
+  ssClaimAges: number[];
+  /** The reference adult's age when the mortgage ends, or null. */
+  mortgageEndsAge: number | null;
+  /** Label carries the year; age is the reference adult's age then. */
+  collegeEnds: TimelineChip[];
+}): RetirementTimeline | null {
+  if (input.adults.length === 0 || input.referenceIndex < 0 || input.referenceIndex >= input.adults.length) return null;
+  const maxAge = 82;
+  const minAge = Math.floor(Math.min(...input.adults.flatMap((a) => [a.currentAge, a.retireAge])) - 2);
+  const rows: TimelineRow[] = input.adults.map((a, i) => ({
+    name: a.name,
+    firstName: (a.name || "").trim().split(/\s+/)[0] || a.name,
+    currentAge: a.currentAge,
+    desiredAge: a.retireAge,
+    isReference: i === input.referenceIndex,
+  }));
+  const band: TimelineBand = input.reach.r7 === null
+    ? { startAge: 80, endAge: maxAge, label: "80+", unreached: true }
+    : {
+        startAge: input.reach.r7,
+        endAge: input.reach.r5 === null ? maxAge : input.reach.r5,
+        label: input.rangeLabel,
+        unreached: input.reach.r5 === null,
+      };
+  const raw: TimelineChip[] = [{ label: "Medicare 65", age: 65 }];
+  for (const claim of input.ssClaimAges) raw.push({ label: `Social Security ${claim}`, age: claim });
+  if (input.mortgageEndsAge !== null) raw.push({ label: `Mortgage ends ${input.mortgageEndsAge}`, age: input.mortgageEndsAge });
+  for (const c of input.collegeEnds) raw.push(c);
+  const seen = new Set<string>();
+  const chips: TimelineChip[] = [];
+  for (const c of raw) {
+    if (c.age < minAge || c.age > maxAge || seen.has(c.label)) continue;
+    seen.add(c.label);
+    chips.push(c);
+  }
+  chips.sort((a, b) => a.age - b.age);
+  const ticks: number[] = [];
+  for (let t = Math.ceil(minAge / 10) * 10; t <= maxAge; t += 10) ticks.push(t);
+  return { minAge, maxAge, rows, band, chips, ticks };
 }
 
 /** Monthly contribution needed to reach a target from a balance in a
