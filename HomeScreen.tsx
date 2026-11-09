@@ -74,11 +74,16 @@ export default function HomeScreen() {
 
   const snap = useMemo(() => {
     try {
-      return computeHouseholdTax(state.intake.filingStatus, effIncome, effFederalWh, effStateWh, state.ltcgIncome);
+      // Engine round 45: with payslips, the snapshot also runs the
+      // Additional Medicare reconciliation on the forecast's
+      // per-earner Medicare wages and Medicare withholding.
+      return computeHouseholdTax(state.intake.filingStatus, effIncome, effFederalWh, effStateWh, state.ltcgIncome, null, 0, 0, "AZ",
+        slipFc ? slipFc.earners.map((e) => e.projectedMedicareWages) : null,
+        slipFc ? slipFc.earners.map((e) => e.projectedMedicareWithheld) : null);
     } catch {
       return null;
     }
-  }, [state, effIncome, effFederalWh, effStateWh]);
+  }, [state, effIncome, effFederalWh, effStateWh, slipFc]);
 
   const findings = useMemo(() => householdFreshness(state.intake.documents, today), [state.intake.documents, today]);
   const candidates = useMemo(() => reminderCandidates(state.intake.documents, today), [state.intake.documents, today]);
@@ -293,13 +298,9 @@ export default function HomeScreen() {
       ? `Household position: the ${refundSide} refund covers the ${oweSide} bill, with ${money(combined)} left over.`
       : `Household position: the ${refundSide} refund does not cover the ${oweSide} bill - ${money(-combined)} still owed overall.`;
   })();
-  // Additional Medicare tax is not in the engine yet - the
-  // calculation breakdown names it with an estimate instead of
-  // hiding it (Copilot's manual model includes it; reconciliation,
-  // round 44).
-  const medicareWages = slipFc ? slipFc.projectedGross : effIncome;
-  const addMedThreshold = state.intake.filingStatus === "MFJ" ? 250000 : state.intake.filingStatus === "MFS" ? 125000 : 200000;
-  const addMedEstimate = Math.round(0.009 * Math.max(0, medicareWages - addMedThreshold));
+  // Additional Medicare is IN the engine since round 45 - liability,
+  // withholding credit and net all come from the snapshot; nothing
+  // is estimated in this screen anymore.
   // Provenance checklist for the confidence card: what the forecast
   // is actually based on, with dates, and what is still to come.
   const provenance: string[] = [];
@@ -371,6 +372,8 @@ export default function HomeScreen() {
             <Text style={styles.line}>{fed < 0 ? `At this pace you owe the IRS ${money(-fed)} - your target is a ${money(fedLow)} - ${money(fedHigh)} refund.` : fed < fedLow ? `A refund is coming - ${money(fedLow - fed)} below your ${money(fedLow)} - ${money(fedHigh)} target.` : fed > fedHigh ? `A refund is coming - ${money(fed - fedHigh)} above your ${money(fedLow)} - ${money(fedHigh)} target.` : `Right inside your ${money(fedLow)} - ${money(fedHigh)} target.`}</Text>
             <Text style={styles.actionLine}>{gaugeAction(fed, fedLow, fedHigh, "federal")}</Text>
             <Text style={styles.rangeLine}>{rangeFor(fed)}</Text>
+            {snap && !snap.medicareIncluded && <Text style={styles.rangeLine}>Before final Medicare reconciliation - add payslips in Documents and HomeTower runs the Additional Medicare calculation too.</Text>}
+            {snap && snap.medicareIncluded && slipFc && slipFc.medicareBasis === "estimated" && <Text style={styles.rangeLine}>Medicare is estimated from your pay for now - the calculation below says how.</Text>}
           </>
         ) : (
           <Text style={styles.line}>No income added yet - this is not a $0 refund, it is a blank. Upload a payslip in Documents and HomeTower projects your refund against your {money(fedLow)} - {money(fedHigh)} target.</Text>
@@ -524,10 +527,10 @@ export default function HomeScreen() {
             </View>
           </View>
           <View style={styles.taxRow}>
-            <Text style={styles.taxValue}>{money(snap.federalTax)}</Text>
+            <Text style={styles.taxValue}>{money(snap.totalFederalLiability)}</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.taxName}>Projected federal tax</Text>
-              <Text style={styles.taxNote}>For the whole year, before the withholding you already paid.</Text>
+              <Text style={styles.taxNote}>{snap.medicareIncluded ? "Income tax, NIIT and Additional Medicare combined, for the whole year - before the payments you already made." : "For the whole year, before the withholding you already paid."}</Text>
             </View>
           </View>
           <Pressable onPress={() => setShowCalc((v) => !v)}>
@@ -540,8 +543,21 @@ export default function HomeScreen() {
               <Text style={styles.calcRow}>Taxable income: {money(fedDetail.taxableIncome)}</Text>
               <Text style={styles.calcRow}>Federal income tax: {money(fedDetail.ordinaryTax + fedDetail.ltcgTax)}{fedDetail.ltcgTax > 0 ? ` (including ${money(fedDetail.ltcgTax)} on long-term capital gains)` : ""}</Text>
               <Text style={styles.calcRow}>Net investment income tax (NIIT): {money(snap.niit)}</Text>
+              <Text style={styles.calcRow}>NIIT base: net investment income subject to NIIT {money(snap.niitNiiSubject)}; MAGI above the threshold {money(snap.niitMagiExcess)}; the 3.8% runs on the lesser of the two, {money(snap.niitBase)}.{snap.niit === 0 ? snap.niitNiiSubject === 0 ? " That is why the NIIT is $0 here: no net investment income is in this forecast." : " That is why the NIIT is $0 here." : ""}</Text>
+              {snap.medicareIncluded && slipFc ? (
+                <>
+                  <Text style={styles.calcRow}>Additional Medicare tax: {money(snap.additionalMedicareLiability)} - 0.9% of Medicare wages above the joint threshold, on {money(slipFc.projectedMedicareWages)} of projected Medicare wages.</Text>
+                  <Text style={styles.calcRow}>Already withheld toward it (the part of Medicare withholding above the 1.45% base rate): -{money(snap.additionalMedicareWithheld)}</Text>
+                  <Text style={styles.calcRow}>Net Additional Medicare in this forecast: {money(snap.additionalMedicareNet)}</Text>
+                  <Text style={styles.calcRow}>{slipFc.medicareBasis === "read" ? "Medicare figures were read from your payslips." : "Your payslips do not show a Medicare line yet, so Medicare withholding is estimated from your pay at the statutory rates (1.45%, plus 0.9% over $200,000 for each earner). A slip that prints the Medicare line makes it exact."}</Text>
+                </>
+              ) : (
+                <Text style={styles.calcRow}>Not in this estimate yet: Additional Medicare tax - it is calculated from your payslips, so add the latest ones in Documents; and any credits.</Text>
+              )}
               <Text style={styles.calcRow}>{state.intake.state} state tax: {money(snap.stateTax)} - projected in the state gauge above; it is not part of the federal figure.</Text>
-              <Text style={styles.calcRow}>{addMedEstimate > 0 ? `Not in this estimate yet: Additional Medicare tax, about ${money(addMedEstimate)} on this year's wages, and any credits.` : "Not in this estimate yet: any credits."}</Text>
+              <Text style={styles.calcRow}>Total federal liability: {money(snap.totalFederalLiability)}</Text>
+              <Text style={styles.calcRow}>Total federal payments: {money(snap.totalFederalPayments)}{snap.medicareIncluded ? " (income-tax withholding plus the Additional Medicare withheld above)" : " (income-tax withholding)"}</Text>
+              <Text style={styles.calcRow}>{snap.federalRefundOwe >= 0 ? `Projected federal refund: ${money(snap.federalRefundOwe)} - the figure in the federal gauge above.` : `Projected federal amount owed: ${money(-snap.federalRefundOwe)} - the figure in the federal gauge above.`}</Text>
             </View>
           )}
         </View>

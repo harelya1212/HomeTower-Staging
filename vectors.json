@@ -1,0 +1,378 @@
+[
+ {
+  "id": "federal_mfj_200k",
+  "expect": {
+   "total_tax": 26340.0,
+   "taxable_income": 167800,
+   "marginal_rate": 0.22
+  }
+ },
+ {
+  "id": "federal_single_80k",
+  "expect": {
+   "total_tax": 8770.0
+  }
+ },
+ {
+  "id": "federal_mfj_ltcg",
+  "expect": {
+   "ltcg_tax": 7500.0,
+   "total_tax": 22840.0
+  }
+ },
+ {
+  "id": "niit",
+  "expect": {
+   "value": 760.0
+  }
+ },
+ {
+  "id": "az_gain",
+  "expect": {
+   "tax": 250.0
+  }
+ },
+ {
+  "id": "wash_sale",
+  "expect": {
+   "triggered": true,
+   "disallowed_loss": 1000.0,
+   "adjusted_basis_per_share": 175.0
+  }
+ },
+ {
+  "id": "taximpact_st",
+  "expect": {
+   "total_tax_impact": 735.0,
+   "savings_by_waiting": 210.0,
+   "days_until_long_term": 137
+  }
+ },
+ {
+  "id": "taximpact_carryforward",
+  "expect": {
+   "losses_applied": 1000,
+   "adjusted_gain": 2000.0
+  }
+ },
+ {
+  "id": "scenario_withholding",
+  "expect": {
+   "base_federal_tax": 21940.0,
+   "modified_federal_tax": 21940.0,
+   "federal_tax_delta": 0.0,
+   "base_refund_owe": 3060.0,
+   "modified_refund_owe": 5060.0,
+   "marginal_rate_pct": 22.0,
+   "action": "change_withholding",
+   "delta_amount": 2000
+  }
+ },
+ {
+  "id": "rsu_vest",
+  "expect": {
+   "ordinary_income": 50000.0,
+   "federal_withheld": 11000.0,
+   "projected_gap": 128.0
+  }
+ },
+ {
+  "id": "espp_disqual",
+  "expect": {
+   "ordinary_income_total": 1600.0,
+   "capital_gain_total": 1000.0,
+   "capital_is_long_term": false
+  }
+ },
+ {
+  "id": "espp_qual",
+  "expect": {
+   "ordinary_income_total": 600.0,
+   "capital_gain_total": 2000.0
+  }
+ },
+ {
+  "id": "fbar",
+  "expect": {
+   "required": true
+  }
+ },
+ {
+  "id": "f8938",
+  "expect": {
+   "required": true
+  }
+ },
+ {
+  "id": "ftc",
+  "expect": {
+   "credit_allowed": 3139.45,
+   "excess_credit": 1860.55
+  }
+ },
+ {
+  "id": "treaty_div",
+  "expect": {
+   "rate": 0.125
+  }
+ },
+ {
+  "id": "treaty_ss",
+  "expect": {
+   "overrides": false
+  }
+ },
+ {
+  "id": "freshness_payslip_stale",
+  "expect": {
+   "status": "stale",
+   "age_days": 37
+  }
+ },
+ {
+  "id": "confidence_perfect",
+  "expect": {
+   "score": 100
+  }
+ },
+ {
+  "id": "confidence_stale",
+  "expect": {
+   "score": 34
+  }
+ },
+ {
+  "id": "confidence_empty",
+  "expect": {
+   "score": 10
+  }
+ },
+ {
+  "id": "guidance_requests_minimal",
+  "expect": {
+   "count": 4,
+   "first_key": "prior_return",
+   "payslip_status": "missing"
+  }
+ },
+ {
+  "id": "guidance_requests_full",
+  "expect": {
+   "count": 13
+  }
+ },
+ {
+  "id": "guidance_shortcut_ok",
+  "expect": {
+   "provisional": true,
+   "consecutive_after": 1
+  }
+ },
+ {
+  "id": "guidance_shortcut_due",
+  "expect": {
+   "needs_document": true
+  }
+ },
+ {
+  "id": "guidance_shortcut_changed",
+  "expect": {
+   "needs_document": true,
+   "consecutive_after": 0
+  }
+ },
+ {
+  "id": "guidance_annual_nov",
+  "expect": {
+   "key": "november_window"
+  }
+ },
+ {
+  "id": "guidance_annual_jun",
+  "expect": {
+   "key": "june_review"
+  }
+ },
+ {
+  "id": "guidance_next_phase_wrap",
+  "expect": {
+   "month": 1,
+   "title": "January - Financial Reset"
+  }
+ },
+ {
+  "id": "guidance_action_calibration",
+  "expect": {
+   "confidence": "High (85/100)",
+   "has_return": true
+  }
+ },
+ {
+  "id": "guidance_action_below",
+  "expect": {
+   "why_has_amount": true
+  }
+ },
+ {
+  "id": "classify_w2",
+  "expect": {
+   "doc_type": "w2",
+   "level": "strong",
+   "score": 14
+  }
+ },
+ {
+  "id": "classify_payslip",
+  "expect": {
+   "doc_type": "payslip",
+   "level": "strong",
+   "score": 14
+  }
+ },
+ {
+  "id": "classify_1099b",
+  "expect": {
+   "doc_type": "1099b",
+   "level": "strong",
+   "score": 11
+  }
+ },
+ {
+  "id": "classify_prior_return",
+  "expect": {
+   "doc_type": "prior_return",
+   "level": "strong",
+   "score": 16
+  }
+ },
+ {
+  "id": "classify_401k",
+  "expect": {
+   "doc_type": "401k_statement",
+   "level": "strong",
+   "score": 13
+  }
+ },
+ {
+  "id": "classify_unknown",
+  "expect": {
+   "doc_type": "other",
+   "level": "unknown",
+   "score": 0
+  }
+ },
+ {
+  "id": "addmed_mfj_under_250k",
+  "expect": {
+   "liability": 0.0,
+   "withheld_credit": 0.0,
+   "net": 0.0
+  }
+ },
+ {
+  "id": "addmed_mfj_one_over_200k",
+  "expect": {
+   "liability": 1350.0,
+   "withheld_credit": 765.0,
+   "net": 585.0
+  }
+ },
+ {
+  "id": "addmed_mfj_both_under_but_over",
+  "expect": {
+   "liability": 540.0,
+   "withheld_credit": 0.0,
+   "net": 540.0
+  }
+ },
+ {
+  "id": "addmed_mfj_both_over_200k",
+  "expect": {
+   "liability": 2250.0,
+   "withheld_credit": 900.0,
+   "net": 1350.0
+  }
+ },
+ {
+  "id": "addmed_bonus_only",
+  "expect": {
+   "liability": 495.0,
+   "withheld_credit": 450.0,
+   "net": 45.0
+  }
+ },
+ {
+  "id": "addmed_wages_vs_box1",
+  "expect": {
+   "liability": 1080.0,
+   "withheld_credit": 1080.0,
+   "net": 0.0
+  }
+ },
+ {
+  "id": "niit_magi_under",
+  "expect": {
+   "nii_subject": 50000.0,
+   "magi_excess": 0.0,
+   "base": 0.0,
+   "niit": 0.0
+  }
+ },
+ {
+  "id": "niit_nii_zero",
+  "expect": {
+   "nii_subject": 0.0,
+   "magi_excess": 50000.0,
+   "base": 0.0,
+   "niit": 0.0
+  }
+ },
+ {
+  "id": "niit_loss_carryforward",
+  "expect": {
+   "nii_subject": 20000.0,
+   "magi_excess": 100000.0,
+   "base": 20000.0,
+   "niit": 760.0
+  }
+ },
+ {
+  "id": "niit_interest_dividends",
+  "expect": {
+   "nii_subject": 15000.0,
+   "magi_excess": 100000.0,
+   "base": 15000.0,
+   "niit": 570.0
+  }
+ },
+ {
+  "id": "niit_bound_by_excess",
+  "expect": {
+   "nii_subject": 80000.0,
+   "magi_excess": 20000.0,
+   "base": 20000.0,
+   "niit": 760.0
+  }
+ },
+ {
+  "id": "niit_bound_by_nii",
+  "expect": {
+   "nii_subject": 10000.0,
+   "magi_excess": 150000.0,
+   "base": 10000.0,
+   "niit": 380.0
+  }
+ },
+ {
+  "id": "snapshot_addmed_recon",
+  "expect": {
+   "additional_medicare_liability": 1350.0,
+   "additional_medicare_withheld": 765.0,
+   "additional_medicare_net": 585.0,
+   "total_federal_liability": 74818.0,
+   "total_federal_payments": 140765.0,
+   "federal_refund_owe": 65947.0,
+   "medicare_included": true
+  }
+ }
+]

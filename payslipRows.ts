@@ -43,6 +43,7 @@ const ROWS: Array<[string, string, string]> = [
   ["employee stock purchase plan", "employee stock purchase plan", "ytd employee stock purchase plan"],
   ["health savings account", "health savings account", "ytd health savings account"],
   ["federal withholding", "federal withholding", "ytd federal withholding"],
+  ["medicare tax", "medicare tax", "ytd medicare tax"],
   ["401k deduction", "401k deduction", "ytd 401k deduction"],
   ["state tax", "state tax", "ytd state tax"],
 ];

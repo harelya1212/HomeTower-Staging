@@ -36,6 +36,17 @@ export interface EarnerProjection {
   projectedTaxable: number;
   projectedFederal: number;
   projectedState: number;
+  // Additional Medicare (engine round 45): Medicare wages are the
+  // earner's projected gross (401(k) does not reduce Medicare wages;
+  // the slips print no separate Medicare-wages row). The withheld
+  // side is what the employer actually took in Medicare tax (1.45%
+  // base + the extra 0.9% over $200K): READ from the slips when a
+  // Medicare line was captured, otherwise ESTIMATED from gross by
+  // the statutory rates - medicareBasis says which.
+  projectedMedicareWages: number;
+  projectedMedicareWithheld: number;
+  projectedAddMedWithheld: number;
+  medicareBasis: "read" | "estimated";
 }
 
 export interface PayslipForecast {
@@ -44,6 +55,10 @@ export interface PayslipForecast {
   projectedTaxable: number;
   projectedFederal: number;
   projectedState: number;
+  projectedMedicareWages: number;
+  projectedMedicareWithheld: number;
+  projectedAddMedWithheld: number;
+  medicareBasis: "read" | "estimated";
 }
 
 const PERIODS_PER_YEAR: Record<string, number> = { weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 };
@@ -268,6 +283,7 @@ export function payslipForecast(
     const cFederal = pick((f) => num(f["ytd_federal_withheld"]));
     const cState = pick((f) => num(f["ytd_state_withheld"]));
     const cGross = pick((f) => num(f["ytd_gross"]) ?? num(f["ytd_taxable_wages"]));
+    const cMedicare = pick((f) => num(f["ytd_medicare_withheld"]));
     if (cTaxable === null || cFederal === null) continue; // income + federal withholding are the forecast's minimum
 
     const rf = run?.d.fields ?? {};
@@ -275,6 +291,7 @@ export function payslipForecast(
     const rateTaxable = run ? num(rf["taxable_wages"]) ?? num(rf["gross_pay"]) ?? 0 : 0;
     const rateFederal = run ? num(rf["federal_withheld"]) ?? 0 : 0;
     const rateState = run ? num(rf["state_withheld"]) ?? 0 : 0;
+    const rateMedicare = run ? num(rf["medicare_withheld"]) : null;
 
     const member = family.find((m) => normName(m.name) === key)
       ?? family.find((m) => normName(m.name).split(" ")[0] !== "" && normName(m.name).split(" ")[0] === key.split(" ")[0] && normName(m.name).split(" ").slice(-1)[0] === key.split(" ").slice(-1)[0]);
@@ -286,6 +303,20 @@ export function payslipForecast(
       frequencyAssumed = true;
     }
     const anchorEnd = [cTaxable.end, cFederal.end, cState?.end ?? "", cGross?.end ?? ""].sort().slice(-1)[0];
+
+    const projectedGrossE = (cGross?.value ?? cTaxable.value) + rateGross * periodsRemaining(frequency, cGross?.end ?? cTaxable.end);
+    // Medicare withheld, full year (round 45): READ path - the
+    // slips' own YTD Medicare plus the regular slip's per-period
+    // Medicare for the periods left after the Medicare anchor.
+    // ESTIMATED path - no Medicare line captured: the statutory
+    // employer formula on projected gross (1.45% on all wages +
+    // 0.9% over $200K for this earner). The Additional-Medicare
+    // part of what was withheld is the excess over the 1.45% base.
+    const medicareRead = cMedicare !== null && rateMedicare !== null;
+    const projectedMedicareWithheldE = medicareRead
+      ? cMedicare.value + rateMedicare * periodsRemaining(frequency, cMedicare.end)
+      : 0.0145 * projectedGrossE + 0.009 * Math.max(0, projectedGrossE - 200000);
+    const projectedAddMedWithheldE = Math.max(0, projectedMedicareWithheldE - 0.0145 * projectedGrossE);
 
     earners.push({
       name: member?.name ?? withEnd[0].d.fields!["employee_name"],
@@ -300,10 +331,14 @@ export function payslipForecast(
       ytdTaxable: cTaxable.value,
       ytdFederal: cFederal.value,
       ytdState: cState?.value ?? 0,
-      projectedGross: (cGross?.value ?? cTaxable.value) + rateGross * periodsRemaining(frequency, cGross?.end ?? cTaxable.end),
+      projectedGross: projectedGrossE,
       projectedTaxable: cTaxable.value + rateTaxable * periodsRemaining(frequency, cTaxable.end),
       projectedFederal: cFederal.value + rateFederal * periodsRemaining(frequency, cFederal.end),
       projectedState: (cState?.value ?? 0) + rateState * (cState ? periodsRemaining(frequency, cState.end) : 0),
+      projectedMedicareWages: projectedGrossE,
+      projectedMedicareWithheld: projectedMedicareWithheldE,
+      projectedAddMedWithheld: projectedAddMedWithheldE,
+      medicareBasis: medicareRead ? "read" : "estimated",
     });
   }
   if (earners.length === 0) return null;
@@ -314,5 +349,9 @@ export function payslipForecast(
     projectedTaxable: sum("projectedTaxable"),
     projectedFederal: sum("projectedFederal"),
     projectedState: sum("projectedState"),
+    projectedMedicareWages: sum("projectedMedicareWages"),
+    projectedMedicareWithheld: sum("projectedMedicareWithheld"),
+    projectedAddMedWithheld: sum("projectedAddMedWithheld"),
+    medicareBasis: earners.every((e) => e.medicareBasis === "read") ? "read" : "estimated",
   };
 }
