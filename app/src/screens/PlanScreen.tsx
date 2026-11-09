@@ -1,3 +1,4 @@
+import { useNavigation } from "@react-navigation/native";
 import React, { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { esppDisposition, rsuVest } from "../../engine/equity.ts";
@@ -303,8 +304,13 @@ function ForeignTool() {
 
 export default function PlanScreen() {
   const [tool, setTool] = useState<Tool>("sale");
+  const navigation = useNavigation<any>();
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <Pressable style={styles.lifeCard} onPress={() => navigation.navigate("Lifestyle")}>
+        <Text style={styles.lifeTitle}>Retirement Lifestyle</Text>
+        <Text style={styles.lifeText}>Build your target from your real spending - what continues, what ends, what changes. ›</Text>
+      </Pressable>
       <Text style={styles.title}>Plan a move</Text>
       <Text style={styles.note}>Every tool runs on your household numbers from the Intake tab. Nothing here is a filing - it is the projected consequence, before you act.</Text>
       <View style={styles.chips}>
@@ -322,6 +328,9 @@ export default function PlanScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#F4F7FA" },
   content: { padding: 16, paddingBottom: 74, gap: 10 },
+  lifeCard: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 14, gap: 4, borderWidth: 1, borderColor: TEAL },
+  lifeTitle: { fontSize: 17, fontWeight: "800", color: NAVY },
+  lifeText: { fontSize: 14, color: "#22303C", lineHeight: 20 },
   title: { fontSize: 22, fontWeight: "700", color: NAVY },
   note: { fontSize: 13, color: "#5A6B7C" },
   section: { fontSize: 16, fontWeight: "700", color: NAVY, marginTop: 12 },

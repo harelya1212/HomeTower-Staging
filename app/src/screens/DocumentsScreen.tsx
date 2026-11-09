@@ -9,17 +9,32 @@ import type { EquityEvent } from "../store.tsx";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { classifyDocument, type Classification } from "../../engine/classify.ts";
-import { pickImageUri, pickImageUris, recognizeImageFile, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
+import { pickImageUri, pickImageUris, recognizeImageBands, recognizeImageFile, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
 import type { RawField } from "../../engine/extract.ts";
 import { parseHoldings, parsePlanAccount, positionValue, type HoldingsParse, type PlanAccount } from "../holdings.ts";
+import { parseSpendingCsv, type CsvSpending } from "../spendingCsv.ts";
 import { parsePayslipRows } from "../payslipRows.ts";
-import { mergePayslipFields, payslipKey } from "../payslips.ts";
+import { mergePayslipFields, payslip401kTotals, payslipKey } from "../payslips.ts";
 import { pickFile, pickImageFiles } from "../filePick";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
 
 const BADGE: Record<string, string> = { fresh: "#1E8E3E", aging: "#E37400", stale: "#C5221F", unknown: "#5A6B7C" };
+
+// Split-image OCR repeats the overlap band's lines; the row parser
+// consumes them by index, so the duplicate copy used to leak into
+// generic pairing and invent current-period figures from YTD-only
+// rows (device finding, round 35: Yamit's YTD 401k appeared as her
+// current contribution). Drop every line whose normalized text the
+// row parser already consumed, not just the consumed indices.
+function dropConsumedLines(text: string, consumedIdx: number[]): string {
+  const lines = text.split(/\r?\n/);
+  const norm = (x: string) => x.trim().replace(/\s+/g, " ").toLowerCase();
+  const idx = new Set(consumedIdx);
+  const texts = new Set(consumedIdx.map((i) => norm(lines[i] ?? "")).filter((x) => x.length >= 4));
+  return lines.filter((l, i) => !idx.has(i) && !texts.has(norm(l))).join("\n");
+}
 
 export default function DocumentsScreen() {
   const { state, update, updateIntake } = useHousehold();
@@ -41,6 +56,7 @@ export default function DocumentsScreen() {
   const countsLabel = (c: string) => (c === "fully" ? "● counts fully" : c === "partially" ? "◐ counts partially" : "○ counts barely");
   const countsColor = (c: string) => (c === "fully" ? "#1E8E3E" : c === "partially" ? "#E37400" : "#C5221F");
   const [selectedType, setSelectedType] = useState("payslip");
+  const [showManual, setShowManual] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [ocrNote, setOcrNote] = useState<string | null>(null);
   const [flowNote, setFlowNote] = useState<string | null>(null);
@@ -63,6 +79,11 @@ export default function DocumentsScreen() {
   const [pendingColumns, setPendingColumns] = useState<RawField[][] | null>(null);
   const [pendingHoldings, setPendingHoldings] = useState<HoldingsParse | null>(null);
   const [pendingPlan, setPendingPlan] = useState<PlanAccount | null>(null);
+  // Round 48: a statement CSV's parsed spending - carried to the
+  // confirm card like the holdings parse, and stored on the saved
+  // document as its spendingSummary (evidence for the Retirement
+  // Lifestyle page).
+  const [pendingSpending, setPendingSpending] = useState<CsvSpending | null>(null);
   // Multi-photo batch: the user picks several screenshots at once;
   // each is still read and confirmed one at a time, the queue just
   // walks itself after every confirm/discard.
@@ -98,13 +119,60 @@ export default function DocumentsScreen() {
   // the app ALWAYS classifies what it read. With a named type it verifies
   // the name against the content; without one, the detected type is used.
   // Either way the user sees the reading and confirms before saving.
+  // Pure extraction on one text (no state): the same construction
+  // runExtraction uses, exposed so the section re-read can extract
+  // per band and merge.
+  const extractOnly = (text: string, docType: string) => {
+    let raw = textToRawFields(text);
+    if (docType === "payslip") {
+      const slip = parsePayslipRows(text);
+      if (slip.fields.length > 0) {
+        const restText = dropConsumedLines(text, slip.consumedLines);
+        raw = [...slip.fields, ...textToRawFields(restText)];
+      }
+    }
+    return extractFields(raw, docType);
+  };
+
+  // Round 48: statement CSVs bypass the label-value pipeline - the
+  // reading IS the spending summary. The confirm card shows the
+  // months, the transaction count and the annualized outflows per
+  // category, and the user confirms before anything is saved, under
+  // the type they picked (or the kind the filename suggests).
+  // Returns false when the text is not a readable statement CSV, so
+  // callers fall back to the normal pipeline.
+  const startCsvReading = (text: string, fileName: string, namedType?: string): boolean => {
+    const kind: "bank" | "card" = namedType === "card_statement" || /card|credit/i.test(fileName) ? "card" : "bank";
+    const summary = parseSpendingCsv(text, kind);
+    if (!summary) return false;
+    const useType = namedType === "bank_statement" || namedType === "card_statement"
+      ? namedType
+      : kind === "card" ? "card_statement" : "bank_statement";
+    const fields: Record<string, number | string> = {
+      months_covered: summary.months,
+      transactions_counted: summary.transactions,
+      outflow_per_year: Math.round(summary.totalOutflowAnnual),
+    };
+    for (const [k, v] of Object.entries(summary.byCategory)) fields[`spending_${k}`] = Math.round(v);
+    setPendingSpending(summary);
+    setPendingText(text);
+    setPendingColumns(null);
+    setPendingHoldings(null);
+    setPendingPlan(null);
+    setDetection(null);
+    setExtraction({ documentType: useType, fields, fieldConfidence: {}, confidence: 1, status: "parsed" });
+    setExtractionType(useType);
+    setOcrNote(null);
+    return true;
+  };
+
   const runExtraction = (text: string, namedType?: string, pages?: string[], columnByPage?: RawField[][]) => {
     try {
       const textRaw = textToRawFields(text);
       if (!textRaw.length) {
         setOcrNote("No label-value pairs found in that text. Check the text and try again.");
         setExtraction(null);
-        return;
+        return null;
       }
       const detected = classifyDocument(textRaw, text);
       const useType = namedType ?? detected.docType;
@@ -127,8 +195,7 @@ export default function DocumentsScreen() {
       if (useType === "payslip") {
         const slip = parsePayslipRows(text);
         if (slip.fields.length > 0) {
-          const consumed = new Set(slip.consumedLines);
-          const restText = text.split(/\r?\n/).filter((_, i) => !consumed.has(i)).join("\n");
+          const restText = dropConsumedLines(text, slip.consumedLines);
           raw = [...slip.fields, ...textToRawFields(restText), ...colFlat];
         }
       }
@@ -166,22 +233,75 @@ export default function DocumentsScreen() {
       setExtraction(result);
       setExtractionType(useType);
       setOcrNote(null);
+      return { result, docType: useType };
     } catch (e) {
       setOcrNote(e instanceof Error ? e.message : String(e));
       setExtraction(null);
+      return null;
+    }
+  };
+
+  // Image reads get a self-healing second pass (owner demand,
+  // 2026-11-08: fix the app so it reads the files correctly - and
+  // rigorously for EVERY employer's format, not one company's).
+  // The band re-read is layout-agnostic: small, enlarged sections
+  // for any tall screenshot. It triggers when the fast pass loses a
+  // payslip's headline YTD figures - the tables the phone engine
+  // kept dropping - or when any document reads implausibly thin.
+  // Band extractions fill ONLY fields still missing, so a band can
+  // rescue a reading but never override it, and the user still
+  // confirms the full reading before anything is saved.
+  const runImageExtraction = async (text: string, namedType: string | undefined, file: File, batchLabel?: string) => {
+    const r = runExtraction(text, namedType);
+    if (!r) return;
+    const f = r.result.fields;
+    const payslipHole = r.docType === "payslip" &&
+      (typeof f.ytd_federal_withheld !== "number" || typeof f.ytd_taxable_wages !== "number");
+    const thinRead = Object.keys(f).length < 3;
+    if (!payslipHole && !thinRead) return;
+    const label = batchLabel ? `${batchLabel} - ` : "";
+    setOcrNote(`${label}the first read missed part of this document - re-reading the photo in sections...`);
+    const bands = await recognizeImageBands(file, (pct) => setOcrNote(`${label}re-reading in sections - ${pct}%`));
+    if (bands.error || !bands.texts.length) { setOcrNote(null); return; }
+    const merged: Record<string, number | string> = { ...f };
+    const mergedConf: Record<string, number> = { ...r.result.fieldConfidence };
+    let added = 0;
+    for (const bt of bands.texts) {
+      const br = extractOnly(bt, r.docType);
+      for (const [k, v] of Object.entries(br.fields)) {
+        if (merged[k] === undefined && v !== undefined) {
+          merged[k] = v;
+          mergedConf[k] = br.fieldConfidence[k] ?? 0.5;
+          added++;
+        }
+      }
+      if (r.docType === "payslip" && typeof merged.ytd_federal_withheld === "number" && typeof merged.ytd_taxable_wages === "number") break;
+    }
+    if (added > 0) {
+      setExtraction({ ...r.result, fields: merged, fieldConfidence: mergedConf });
+      setOcrNote(`${label}the section re-read found ${added} more figure${added === 1 ? "" : "s"} - please check the full reading below.`);
+    } else {
+      setOcrNote(null);
     }
   };
 
   const reextractAs = (docType: string) => {
     if (pendingText === null) return;
+    // A CSV reading switches freely between the two statement types
+    // (the summary is the reading); any other type drops the summary
+    // and re-reads through the normal pipeline.
+    if (pendingSpending && (docType === "bank_statement" || docType === "card_statement")) {
+      setExtractionType(docType);
+      return;
+    }
+    if (pendingSpending) setPendingSpending(null);
     try {
       const colFlat = pendingColumns ? pendingColumns.flat() : [];
       let raw = [...textToRawFields(pendingText), ...colFlat];
       if (docType === "payslip") {
         const slip = parsePayslipRows(pendingText);
         if (slip.fields.length > 0) {
-          const consumed = new Set(slip.consumedLines);
-          const restText = pendingText.split(/\r?\n/).filter((_, i) => !consumed.has(i)).join("\n");
+          const restText = dropConsumedLines(pendingText, slip.consumedLines);
           raw = [...slip.fields, ...textToRawFields(restText), ...colFlat];
         }
       }
@@ -201,7 +321,11 @@ export default function DocumentsScreen() {
       setPhotoBatch(null);
       return;
     }
-    runExtraction(outcome.text, namedType);
+    if ("file" in item) {
+      await runImageExtraction(outcome.text, namedType, item.file, batchLabel);
+    } else {
+      runExtraction(outcome.text, namedType);
+    }
   };
 
   const advanceBatch = () => {
@@ -278,6 +402,14 @@ export default function DocumentsScreen() {
     try {
       if (picked.file) {
         const f = picked.file;
+        if (/\.csv$/i.test(f.name) || f.type.includes("csv")) {
+          const text = await f.text();
+          setFlowNote(null);
+          if (!startCsvReading(text, f.name, namedType)) {
+            setFlowNote(`Could not read ${f.name} as a statement CSV - HomeTower needs Date, Description and Amount (or Debit/Credit) columns. Nothing was saved; the file can be registered manually below.`);
+          }
+          return;
+        }
         if (f.type.includes("pdf") || /\.pdf$/i.test(f.name)) {
           const outcome = await extractPdfTextFromBuffer(await f.arrayBuffer());
           if (outcome.error) { setFlowNote(`Could not read ${f.name}: ${outcome.error}`); return; }
@@ -289,13 +421,25 @@ export default function DocumentsScreen() {
           const outcome = await recognizeImageFile(f);
           if (outcome.error) { setFlowNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
           setFlowNote(null);
-          runExtraction(outcome.text, namedType);
+          await runImageExtraction(outcome.text, namedType, f);
           return;
         }
         setFlowNote(`${f.name} is not a PDF or a photo - HomeTower reads PDFs and photos. Nothing was saved; the file can be registered manually below.`);
         return;
       }
       const uri = picked.uri as string;
+      if (/\.csv$/i.test(picked.name ?? "")) {
+        try {
+          const text = await (await fetch(uri)).text();
+          setFlowNote(null);
+          if (!startCsvReading(text, picked.name ?? "", namedType)) {
+            setFlowNote("Could not read that file as a statement CSV - HomeTower needs Date, Description and Amount (or Debit/Credit) columns. Nothing was saved; the statement can be registered manually below.");
+          }
+        } catch {
+          setFlowNote("CSV statement reading runs in the web app for now - in the phone app, register the statement manually below; it still counts toward your spending evidence.");
+        }
+        return;
+      }
       const isPdf = /\.pdf$/i.test(picked.name ?? "");
       if (isPdf) {
         const outcome = await extractPdfText(uri);
@@ -356,6 +500,9 @@ export default function DocumentsScreen() {
       capturedOn: today,
       fields: savedFields,
       ...(extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.positions.length > 0 ? { holdings: pendingHoldings.positions } : {}),
+      ...(pendingSpending && (extractionType === "bank_statement" || extractionType === "card_statement")
+        ? { spendingSummary: { months: pendingSpending.months, byCategory: pendingSpending.byCategory } }
+        : {}),
     };
     // Multi-page payslips (owner, 2026-11-08): a slip spans several
     // screenshots. Inside one batch, a reading whose earner + period
@@ -378,6 +525,25 @@ export default function DocumentsScreen() {
         updateIntake({ documents: docs.map((d, i) => (i === prev.index ? mergedRecord : d)) });
         mergedNote = ` Merged with the previous screenshot - same payslip (${savedFields["employee_name"] ?? "same earner"}, period ending ${savedFields["pay_period_end"] ?? ""}); its pages are now ONE document.`;
         handled = true;
+      }
+    }
+    // Repeat payslip rule (owner, 2026-11-08): a NEW reading of a slip
+    // that is already saved (same earner + same pay-period end)
+    // REPLACES the earlier document in its place - it never stacks a
+    // duplicate. The confirm card showed exactly the fields that take
+    // over, so nothing is lost silently. Applies to every route
+    // (photos, file, pasted text); within one photo batch the page
+    // merge above still assembles a multi-page slip first.
+    if (!handled && extractionType === "payslip") {
+      const key = payslipKey(savedFields);
+      if (key !== "") {
+        const idx = docs.findIndex((d) => d.docType === "payslip" && payslipKey(d.fields ?? {}) === key);
+        if (idx >= 0) {
+          updateIntake({ documents: docs.map((d, i) => (i === idx ? record : d)) });
+          mergedNote = ` Replaced the earlier reading of this payslip (${savedFields["employee_name"] ?? "same earner"}, period ending ${savedFields["pay_period_end"] ?? ""}) - the new reading takes its place; there is still ONE document for this slip.`;
+          handled = true;
+          if (photoBatch) batchSaveRef.current = { key, index: idx };
+        }
       }
     }
     if (!handled) {
@@ -408,6 +574,7 @@ export default function DocumentsScreen() {
     setPendingText(null);
     setPendingHoldings(null);
     setPendingPlan(null);
+    setPendingSpending(null);
     setPasteText("");
     setAutoPaste("");
     const moreComing = photoBatch && photoBatch.queue.length > 0 ? ` Screenshot ${photoBatch.done + 1} of ${photoBatch.total} is being read now.` : "";
@@ -450,6 +617,11 @@ export default function DocumentsScreen() {
     : s === "aging" ? { t: "AGING", bg: "#FDF0DA", fg: "#8A5A00" }
     : s === "missing" ? { t: "MISSING", bg: "#E5EBF1", fg: "#44566B" }
     : { t: "UP TO DATE", bg: "#DDF3E8", fg: "#0C6B4A" };
+  // Needs list = profile requests BEYOND the Ongoing center (owner,
+  // 2026-11-08): a document type the Ongoing center already tracks
+  // never appears in the needs list too - no asking twice.
+  const ongoingTypes = new Set(CATS.map((c) => c.docType));
+  const needsList = requests.filter((r) => !ongoingTypes.has(r.docType));
   const EVENT_LABEL: Record<EquityEvent["kind"], string> = { bonus: "Bonus", rsu_vest: "RSU vest", espp_purchase: "ESPP purchase" };
   const lastEvent = state.events.length ? [...state.events].sort((a, b) => b.date.localeCompare(a.date))[0] : null;
   const saveEvent = () => {
@@ -460,13 +632,29 @@ export default function DocumentsScreen() {
     setEvNote("");
   };
 
+  // One upload button per card (owner, 2026-11-08): the old trio
+  // (file / photo / camera buttons side by side) was duplication.
+  // The single Upload button opens this source chooser - the user
+  // can bring any kind of file or take a photo, from the one button.
+  const [chooserFor, setChooserFor] = useState<string | null>(null);
+  const sourceChooser = (key: string, docType?: string) =>
+    chooserFor !== key ? null : (
+      <View style={styles.reqActions}>
+        <Pressable style={styles.button} onPress={() => { setChooserFor(null); uploadFile(docType); }}>
+          <Text style={styles.buttonText}>PDF or file</Text>
+        </Pressable>
+        <Pressable style={styles.buttonAlt} onPress={() => { setChooserFor(null); scanPhoto("upload", docType); }}>
+          <Text style={styles.buttonText}>Photo from library</Text>
+        </Pressable>
+        <Pressable style={styles.buttonAlt} onPress={() => { setChooserFor(null); scanPhoto("camera", docType); }}>
+          <Text style={styles.buttonText}>Take a photo</Text>
+        </Pressable>
+      </View>
+    );
+
   return (
     <ScrollView ref={scrollRef} style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Documents</Text>
-      <Text style={styles.note}>
-        The register of what the household has provided. Capture a document below: the text is read on this device,
-        fields are extracted, and you confirm before anything is saved. Freshness is computed per document type.
-      </Text>
 
       {assignChildId && (
         <View style={styles.assignBanner}>
@@ -477,23 +665,171 @@ export default function DocumentsScreen() {
         </View>
       )}
 
-      {docs.length === 0 && <Text style={styles.line}>No documents yet. Capture the first one below.</Text>}
-      {docs.map((d, i) => {
-        const f = byKey.get(i);
-        return (
-          <View key={i} style={styles.row}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.docType}>{d.docType}</Text>
-              <Text style={styles.line}>Captured: {d.capturedOn ?? "unknown"} - status: {d.status}</Text>
-              {f && <Text style={[styles.line, { color: BADGE[f.status] }]}>{f.status.toUpperCase()} - {f.message}</Text>}
-              {indicators[i] && <Text style={[styles.line, { color: countsColor(indicators[i].counts), fontWeight: "600" }]}>{countsLabel(indicators[i].counts)} toward prediction confidence</Text>}
+
+      <Text style={styles.section}>Upload any document</Text>
+      <Text style={styles.note}>
+        No need to say what it is: HomeTower reads it, identifies the type, and shows you its reading for approval
+        before anything is saved. If you do pick a type below, HomeTower still verifies it against the content.
+      </Text>
+      <Pressable style={styles.button} onPress={() => setChooserFor(chooserFor === "any" ? null : "any")}>
+        <Text style={styles.buttonText}>Upload - file, photo, or camera</Text>
+      </Pressable>
+      {sourceChooser("any")}
+      {flowNote && <Text style={styles.note}>{flowNote}</Text>}
+      <TextInput
+        style={styles.pasteBox}
+        multiline
+        placeholder="...or paste any document text here and let HomeTower identify it"
+        value={autoPaste}
+        onChangeText={setAutoPaste}
+      />
+      <Pressable style={styles.buttonAlt} onPress={() => { if (!startCsvReading(autoPaste, "")) runExtraction(autoPaste); }}>
+        <Text style={styles.buttonText}>Read and identify pasted text</Text>
+      </Pressable>
+
+      {extraction && (
+        <View style={styles.confirmCard} onLayout={(e) => { confirmY.current = e.nativeEvent.layout.y; }}>
+          <Text style={styles.section}>Confirm HomeTower's reading</Text>
+          {photoBatch && (
+            <Text style={styles.batchLine}>Screenshot {photoBatch.done} of {photoBatch.total} - confirm this one and the next follows.</Text>
+          )}
+          {photoBatch && extractionType === "payslip" && batchSaveRef.current && payslipKey(Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]))) !== "" && payslipKey(Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]))) === batchSaveRef.current.key && (
+            <Text style={styles.line}>Same payslip as the previous screenshot ({String(extraction.fields["employee_name"] ?? "")}, period ending {String(extraction.fields["pay_period_end"] ?? "")}) - confirming merges its pages into ONE document.</Text>
+          )}
+          {detection && detection.level !== "unknown" && (
+            <Text style={styles.line}>
+              This looks like a {detection.docType} ({detection.level} match) - signals: {detection.signals.join(", ")}.
+            </Text>
+          )}
+          {detection && detection.level === "unknown" && (
+            <Text style={styles.line}>The app could not identify this document from its content - pick the type below.</Text>
+          )}
+          {detection && detection.level !== "unknown" && detection.docType !== extractionType && (
+            <View style={styles.mismatch}>
+              <Text style={styles.line}>
+                Heads up: it will be saved as {extractionType}, but the content looks like a {detection.docType}.
+              </Text>
+              <Pressable style={styles.button} onPress={() => reextractAs(detection.docType)}>
+                <Text style={styles.buttonText}>Save as {detection.docType} instead</Text>
+              </Pressable>
             </View>
-            <Pressable onPress={() => removeDoc(i)}>
-              <Text style={styles.remove}>Remove</Text>
-            </Pressable>
+          )}
+          <Text style={styles.line}>Saving as: {extractionType} - Confidence: {extraction.confidence} - status if saved: {extraction.status}</Text>
+          {pendingSpending && (extractionType === "bank_statement" || extractionType === "card_statement") && (
+            <Text style={styles.line}>
+              Spending read from this statement: {pendingSpending.months} month{pendingSpending.months === 1 ? "" : "s"}, {pendingSpending.transactions} outflows counted, about ${Math.round(pendingSpending.totalOutflowAnnual).toLocaleString("en-US")} a year. It becomes spending evidence on the Retirement Lifestyle page (in Plan) - it fills only categories you have not filled yourself.
+            </Text>
+          )}
+          {extractionType === "payslip" && (() => {
+            const missing: string[] = [];
+            if (!(Number(extraction.fields["ytd_federal_withheld"]) > 0)) missing.push("federal withholding YTD");
+            if (!(Number(extraction.fields["ytd_taxable_wages"]) > 0)) missing.push("taxable wages YTD");
+            if (missing.length === 0) return null;
+            return (
+              <Text style={styles.note}>
+                Heads up: this reading is missing {missing.join(" and ")} - HomeTower needs
+                them for the Home forecast. You can save anyway (a clearer screenshot of
+                that part of the slip, or the Workday PDF, fills them in later).
+              </Text>
+            );
+          })()}
+          <Text style={styles.line}>Wrong type? Tap the right one - the fields are re-read:</Text>
+          <View style={styles.chips}>
+            {[...DOCUMENT_TYPES].map((t) => (
+              <Pressable key={t} style={[styles.chip, extractionType === t && styles.chipSelected]} onPress={() => reextractAs(t)}>
+                <Text style={extractionType === t ? styles.chipTextSelected : styles.chipText}>{t}</Text>
+              </Pressable>
+            ))}
           </View>
-        );
-      })}
+          {Object.entries(extraction.fields).map(([k, v]) => (
+            <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
+          ))}
+          {extractionType === "brokerage_statement" && pendingPlan && (
+            <>
+              <Text style={styles.line}>Stock plan account: {pendingPlan.ticker}{pendingPlan.company ? ` - ${pendingPlan.company}` : ""}</Text>
+              {(() => {
+                const vested = Number(extraction.fields["vested_balance"]);
+                const unvested = Number(extraction.fields["unvested_balance"]);
+                const total = Number(extraction.fields["ending_balance"]);
+                if (Number.isFinite(vested) && Number.isFinite(unvested) && Number.isFinite(total) && Math.abs(vested + unvested - total) <= 1) {
+                  return <Text style={styles.line}>Vested ${vested.toLocaleString("en-US")} + not yet vested ${unvested.toLocaleString("en-US")} = ${total.toLocaleString("en-US")} - the split ties to the total.</Text>;
+                }
+                return null;
+              })()}
+            </>
+          )}
+          {extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.positions.length > 0 && (
+            <>
+              <Text style={styles.line}>Positions read from this screenshot - check them before saving:</Text>
+              {pendingHoldings.positions.map((p) => (
+                <Text key={p.ticker} style={styles.line}>
+                  {p.ticker} - {p.quantity} shares - paid ${p.pricePaid.toLocaleString("en-US")} - now ${p.lastPrice.toLocaleString("en-US")} - value ${positionValue(p).toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                </Text>
+              ))}
+              {(() => {
+                const posSum = pendingHoldings.positions.reduce((a, p) => a + positionValue(p), 0);
+                const cash = pendingHoldings.cash ?? (Number.isFinite(Number(extraction.fields["cash_balance"])) ? Number(extraction.fields["cash_balance"]) : null);
+                const account = Number(extraction.fields["ending_balance"]);
+                if (cash !== null && Number.isFinite(account) && account > 0) {
+                  const total = posSum + cash;
+                  return Math.abs(total - account) <= 1 ? (
+                    <Text style={styles.line}>Check: positions ${posSum.toLocaleString("en-US", { maximumFractionDigits: 2 })} + cash ${cash.toLocaleString("en-US")} = ${total.toLocaleString("en-US", { maximumFractionDigits: 2 })} - matches the account value on the screenshot.</Text>
+                  ) : (
+                    <Text style={styles.line}>Check: positions ${posSum.toLocaleString("en-US", { maximumFractionDigits: 2 })} + cash ${cash.toLocaleString("en-US")} = ${total.toLocaleString("en-US", { maximumFractionDigits: 2 })}, but the account value reads ${account.toLocaleString("en-US")} - a position may be cut off or misread; scroll the app and add another screenshot if one is missing.</Text>
+                  );
+                }
+                return <Text style={styles.line}>Positions total ${posSum.toLocaleString("en-US", { maximumFractionDigits: 2 })} (cash not read from this screenshot).</Text>;
+              })()}
+            </>
+          )}
+          {extractionType === "529_statement" && eduChildren.length > 0 && (
+            <>
+              <Text style={styles.line}>Whose college savings is this? The balance (and monthly contribution, if shown) fills that child's funding:</Text>
+              <View style={styles.chips}>
+                {eduChildren.map((c) => (
+                  <Pressable key={c.id} style={[styles.chip, assignChildId === c.id && styles.chipSelected]} onPress={() => setAssignChildId(assignChildId === c.id ? null : c.id)}>
+                    <Text style={assignChildId === c.id ? styles.chipTextSelected : styles.chipText}>{c.name || "Child"}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          )}
+          {Object.keys(extraction.fields).length === 0 && (
+            <Text style={styles.line}>No known fields matched this document type. You can still save it as a register entry.</Text>
+          )}
+          <Pressable style={styles.button} onPress={confirmExtraction}>
+            <Text style={styles.buttonText}>
+              {photoBatch
+                ? photoBatch.queue.length > 0
+                  ? `Confirm and save (${photoBatch.done} of ${photoBatch.total}) - next follows`
+                  : `Confirm and save (${photoBatch.total} of ${photoBatch.total}) - last one`
+                : `Confirm and save as ${extractionType}`}
+            </Text>
+          </Pressable>
+          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); setPendingPlan(null); setPendingSpending(null); advanceBatch(); }}>
+            <Text style={styles.remove}>{photoBatch ? `Discard (${photoBatch.done} of ${photoBatch.total})` : "Discard"}</Text>
+          </Pressable>
+        </View>
+      )}
+      {ocrNote && <Text style={styles.note}>{ocrNote}</Text>}
+      <Pressable onPress={() => setShowManual((s) => !s)}>
+        <Text style={styles.manualLink}>No text handy? Register a document manually (today, no extraction)</Text>
+      </Pressable>
+      {showManual && (
+        <View style={styles.shortcutBox}>
+          <Text style={styles.line}>Pick the type, then register it - it counts as received today, with no reading.</Text>
+          <View style={styles.chips}>
+            {[...DOCUMENT_TYPES].map((t) => (
+              <Pressable key={t} style={[styles.chip, selectedType === t && styles.chipSelected]} onPress={() => setSelectedType(t)}>
+                <Text style={selectedType === t ? styles.chipTextSelected : styles.chipText}>{t}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Pressable style={styles.button} onPress={addManual}>
+            <Text style={styles.buttonText}>Register {selectedType} manually</Text>
+          </Pressable>
+        </View>
+      )}
 
       <Text style={styles.section}>Ongoing center</Text>
       <Text style={styles.note}>
@@ -504,6 +840,20 @@ export default function DocumentsScreen() {
         .sort((a, b) => a.info.rank - b.info.rank)
         .map(({ c, info }) => {
           const chip = chipFor(info.status);
+          // 401(k) partial truth (owner, 2026-11-08): with no
+          // statement yet, the card shows what payslips already
+          // prove - this year's contributions - instead of a flat
+          // "no document yet". The moment a statement exists it is
+          // the source of record and this line disappears; the two
+          // sources are never added together (payslip401kTotals).
+          const k401Line = c.docType === "401k_statement" && !info.latest
+            ? (() => {
+                const k = payslip401kTotals(docs, today);
+                return k
+                  ? `From payslips: $${k.total.toLocaleString("en-US", { maximumFractionDigits: 0 })} contributed in ${k.year} (${k.earners} earner${k.earners === 1 ? "" : "s"}, through ${isoToUs(k.through)}) · Balance still needed - statement expected ${c.cadence}`
+                  : null;
+              })()
+            : null;
           return (
             <View key={c.key} style={styles.catCard}>
               <View style={styles.catHead}>
@@ -515,11 +865,11 @@ export default function DocumentsScreen() {
               <Text style={styles.line}>
                 {info.latest
                   ? `Last: ${info.latest.capturedOn ? isoToUs(info.latest.capturedOn) : "date unknown"} · Expected ${c.cadence}${info.overdue > 0 ? ` · ${info.overdue} days overdue` : ""}`
-                  : `No document yet · Expected ${c.cadence}`}
+                  : k401Line ?? `No document yet · Expected ${c.cadence}`}
                 {c.extra ? `\n${c.extra}` : ""}
               </Text>
               <View style={styles.catActions}>
-                <Pressable style={[styles.button, { flex: 1 }]} onPress={() => uploadFile(c.docType)}>
+                <Pressable style={[styles.button, { flex: 1 }]} onPress={() => setChooserFor(chooserFor === c.key ? null : c.key)}>
                   <Text style={styles.buttonText}>Upload {c.key === "payslip" ? "a payslip" : "a statement"}</Text>
                 </Pressable>
                 {c.key === "payslip" ? (
@@ -532,14 +882,7 @@ export default function DocumentsScreen() {
                   </Pressable>
                 )}
               </View>
-              <View style={styles.catActions}>
-                <Pressable style={[styles.buttonGhost, { flex: 1 }]} onPress={() => scanPhoto("upload", c.docType)}>
-                  <Text style={styles.buttonGhostText}>📷 Upload a photo</Text>
-                </Pressable>
-                <Pressable style={[styles.buttonGhost, { flex: 1 }]} onPress={() => scanPhoto("camera", c.docType)}>
-                  <Text style={styles.buttonGhostText}>📸 Take a photo</Text>
-                </Pressable>
-              </View>
+              {sourceChooser(c.key, c.docType)}
               {c.key === "payslip" && showShortcut && (
                 hasPayslip ? (
                   <View style={styles.shortcutBox}>
@@ -647,38 +990,12 @@ export default function DocumentsScreen() {
         )}
       </View>
 
-      <Text style={styles.section}>Upload any document</Text>
-      <Text style={styles.note}>
-        No need to say what it is: HomeTower reads it, identifies the type, and shows you its reading for approval
-        before anything is saved. If you do pick a type below, HomeTower still verifies it against the content.
-      </Text>
-      <Pressable style={styles.button} onPress={() => uploadFile()}>
-        <Text style={styles.buttonText}>Upload a PDF or file - HomeTower identifies it</Text>
-      </Pressable>
-      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload")}>
-        <Text style={styles.buttonText}>Upload a photo - HomeTower identifies it</Text>
-      </Pressable>
-      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera")}>
-        <Text style={styles.buttonText}>Take a photo - HomeTower identifies it</Text>
-      </Pressable>
-      {flowNote && <Text style={styles.note}>{flowNote}</Text>}
-      <TextInput
-        style={styles.pasteBox}
-        multiline
-        placeholder="...or paste any document text here and let HomeTower identify it"
-        value={autoPaste}
-        onChangeText={setAutoPaste}
-      />
-      <Pressable style={styles.buttonAlt} onPress={() => runExtraction(autoPaste)}>
-        <Text style={styles.buttonText}>Read and identify pasted text</Text>
-      </Pressable>
-
       <Text style={styles.section}>What your household needs</Text>
       <Text style={styles.note}>
-        Your profile decides this list - HomeTower never asks every household for every document (SPEC45, Smart Document Request Engine).
-        Tap an item to upload it right there.
+        Additional, one-time needs from your profile - the recurring documents live in the Ongoing center above,
+        so HomeTower never asks for the same document twice. Tap an item to upload it right there.
       </Text>
-      {requests.map((r) => {
+      {needsList.map((r) => {
         const b = reqBadge(r.status);
         const open = expandedReq === r.key;
         return (
@@ -703,162 +1020,40 @@ export default function DocumentsScreen() {
             )}
             {open && r.key !== "calibration_outcome" && (
               <View style={styles.reqActions}>
-                <Pressable style={styles.button} onPress={() => uploadFile(r.docType)}>
-                  <Text style={styles.buttonText}>Upload a PDF or file of this document</Text>
+                <Pressable style={styles.button} onPress={() => setChooserFor(chooserFor === `req-${r.key}` ? null : `req-${r.key}`)}>
+                  <Text style={styles.buttonText}>Upload this document</Text>
                 </Pressable>
-                <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload", r.docType)}>
-                  <Text style={styles.buttonText}>Upload a photo of this document</Text>
-                </Pressable>
-                <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera", r.docType)}>
-                  <Text style={styles.buttonText}>Take a photo of this document</Text>
-                </Pressable>
+                {sourceChooser(`req-${r.key}`, r.docType)}
               </View>
             )}
           </View>
         );
       })}
 
+      {needsList.length === 0 && <Text style={styles.line}>Nothing else is needed right now - the Ongoing center above covers the rest.</Text>}
 
-      <Text style={styles.section}>Capture a document</Text>
-      <View style={styles.chips}>
-        {[...DOCUMENT_TYPES].map((t) => (
-          <Pressable key={t} style={[styles.chip, selectedType === t && styles.chipSelected]} onPress={() => setSelectedType(t)}>
-            <Text style={selectedType === t ? styles.chipTextSelected : styles.chipText}>{t}</Text>
-          </Pressable>
-        ))}
-      </View>
-      <Pressable style={styles.button} onPress={() => uploadFile(selectedType)}>
-        <Text style={styles.buttonText}>Upload a PDF or file of the {selectedType}</Text>
-      </Pressable>
-      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("upload", selectedType)}>
-        <Text style={styles.buttonText}>Upload a photo of the {selectedType}</Text>
-      </Pressable>
-      <Pressable style={styles.buttonAlt} onPress={() => scanPhoto("camera", selectedType)}>
-        <Text style={styles.buttonText}>Take a photo of the {selectedType}</Text>
-      </Pressable>
-      <TextInput
-        style={styles.pasteBox}
-        multiline
-        placeholder="...or paste the document text here (works on every platform)"
-        value={pasteText}
-        onChangeText={setPasteText}
-      />
-      <Pressable style={styles.buttonAlt} onPress={() => runExtraction(pasteText, selectedType)}>
-        <Text style={styles.buttonText}>Extract fields from pasted text</Text>
-      </Pressable>
-      {ocrNote && <Text style={styles.note}>{ocrNote}</Text>}
-      {flowNote && <Text style={styles.note}>{flowNote}</Text>}
-
-      {extraction && (
-        <View style={styles.confirmCard} onLayout={(e) => { confirmY.current = e.nativeEvent.layout.y; }}>
-          <Text style={styles.section}>Confirm HomeTower's reading</Text>
-          {photoBatch && (
-            <Text style={styles.batchLine}>Screenshot {photoBatch.done} of {photoBatch.total} - confirm this one and the next follows.</Text>
-          )}
-          {photoBatch && extractionType === "payslip" && batchSaveRef.current && payslipKey(Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]))) !== "" && payslipKey(Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]))) === batchSaveRef.current.key && (
-            <Text style={styles.line}>Same payslip as the previous screenshot ({String(extraction.fields["employee_name"] ?? "")}, period ending {String(extraction.fields["pay_period_end"] ?? "")}) - confirming merges its pages into ONE document.</Text>
-          )}
-          {detection && detection.level !== "unknown" && (
-            <Text style={styles.line}>
-              This looks like a {detection.docType} ({detection.level} match) - signals: {detection.signals.join(", ")}.
-            </Text>
-          )}
-          {detection && detection.level === "unknown" && (
-            <Text style={styles.line}>The app could not identify this document from its content - pick the type below.</Text>
-          )}
-          {detection && detection.level !== "unknown" && detection.docType !== extractionType && (
-            <View style={styles.mismatch}>
-              <Text style={styles.line}>
-                Heads up: it will be saved as {extractionType}, but the content looks like a {detection.docType}.
-              </Text>
-              <Pressable style={styles.button} onPress={() => reextractAs(detection.docType)}>
-                <Text style={styles.buttonText}>Save as {detection.docType} instead</Text>
-              </Pressable>
+      <Text style={styles.section}>History</Text>
+      <Text style={styles.note}>
+        Everything your household has provided. Freshness is computed per document type, and each document
+        counts toward the prediction confidence shown on Home.
+      </Text>
+      {docs.length === 0 && <Text style={styles.line}>No documents yet. Upload the first one at the top of this page.</Text>}
+      {docs.map((d, i) => {
+        const f = byKey.get(i);
+        return (
+          <View key={i} style={styles.row}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.docType}>{d.docType}</Text>
+              <Text style={styles.line}>Captured: {d.capturedOn ?? "unknown"} - status: {d.status}</Text>
+              {f && <Text style={[styles.line, { color: BADGE[f.status] }]}>{f.status.toUpperCase()} - {f.message}</Text>}
+              {indicators[i] && <Text style={[styles.line, { color: countsColor(indicators[i].counts), fontWeight: "600" }]}>{countsLabel(indicators[i].counts)} toward prediction confidence</Text>}
             </View>
-          )}
-          <Text style={styles.line}>Saving as: {extractionType} - Confidence: {extraction.confidence} - status if saved: {extraction.status}</Text>
-          <Text style={styles.line}>Wrong type? Tap the right one - the fields are re-read:</Text>
-          <View style={styles.chips}>
-            {[...DOCUMENT_TYPES].map((t) => (
-              <Pressable key={t} style={[styles.chip, extractionType === t && styles.chipSelected]} onPress={() => reextractAs(t)}>
-                <Text style={extractionType === t ? styles.chipTextSelected : styles.chipText}>{t}</Text>
-              </Pressable>
-            ))}
+            <Pressable onPress={() => removeDoc(i)}>
+              <Text style={styles.remove}>Remove</Text>
+            </Pressable>
           </View>
-          {Object.entries(extraction.fields).map(([k, v]) => (
-            <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
-          ))}
-          {extractionType === "brokerage_statement" && pendingPlan && (
-            <>
-              <Text style={styles.line}>Stock plan account: {pendingPlan.ticker}{pendingPlan.company ? ` - ${pendingPlan.company}` : ""}</Text>
-              {(() => {
-                const vested = Number(extraction.fields["vested_balance"]);
-                const unvested = Number(extraction.fields["unvested_balance"]);
-                const total = Number(extraction.fields["ending_balance"]);
-                if (Number.isFinite(vested) && Number.isFinite(unvested) && Number.isFinite(total) && Math.abs(vested + unvested - total) <= 1) {
-                  return <Text style={styles.line}>Vested ${vested.toLocaleString("en-US")} + not yet vested ${unvested.toLocaleString("en-US")} = ${total.toLocaleString("en-US")} - the split ties to the total.</Text>;
-                }
-                return null;
-              })()}
-            </>
-          )}
-          {extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.positions.length > 0 && (
-            <>
-              <Text style={styles.line}>Positions read from this screenshot - check them before saving:</Text>
-              {pendingHoldings.positions.map((p) => (
-                <Text key={p.ticker} style={styles.line}>
-                  {p.ticker} - {p.quantity} shares - paid ${p.pricePaid.toLocaleString("en-US")} - now ${p.lastPrice.toLocaleString("en-US")} - value ${positionValue(p).toLocaleString("en-US", { maximumFractionDigits: 2 })}
-                </Text>
-              ))}
-              {(() => {
-                const posSum = pendingHoldings.positions.reduce((a, p) => a + positionValue(p), 0);
-                const cash = pendingHoldings.cash ?? (Number.isFinite(Number(extraction.fields["cash_balance"])) ? Number(extraction.fields["cash_balance"]) : null);
-                const account = Number(extraction.fields["ending_balance"]);
-                if (cash !== null && Number.isFinite(account) && account > 0) {
-                  const total = posSum + cash;
-                  return Math.abs(total - account) <= 1 ? (
-                    <Text style={styles.line}>Check: positions ${posSum.toLocaleString("en-US", { maximumFractionDigits: 2 })} + cash ${cash.toLocaleString("en-US")} = ${total.toLocaleString("en-US", { maximumFractionDigits: 2 })} - matches the account value on the screenshot.</Text>
-                  ) : (
-                    <Text style={styles.line}>Check: positions ${posSum.toLocaleString("en-US", { maximumFractionDigits: 2 })} + cash ${cash.toLocaleString("en-US")} = ${total.toLocaleString("en-US", { maximumFractionDigits: 2 })}, but the account value reads ${account.toLocaleString("en-US")} - a position may be cut off or misread; scroll the app and add another screenshot if one is missing.</Text>
-                  );
-                }
-                return <Text style={styles.line}>Positions total ${posSum.toLocaleString("en-US", { maximumFractionDigits: 2 })} (cash not read from this screenshot).</Text>;
-              })()}
-            </>
-          )}
-          {extractionType === "529_statement" && eduChildren.length > 0 && (
-            <>
-              <Text style={styles.line}>Whose college savings is this? The balance (and monthly contribution, if shown) fills that child's funding:</Text>
-              <View style={styles.chips}>
-                {eduChildren.map((c) => (
-                  <Pressable key={c.id} style={[styles.chip, assignChildId === c.id && styles.chipSelected]} onPress={() => setAssignChildId(assignChildId === c.id ? null : c.id)}>
-                    <Text style={assignChildId === c.id ? styles.chipTextSelected : styles.chipText}>{c.name || "Child"}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </>
-          )}
-          {Object.keys(extraction.fields).length === 0 && (
-            <Text style={styles.line}>No known fields matched this document type. You can still save it as a register entry.</Text>
-          )}
-          <Pressable style={styles.button} onPress={confirmExtraction}>
-            <Text style={styles.buttonText}>
-              {photoBatch
-                ? photoBatch.queue.length > 0
-                  ? `Confirm and save (${photoBatch.done} of ${photoBatch.total}) - next follows`
-                  : `Confirm and save (${photoBatch.total} of ${photoBatch.total}) - last one`
-                : `Confirm and save as ${extractionType}`}
-            </Text>
-          </Pressable>
-          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); setPendingPlan(null); advanceBatch(); }}>
-            <Text style={styles.remove}>{photoBatch ? `Discard (${photoBatch.done} of ${photoBatch.total})` : "Discard"}</Text>
-          </Pressable>
-        </View>
-      )}
-
-      <Pressable onPress={addManual}>
-        <Text style={styles.manualLink}>No text handy? Register {selectedType} manually (today, no extraction)</Text>
-      </Pressable>
+        );
+      })}
     </ScrollView>
   );
 }
