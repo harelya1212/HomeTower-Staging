@@ -4,7 +4,7 @@
 export const FILING_STATUSES = new Set(["single", "married_filing_jointly", "married_filing_separately", "head_of_household"]);
 export const MEMBER_ROLES = new Set(["adult", "dependent", "student"]);
 export const PAY_FREQUENCIES = new Set(["weekly", "biweekly", "semimonthly", "monthly"]);
-export const DOCUMENT_TYPES = new Set(["w2", "payslip", "hsa_statement", "401k_statement", "1099b", "1098t", "1099q", "prior_return", "529_statement", "brokerage_statement", "pension_statement", "other"]);
+export const DOCUMENT_TYPES = new Set(["w2", "payslip", "hsa_statement", "401k_statement", "1099b", "1098t", "1099q", "prior_return", "529_statement", "brokerage_statement", "pension_statement", "bank_statement", "card_statement", "other"]);
 export const DOCUMENT_STATUSES = new Set(["parsed", "pending_verify", "rejected"]);
 
 export interface Member { name: string; role: string; dateOfBirth?: string | null; payFrequency?: string | null }
@@ -17,7 +17,14 @@ export interface CalibrationRecord {
   outcomeVerified?: boolean; // checked against the IRS/state outcome
 }
 export interface Holding { ticker: string; name: string; quantity: number; pricePaid: number; lastPrice: number }
-export interface DocumentRecord { docType: string; status: string; confidence?: number; capturedOn?: string | null; fields?: Record<string, string>; holdings?: Holding[] }
+export interface DocumentRecord { docType: string; status: string; confidence?: number; capturedOn?: string | null; fields?: Record<string, string>; holdings?: Holding[]; spendingSummary?: SpendingSummary | null }
+/** Round 48: what a bank/card statement CSV proved about household
+ * spending - months of evidence and annualized outflows per
+ * Retirement Lifestyle category key (see src/goals.ts). Evidence
+ * only: it prefills the Lifestyle page, it never overwrites an
+ * amount the user entered. PDF statements carry no summary - they
+ * count as one month of coverage each. */
+export interface SpendingSummary { months: number; byCategory: Record<string, number> }
 export interface HouseholdIntake {
   name: string; state: string; filingStatus: string; members: Member[];
   refundTargetLow?: number | null; refundTargetHigh?: number | null;
