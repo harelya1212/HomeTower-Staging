@@ -30,6 +30,8 @@ KEYWORDS: dict[str, list[str]] = {
     "529_statement": ["529 plan", "college savings plan", "education account"],
     "brokerage_statement": ["brokerage", "securities account", "portfolio value", "holdings", "client statement", "account summary", "asset allocation", "total ending value", "ending total value", "price paid", "last price", "stock plan", "net account value"],
     "pension_statement": ["pension", "defined benefit", "monthly benefit", "retirement benefit"],
+    "hsa_5498_sa": ["5498-sa", "form 5498", "fair market value of hsa", "total hsa contributions"],
+    "hsa_1099_sa": ["1099-sa", "distributions from an hsa", "gross distribution", "distribution code", "earnings on excess contributions"],
     "prior_return": ["1040", "adjusted gross income", "taxable income", "internal revenue service", "u.s. individual income tax return"],
 }
 
@@ -37,6 +39,8 @@ KEYWORDS: dict[str, list[str]] = {
 # its own face, not inside attachments it may contain). +3 each, once.
 ANCHORS: dict[str, list[str]] = {
     "prior_return": ["form 1040", "form 8879", "e-file signature authorization"],
+    "hsa_5498_sa": ["form 5498-sa"],
+    "hsa_1099_sa": ["form 1099-sa"],
 }
 
 

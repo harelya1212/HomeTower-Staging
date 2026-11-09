@@ -13,7 +13,8 @@ FILING_STATUSES = {"single", "married_filing_jointly", "married_filing_separatel
 MEMBER_ROLES = {"adult", "dependent", "student"}
 PAY_FREQUENCIES = {"weekly", "biweekly", "semimonthly", "monthly"}
 DOCUMENT_TYPES = {"w2", "payslip", "hsa_statement", "401k_statement", "1099b", "1098t", "1099q",
-                  "prior_return", "529_statement", "brokerage_statement", "pension_statement", "other"}
+                  "prior_return", "529_statement", "brokerage_statement", "pension_statement", "other",
+                  "hsa_1099_sa", "hsa_5498_sa"}
 DOCUMENT_STATUSES = {"parsed", "pending_verify", "rejected"}
 
 
@@ -33,6 +34,15 @@ class DocumentRecord:
     captured_on: Optional[date] = None  # freshness is computed from this
     fields: Optional[dict] = None  # extracted values kept so My House rows can pre-fill
     holdings: Optional[list] = None  # parsed positions (brokerage screenshots): ticker/qty/pricePaid/lastPrice dicts
+    # Round 55 parity with the TS record: fan-out linkage, retained
+    # source text for reprocessing, the maps version extracted with,
+    # and structured tax-form boxes (hsa_1099_sa / hsa_5498_sa).
+    owner_member_id: Optional[str] = None
+    upload_id: Optional[str] = None
+    account_id: Optional[str] = None
+    raw_text: Optional[str] = None
+    maps_version: Optional[str] = None
+    form_boxes: Optional[dict] = None
 
 
 @dataclass
