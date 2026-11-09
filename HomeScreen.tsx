@@ -311,9 +311,7 @@ export default function HomeScreen() {
       </View>
 
       {slipFc && (
-        <Text style={styles.assumption}>
-          Forecast from your payslips: {slipFc.earners.map((e) => `${e.name.split(" ")[0]} through ${isoToUs(e.anchorEnd)}, + ${e.periodsRemaining} pay periods at the current rate`).join(" · ")}. Projected W-2 wages {money(slipFc.projectedTaxable)} for the year; the withholding in the gauges is projected to year-end, not yet paid. Remove the payslips and the typed Intake numbers take over again.
-        </Text>
+        <Text style={styles.assumption}>* Forecast basis - see the note at the bottom of this page.</Text>
       )}
 
       {!slipFc && gaps.length > 0 && (
@@ -332,11 +330,9 @@ export default function HomeScreen() {
         </View>
       )}
 
-      <Text style={styles.assumption}>Outlooks below assume {g.assumedReturnPct}% yearly growth - an editable assumption in Intake, not a promise.</Text>
-
       {adults.length > 0 && (
         <View style={styles.card}>
-          <Text style={styles.cardLabel}>Retirement outlook - per person</Text>
+          <Text style={styles.cardLabel}>Retirement outlook - per person **</Text>
           {adultOutlook.map(({ m, age, need, years, projected, onTrack, realisticAge, reqMo, mo, paceFromSlips }) => {
             const pct = need > 0 ? Math.max(0, Math.min(100, Math.round((projected / need) * 100))) : null;
             return (
@@ -379,7 +375,7 @@ export default function HomeScreen() {
 
       {children.length > 0 && (
         <View style={styles.card}>
-          <Text style={styles.cardLabel}>Education - timing and funding, per child</Text>
+          <Text style={styles.cardLabel}>Education - timing and funding, per child **</Text>
           {eduOutlook.map(({ c, yearsToStart, duration, funding, usingDefaultCost }) => {
             const pct = funding.pctFunded ?? 0;
             return (
@@ -480,6 +476,19 @@ export default function HomeScreen() {
           <Pressable onPress={() => void loadClose()}>
             <Text style={styles.manualLink}>Refresh closing prices</Text>
           </Pressable>
+        </View>
+      )}
+
+      {(slipFc || adults.length > 0 || children.length > 0) && (
+        <View style={styles.notesBlock}>
+          {slipFc && (
+            <Text style={styles.footnote}>
+              * Forecast from your payslips: {slipFc.earners.map((e) => `${e.name.split(" ")[0]} through ${isoToUs(e.anchorEnd)}, + ${e.periodsRemaining} pay periods at the current rate`).join(" · ")}. Projected W-2 wages {money(slipFc.projectedTaxable)} for the year; the withholding in the gauges is projected to year-end, not yet paid. Remove the payslips and the typed Intake numbers take over again.
+            </Text>
+          )}
+          {(adults.length > 0 || children.length > 0) && (
+            <Text style={styles.footnote}>** Outlooks assume {g.assumedReturnPct}% yearly growth - an editable assumption in Intake, not a promise.</Text>
+          )}
         </View>
       )}
 
@@ -588,6 +597,7 @@ const styles = StyleSheet.create({
   tileValue: { fontSize: 19, fontWeight: "800", color: NAVY },
   tileLabel: { fontSize: 11, color: "#5A6B7C", textAlign: "center", marginTop: 2 },
   footnote: { fontSize: 12, color: "#5A6B7C", marginTop: 8 },
+  notesBlock: { gap: 2, marginTop: 2 },
   taxRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8 },
   taxValue: { fontSize: 21, fontWeight: "800", color: NAVY, minWidth: 108 },
   taxName: { fontSize: 15, fontWeight: "700", color: "#22303C" },
