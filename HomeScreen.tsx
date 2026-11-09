@@ -5,6 +5,7 @@ import { predictionConfidence } from "../../engine/confidence.ts";
 import { householdFreshness, reminderCandidates } from "../../engine/freshness.ts";
 import { annualFocus, documentRequests, nextAction, nextPhaseStart } from "../../engine/guidance.ts";
 import { computeHouseholdTax } from "../../engine/snapshot.ts";
+import { computeFederalTax } from "../../engine/federal.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
 import { ageOn, earliestAgeReaching, educationFunding, educationLine, projectValue, requiredMonthly, retirementNeedEstimate } from "../goals.ts";
@@ -45,6 +46,7 @@ export default function HomeScreen() {
   const navigation = useNavigation<any>();
   const [push, setPush] = useState<PushStatus | null>(null);
   const [tasksOpen, setTasksOpen] = useState(false);
+  const [showCalc, setShowCalc] = useState(false);
 
   const today = todayIso();
   // Payslip-driven forecast (owner QA, 2026-11-08): when saved
@@ -228,6 +230,87 @@ export default function HomeScreen() {
   const confColor = confidence.band === "High" ? GREEN : confidence.band === "Moderate" ? YELLOW : RED;
   const ringColor = (pct: number | null) => (pct === null ? "#9DB2C3" : pct >= 80 ? GREEN : pct >= 50 ? YELLOW : RED);
 
+  // Round 44 (external design review + reconciliation, 2026-11-08):
+  // every gauge carries its own next-action line and an expected
+  // range, the two gauges get a combined position card, and the tax
+  // picture shows its full calculation. The range is scaled by the
+  // confidence score - the less verified data behind a number, the
+  // wider its band.
+  const fedDetail = useMemo(() => {
+    try { return computeFederalTax(effIncome, state.intake.filingStatus, state.ltcgIncome); } catch { return null; }
+  }, [effIncome, state.intake.filingStatus, state.ltcgIncome]);
+  const periodsLeft = slipFc ? Math.max(...slipFc.earners.map((e) => e.periodsRemaining)) : null;
+  const thisYr = Number(today.slice(0, 4));
+  const perPeriod = (amount: number) => (periodsLeft && periodsLeft > 0 ? Math.max(5, Math.round(amount / periodsLeft / 5) * 5) : null);
+  const gaugeAction = (value: number, low: number, high: number, side: "federal" | "state"): string => {
+    const wh = side === "federal" ? "withholding" : `${state.intake.state} withholding`;
+    if (value < 0) {
+      const per = perPeriod(-value);
+      return per ? `Worth acting on: about ${money(per)} more ${wh} per remaining pay period closes this gap.` : `Worth acting on: raise ${wh} now - every remaining pay period counts.`;
+    }
+    if (value < low) {
+      const gap = low - value;
+      if (gap <= 250) return "No action recommended - close enough to your target given the remaining uncertainty.";
+      const per = perPeriod(gap);
+      return per ? `Worth acting on: about ${money(per)} more ${wh} per remaining pay period lands you in the target.` : "Worth acting on: a small withholding increase lands you in the target.";
+    }
+    if (value > high) {
+      const excess = value - high;
+      return side === "federal"
+        ? `No change needed for the rest of ${thisYr} - too few pay periods remain. For January ${thisYr + 1}: about ${money(excess)} less withholding across the year lands in the target.`
+        : `No late-year change recommended. Recalibrate ${wh} for January ${thisYr + 1} - about ${money(excess)} less across the year lands in the target.`;
+    }
+    return "No action recommended - you are inside your target.";
+  };
+  const rangeFor = (value: number): string => {
+    const half = Math.max(150, Math.abs(value) * (0.55 - 0.45 * (confidence.score / 100)));
+    return `Expected range: ${money(value - half)} - ${money(value + half)}`;
+  };
+  const combined = fed + st;
+  const sidePhrase = (v: number) => (v < 0 ? `owe ${money(-v)}` : `${money(v)} refund`);
+  const combinedHeadline = (fed < 0) !== (st < 0)
+    ? combined >= 0 ? `Net refund ${money(combined)}` : `Net amount owed ${money(-combined)}`
+    : combined >= 0 ? `Total projected refunds ${money(combined)}` : `Total projected owed ${money(-combined)}`;
+  const combinedVerdict = (() => {
+    const fedName = "Federal";
+    const stName = state.intake.state;
+    if (fed >= 0 && st >= 0) {
+      const total = fed + st;
+      const domSide = fed >= st ? fedName : stName;
+      const domVal = Math.max(fed, st);
+      const domAbove = domSide === fedName ? fed > fedHigh : st > g.stateRefundTargetHigh;
+      if (total > 0 && domVal / total > 0.65 && domAbove) return `Household position: healthy overall - but ${domSide} is carrying too much of the refund.`;
+      const belowSide = fed < fedLow ? fedName : st < g.stateRefundTargetLow ? stName : null;
+      if (belowSide) return `Household position: healthy overall - the remaining gap sits with ${belowSide}.`;
+      const aboveSide = fed > fedHigh ? fedName : st > g.stateRefundTargetHigh ? stName : null;
+      if (aboveSide) return `Household position: healthy overall - ${aboveSide} is running above its target.`;
+      return "Household position: healthy - both refunds sit inside their targets.";
+    }
+    if (fed < 0 && st < 0) return `Household position: ${money(-combined)} owed across both - withholding needs attention on both sides.`;
+    const oweSide = fed < 0 ? fedName : stName;
+    const refundSide = fed < 0 ? stName : fedName;
+    return combined >= 0
+      ? `Household position: the ${refundSide} refund covers the ${oweSide} bill, with ${money(combined)} left over.`
+      : `Household position: the ${refundSide} refund does not cover the ${oweSide} bill - ${money(-combined)} still owed overall.`;
+  })();
+  // Additional Medicare tax is not in the engine yet - the
+  // calculation breakdown names it with an estimate instead of
+  // hiding it (Copilot's manual model includes it; reconciliation,
+  // round 44).
+  const medicareWages = slipFc ? slipFc.projectedGross : effIncome;
+  const addMedThreshold = state.intake.filingStatus === "MFJ" ? 250000 : state.intake.filingStatus === "MFS" ? 125000 : 200000;
+  const addMedEstimate = Math.round(0.009 * Math.max(0, medicareWages - addMedThreshold));
+  // Provenance checklist for the confidence card: what the forecast
+  // is actually based on, with dates, and what is still to come.
+  const provenance: string[] = [];
+  if (slipFc) for (const e of slipFc.earners) provenance.push(`✓ Payslips: ${e.name.split(" ")[0]} through ${isoToUs(e.anchorEnd)}`);
+  else if (payslipFinding) provenance.push(`Payslips: ${payslipFinding.status} - add the latest in Documents`);
+  if (k401Totals) provenance.push(`✓ 401(k) contributions from payslips: ${money(k401Totals.total)} in ${k401Totals.year}`);
+  if (holdingsInfo.positions.length > 0) provenance.push(`✓ Brokerage holdings${holdingsInfo.basisDate ? ` as of ${isoToUs(holdingsInfo.basisDate)}` : ""}`);
+  provenance.push(returnOnFile ? "✓ Last year's filed return: on file" : "• Last year's filed return: not added yet");
+  provenance.push(cal?.actualFederalRefundOwe != null ? "✓ Last year's actual outcome: recorded" : "• Last year's actual outcome: not recorded yet");
+  provenance.push("• Still to come: final W-2 and 1099 forms (January-February)");
+
   // Tasks (owner QA, 2026-11-08, items a/9/10): the Home page is
   // indicators; everything that asks the user to DO something lives
   // on one Tasks page behind a compact strip. The next action keeps
@@ -285,7 +368,9 @@ export default function HomeScreen() {
         {hasIncome ? (
           <>
             <RefundGauge value={fed} low={fedLow} high={fedHigh} />
-            <Text style={styles.line}>{fed < 0 ? `At this pace you owe the IRS ${money(-fed)} - your target is a ${money(fedLow)} - ${money(fedHigh)} refund.` : fed < fedLow ? `A refund is coming - ${money(fedLow - fed)} below your ${money(fedLow)} - ${money(fedHigh)} target.` : fed > fedHigh ? `A refund is coming - ${money(fed - fedHigh)} above your target. The extra is an interest-free loan to the IRS.` : `Right inside your ${money(fedLow)} - ${money(fedHigh)} target.`}</Text>
+            <Text style={styles.line}>{fed < 0 ? `At this pace you owe the IRS ${money(-fed)} - your target is a ${money(fedLow)} - ${money(fedHigh)} refund.` : fed < fedLow ? `A refund is coming - ${money(fedLow - fed)} below your ${money(fedLow)} - ${money(fedHigh)} target.` : fed > fedHigh ? `A refund is coming - ${money(fed - fedHigh)} above your ${money(fedLow)} - ${money(fedHigh)} target.` : `Right inside your ${money(fedLow)} - ${money(fedHigh)} target.`}</Text>
+            <Text style={styles.actionLine}>{gaugeAction(fed, fedLow, fedHigh, "federal")}</Text>
+            <Text style={styles.rangeLine}>{rangeFor(fed)}</Text>
           </>
         ) : (
           <Text style={styles.line}>No income added yet - this is not a $0 refund, it is a blank. Upload a payslip in Documents and HomeTower projects your refund against your {money(fedLow)} - {money(fedHigh)} target.</Text>
@@ -303,12 +388,23 @@ export default function HomeScreen() {
         {hasIncome ? (
           <>
             <RefundGauge value={st} low={g.stateRefundTargetLow} high={g.stateRefundTargetHigh} />
-            <Text style={styles.line}>{st < 0 ? `At this pace you owe the state ${money(-st)} - your target is a ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} refund.` : st < g.stateRefundTargetLow ? `A refund is coming - ${money(g.stateRefundTargetLow - st)} below your ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} target.` : st > g.stateRefundTargetHigh ? `A refund is coming - ${money(st - g.stateRefundTargetHigh)} above your target. The extra is an interest-free loan to the state.` : `Right inside your ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} target.`}</Text>
+            <Text style={styles.line}>{st < 0 ? `At this pace you owe the state ${money(-st)} - your target is a ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} refund.` : st < g.stateRefundTargetLow ? `A refund is coming - ${money(g.stateRefundTargetLow - st)} below your ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} target.` : st > g.stateRefundTargetHigh ? `A refund is coming - ${money(st - g.stateRefundTargetHigh)} above your ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} target.` : `Right inside your ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} target.`}</Text>
+            <Text style={styles.actionLine}>{gaugeAction(st, g.stateRefundTargetLow, g.stateRefundTargetHigh, "state")}</Text>
+            <Text style={styles.rangeLine}>{rangeFor(st)}</Text>
           </>
         ) : (
           <Text style={styles.line}>Same story on the state side: no income yet, so no projection. Your state target stays {money(g.stateRefundTargetLow)} - {money(g.stateRefundTargetHigh)}.</Text>
         )}
       </View>
+
+      {hasIncome && (
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>Combined tax position</Text>
+          <Text style={styles.combinedValue}>{combinedHeadline}</Text>
+          <Text style={styles.line}>Federal: {sidePhrase(fed)} · {state.intake.state}: {sidePhrase(st)}</Text>
+          <Text style={styles.line}>{combinedVerdict}</Text>
+        </View>
+      )}
 
       {slipFc && (
         <Text style={styles.assumption}>* Forecast basis - see the note at the bottom of this page.</Text>
@@ -417,7 +513,7 @@ export default function HomeScreen() {
             <Text style={styles.taxValue}>{(snap.marginalRate * 100).toFixed(0)}%</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.taxName}>Your top tax rate</Text>
-              <Text style={styles.taxNote}>Each extra $1 of income is taxed at this rate.</Text>
+              <Text style={styles.taxNote}>Your current federal marginal rate - additional ordinary income is generally taxed at this rate until the next bracket.</Text>
             </View>
           </View>
           <View style={styles.taxRow}>
@@ -428,12 +524,26 @@ export default function HomeScreen() {
             </View>
           </View>
           <View style={styles.taxRow}>
-            <Text style={styles.taxValue}>{money(snap.totalTax)}</Text>
+            <Text style={styles.taxValue}>{money(snap.federalTax)}</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.taxName}>Projected federal tax</Text>
               <Text style={styles.taxNote}>For the whole year, before the withholding you already paid.</Text>
             </View>
           </View>
+          <Pressable onPress={() => setShowCalc((v) => !v)}>
+            <Text style={styles.manualLink}>{showCalc ? "Hide the calculation ✕" : "How we calculated this ›"}</Text>
+          </Pressable>
+          {showCalc && fedDetail && (
+            <View style={styles.calcBlock}>
+              <Text style={styles.calcRow}>{slipFc ? "Projected W-2 wages" : "Income"}: {money(effIncome)}</Text>
+              <Text style={styles.calcRow}>Standard deduction ({state.intake.filingStatus}): -{money(fedDetail.standardDeduction)}</Text>
+              <Text style={styles.calcRow}>Taxable income: {money(fedDetail.taxableIncome)}</Text>
+              <Text style={styles.calcRow}>Federal income tax: {money(fedDetail.ordinaryTax + fedDetail.ltcgTax)}{fedDetail.ltcgTax > 0 ? ` (including ${money(fedDetail.ltcgTax)} on long-term capital gains)` : ""}</Text>
+              <Text style={styles.calcRow}>Net investment income tax (NIIT): {money(snap.niit)}</Text>
+              <Text style={styles.calcRow}>{state.intake.state} state tax: {money(snap.stateTax)} - projected in the state gauge above; it is not part of the federal figure.</Text>
+              <Text style={styles.calcRow}>{addMedEstimate > 0 ? `Not in this estimate yet: Additional Medicare tax, about ${money(addMedEstimate)} on this year's wages, and any credits.` : "Not in this estimate yet: any credits."}</Text>
+            </View>
+          )}
         </View>
       )}
 
@@ -452,6 +562,10 @@ export default function HomeScreen() {
             <Pressable onPress={() => navigation.navigate("Documents")}>
               <Text style={styles.manualLink}>Open Documents - missing items are marked there</Text>
             </Pressable>
+            <Text style={[styles.cardLabel, { marginTop: 10 }]}>What this forecast is based on</Text>
+            {provenance.map((p, i) => (
+              <Text key={i} style={styles.line}>{p}</Text>
+            ))}
           </View>
         </View>
       </View>
@@ -603,4 +717,9 @@ const styles = StyleSheet.create({
   taxName: { fontSize: 15, fontWeight: "700", color: "#22303C" },
   taxNote: { fontSize: 13, color: "#5A6B7C", marginTop: 1 },
   confRow: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
+  actionLine: { fontSize: 13.5, fontWeight: "700", color: NAVY, marginTop: 4 },
+  rangeLine: { fontSize: 12.5, color: "#5A6B7C", marginTop: 2 },
+  combinedValue: { fontSize: 21, fontWeight: "800", color: NAVY },
+  calcBlock: { gap: 2, marginTop: 4 },
+  calcRow: { fontSize: 13.5, color: "#22303C" },
 });
