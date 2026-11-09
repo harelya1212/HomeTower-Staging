@@ -13,7 +13,7 @@ import { pickImageUri, pickImageUris, recognizeImageBands, recognizeImageFile, r
 import type { RawField } from "../../engine/extract.ts";
 import { parseHoldings, parsePlanAccount, positionValue, type HoldingsParse, type PlanAccount } from "../holdings.ts";
 import { parsePayslipRows } from "../payslipRows.ts";
-import { mergePayslipFields, payslipKey } from "../payslips.ts";
+import { mergePayslipFields, payslip401kTotals, payslipKey } from "../payslips.ts";
 import { pickFile, pickImageFiles } from "../filePick";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
@@ -765,6 +765,20 @@ export default function DocumentsScreen() {
         .sort((a, b) => a.info.rank - b.info.rank)
         .map(({ c, info }) => {
           const chip = chipFor(info.status);
+          // 401(k) partial truth (owner, 2026-11-08): with no
+          // statement yet, the card shows what payslips already
+          // prove - this year's contributions - instead of a flat
+          // "no document yet". The moment a statement exists it is
+          // the source of record and this line disappears; the two
+          // sources are never added together (payslip401kTotals).
+          const k401Line = c.docType === "401k_statement" && !info.latest
+            ? (() => {
+                const k = payslip401kTotals(docs, today);
+                return k
+                  ? `From payslips: $${k.total.toLocaleString("en-US", { maximumFractionDigits: 0 })} contributed in ${k.year} (${k.earners} earner${k.earners === 1 ? "" : "s"}, through ${isoToUs(k.through)}) · Balance still needed - statement expected ${c.cadence}`
+                  : null;
+              })()
+            : null;
           return (
             <View key={c.key} style={styles.catCard}>
               <View style={styles.catHead}>
@@ -776,7 +790,7 @@ export default function DocumentsScreen() {
               <Text style={styles.line}>
                 {info.latest
                   ? `Last: ${info.latest.capturedOn ? isoToUs(info.latest.capturedOn) : "date unknown"} · Expected ${c.cadence}${info.overdue > 0 ? ` · ${info.overdue} days overdue` : ""}`
-                  : `No document yet · Expected ${c.cadence}`}
+                  : k401Line ?? `No document yet · Expected ${c.cadence}`}
                 {c.extra ? `\n${c.extra}` : ""}
               </Text>
               <View style={styles.catActions}>
