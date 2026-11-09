@@ -392,6 +392,25 @@ export default function DocumentsScreen() {
         handled = true;
       }
     }
+    // Repeat payslip rule (owner, 2026-11-08): a NEW reading of a slip
+    // that is already saved (same earner + same pay-period end)
+    // REPLACES the earlier document in its place - it never stacks a
+    // duplicate. The confirm card showed exactly the fields that take
+    // over, so nothing is lost silently. Applies to every route
+    // (photos, file, pasted text); within one photo batch the page
+    // merge above still assembles a multi-page slip first.
+    if (!handled && extractionType === "payslip") {
+      const key = payslipKey(savedFields);
+      if (key !== "") {
+        const idx = docs.findIndex((d) => d.docType === "payslip" && payslipKey(d.fields ?? {}) === key);
+        if (idx >= 0) {
+          updateIntake({ documents: docs.map((d, i) => (i === idx ? record : d)) });
+          mergedNote = ` Replaced the earlier reading of this payslip (${savedFields["employee_name"] ?? "same earner"}, period ending ${savedFields["pay_period_end"] ?? ""}) - the new reading takes its place; there is still ONE document for this slip.`;
+          handled = true;
+          if (photoBatch) batchSaveRef.current = { key, index: idx };
+        }
+      }
+    }
     if (!handled) {
       updateIntake({ documents: [...docs, record] });
       if (extractionType === "payslip" && photoBatch) {
