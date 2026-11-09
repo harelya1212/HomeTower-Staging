@@ -11,7 +11,7 @@ import { ageOn, earliestAgeReaching, educationFunding, educationLine, projectVal
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
-import { payslipForecast, payslipGaps } from "../payslips.ts";
+import { payslip401kTotals, payslipForecast, payslipGaps } from "../payslips.ts";
 import { fetchQuotes, type QuotesOutcome } from "../quotes";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 
@@ -21,6 +21,16 @@ export const TEAL = "#0E7C86";
 export function money(x: number): string {
   const sign = x < 0 ? "-" : "";
   return `${sign}$${Math.abs(Math.round(x)).toLocaleString("en-US")}`;
+}
+
+/** Compact money for indicator tiles ($3.92M, $107K, $950): tile
+ * values must never truncate - RN Web ignores adjustsFontSizeToFit,
+ * which is how "$3,918,6..." shipped in round 41. */
+export function moneyShort(x: number): string {
+  const a = Math.abs(x);
+  if (a >= 1_000_000) return `$${(x / 1_000_000).toFixed(2)}M`;
+  if (a >= 10_000) return `$${Math.round(x / 1_000)}K`;
+  return money(x);
 }
 
 /** Default annual college cost when the household has not set one
@@ -51,6 +61,10 @@ export default function HomeScreen() {
   const gaps = useMemo(
     () => (slipFc ? [] : payslipGaps(state.intake.documents, today)),
     [slipFc, state.intake.documents, today],
+  );
+  const k401Totals = useMemo(
+    () => payslip401kTotals(state.intake.documents, today, state.jobs),
+    [state.intake.documents, today, state.jobs],
   );
   const effIncome = slipFc ? slipFc.projectedTaxable : state.grossIncome;
   const effFederalWh = slipFc ? slipFc.projectedFederal : state.federalWithholdingYtd;
@@ -104,15 +118,25 @@ export default function HomeScreen() {
     const age = ageOn(m.dob, today);
     const owned = state.assets.filter((a) => (a.kind === "401k" || a.kind === "ira") && m.name.trim() !== "" && a.ownerName.trim().toLowerCase() === m.name.trim().toLowerCase());
     const bal = owned.length ? owned.reduce((s, a) => s + a.value, 0) : m.role === "self" ? retBalance : 0;
-    const mo = owned.length ? owned.reduce((s, a) => s + a.monthly, 0) : m.role === "self" ? retMonthly : 0;
+    const assetMo = owned.length ? owned.reduce((s, a) => s + a.monthly, 0) : m.role === "self" ? retMonthly : 0;
+    // Payslip evidence (owner QA, 2026-11-08): when no asset row
+    // carries a monthly figure, the payroll pace the payslips prove
+    // is the pace - the outlook must not claim $0/mo for a household
+    // whose slips show thousands a month going into the 401(k).
+    // Entered assets still win when they exist.
+    const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+    const slipEarner = k401Totals?.perEarner.find((e) => norm(e.name) === norm(m.name))
+      ?? k401Totals?.perEarner.find((e) => { const a = norm(e.name).split(" "); const b = norm(m.name).split(" "); return a.length > 1 && b.length > 1 && a[0] === b[0] && a[a.length - 1] === b[b.length - 1]; });
+    const paceFromSlips = !(assetMo > 0) && slipEarner?.monthlyPace != null && slipEarner.monthlyPace > 0;
+    const mo = assetMo > 0 ? assetMo : paceFromSlips ? slipEarner!.monthlyPace! : assetMo;
     const need = m.retireTarget > 0 ? m.retireTarget : householdNeed > 0 ? Math.round(householdNeed / Math.max(1, adults.length)) : 0;
-    if (age === null) return { m, age, bal, mo, need, years: 0, projected: 0, onTrack: false, realisticAge: null as number | null, reqMo: 0 };
+    if (age === null) return { m, age, bal, mo, need, years: 0, projected: 0, onTrack: false, realisticAge: null as number | null, reqMo: 0, paceFromSlips };
     const years = Math.max(0, (m.retireAge || 67) - age);
     const projected = projectValue(bal, mo, years, g.assumedReturnPct);
     const onTrack = need > 0 && projected >= need;
     const realisticAge = need > 0 && !onTrack ? earliestAgeReaching(bal, mo, need, g.assumedReturnPct, age, m.retireAge || 67) : null;
     const reqMo = need > 0 && years > 0 ? Math.round(requiredMonthly(bal, need, years, g.assumedReturnPct)) : 0;
-    return { m, age, bal, mo, need, years, projected, onTrack, realisticAge, reqMo };
+    return { m, age, bal, mo, need, years, projected, onTrack, realisticAge, reqMo, paceFromSlips };
   });
 
   // Education funding per child (owner QA round 18, SPEC45 sec. 32):
@@ -313,7 +337,7 @@ export default function HomeScreen() {
       {adults.length > 0 && (
         <View style={styles.card}>
           <Text style={styles.cardLabel}>Retirement outlook - per person</Text>
-          {adultOutlook.map(({ m, age, need, years, projected, onTrack, realisticAge, reqMo, mo }) => {
+          {adultOutlook.map(({ m, age, need, years, projected, onTrack, realisticAge, reqMo, mo, paceFromSlips }) => {
             const pct = need > 0 ? Math.max(0, Math.min(100, Math.round((projected / need) * 100))) : null;
             return (
               <View key={m.id} style={styles.personBlock}>
@@ -326,24 +350,27 @@ export default function HomeScreen() {
                   <>
                     <View style={styles.tilesRow}>
                       <View style={styles.tile}>
-                        <Text adjustsFontSizeToFit numberOfLines={1} style={[styles.tileValue, { color: onTrack ? GREEN : (pct ?? 0) >= 50 ? YELLOW : RED }]}>{pct}%</Text>
+                        <Text numberOfLines={1} style={[styles.tileValue, { color: onTrack ? GREEN : (pct ?? 0) >= 50 ? YELLOW : RED }]}>{pct}%</Text>
                         <Text style={styles.tileLabel}>Funded</Text>
                       </View>
                       <View style={styles.tile}>
-                        <Text adjustsFontSizeToFit numberOfLines={1} style={styles.tileValue}>{money(projected)}</Text>
-                        <Text style={styles.tileLabel}>Projected by {m.retireAge || 67}</Text>
+                        <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(projected)}</Text>
+                        <Text style={styles.tileLabel}>Projected</Text>
                       </View>
                       <View style={styles.tile}>
-                        <Text adjustsFontSizeToFit numberOfLines={1} style={styles.tileValue}>{money(need)}</Text>
+                        <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(need)}</Text>
                         <Text style={styles.tileLabel}>Need</Text>
                       </View>
                     </View>
-                    <Text style={styles.line}>{onTrack ? `🟢 On track for age ${m.retireAge || 67}.` : realisticAge !== null ? `🔴 Ready at ${realisticAge} at today's pace (${money(mo)}/mo) - or save ${money(reqMo)}/mo to retire at ${m.retireAge || 67}.` : `🔴 Not ready by 80 at today's pace (${money(mo)}/mo) - save ${money(reqMo)}/mo to retire at ${m.retireAge || 67}.`}</Text>
+                    <Text style={styles.line}>{onTrack ? `🟢 On track for age ${m.retireAge || 67}.` : realisticAge !== null ? `🔴 Ready at ${realisticAge} at today's pace (${money(mo)}/mo${paceFromSlips ? " from payslips" : ""}) - or save ${money(reqMo)}/mo in total to retire at ${m.retireAge || 67}.` : `🔴 Not ready by 80 at today's pace (${money(mo)}/mo${paceFromSlips ? " from payslips" : ""}) - save ${money(reqMo)}/mo in total to retire at ${m.retireAge || 67}.`}</Text>
                   </>
                 )}
               </View>
             );
           })}
+          {adultOutlook.some((a) => a.paceFromSlips) && k401Totals && (
+            <Text style={styles.footnote}>Pace from payslips: {money(k401Totals.total)} contributed in {k401Totals.year} across {k401Totals.earners} earner{k401Totals.earners === 1 ? "" : "s"}. Balances still count as $0 until a 401(k) statement is added - the funded % can only rise from here.</Text>
+          )}
           {adultOutlook.some((a) => a.m.retireTarget <= 0 && a.need > 0) && householdNeed > 0 && (
             <Text style={styles.footnote}>Need = the household estimate, {money(householdNeed)} in total (70% of income x 25 years), split per adult. Set a personal target in the {state.intake.name || "My House"} tab to make it individual.</Text>
           )}
@@ -360,15 +387,15 @@ export default function HomeScreen() {
                 <Text style={styles.personName}>🎓 {educationLine(c.name || "Child", c.dob, c.studentNow, c.collegeStartYear, c.yearsLeftInCollege, today)}</Text>
                 <View style={styles.tilesRow}>
                   <View style={styles.tile}>
-                    <Text adjustsFontSizeToFit numberOfLines={1} style={[styles.tileValue, { color: funding.gap <= 0 ? GREEN : pct >= 70 ? YELLOW : RED }]}>{pct}%</Text>
+                    <Text numberOfLines={1} style={[styles.tileValue, { color: funding.gap <= 0 ? GREEN : pct >= 70 ? YELLOW : RED }]}>{pct}%</Text>
                     <Text style={styles.tileLabel}>Funded</Text>
                   </View>
                   <View style={styles.tile}>
-                    <Text adjustsFontSizeToFit numberOfLines={1} style={styles.tileValue}>{money(funding.projectedAtStart)}</Text>
-                    <Text style={styles.tileLabel}>Saved, projected to start</Text>
+                    <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(funding.projectedAtStart)}</Text>
+                    <Text style={styles.tileLabel}>Saved by start</Text>
                   </View>
                   <View style={styles.tile}>
-                    <Text adjustsFontSizeToFit numberOfLines={1} style={styles.tileValue}>{money(funding.needAtStart)}</Text>
+                    <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(funding.needAtStart)}</Text>
                     <Text style={styles.tileLabel}>Need ({duration} yrs)</Text>
                   </View>
                 </View>

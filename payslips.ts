@@ -149,7 +149,7 @@ export function payslipGaps(documents: DocumentRecord[], todayIso: string): Pays
 }
 
 export interface Payslip401k {
-  perEarner: Array<{ name: string; total: number; through: string }>;
+  perEarner: Array<{ name: string; total: number; through: string; monthlyPace: number | null }>;
   total: number;
   earners: number;
   through: string; // ISO - freshest period end any component came from
@@ -167,7 +167,7 @@ export interface Payslip401k {
 // so re-uploaded slips and partial readings can never multiply the
 // total. Buckets add within an earner; earners add across the
 // household. Nothing else in the app may sum ytd_k401 fields.
-export function payslip401kTotals(documents: DocumentRecord[], todayIso: string): Payslip401k | null {
+export function payslip401kTotals(documents: DocumentRecord[], todayIso: string, jobs: JobLike[] = []): Payslip401k | null {
   const slips = documents.filter((d) => d.docType === "payslip" && d.fields && (d.fields["employee_name"] ?? "").trim() !== "");
   if (slips.length === 0) return null;
   const thisYear = todayIso.slice(0, 4);
@@ -196,7 +196,22 @@ export function payslip401kTotals(documents: DocumentRecord[], todayIso: string)
     const bon = pick("ytd_k401_bonus");
     if (reg === null && bon === null) continue;
     const eThrough = [reg?.end ?? "", bon?.end ?? ""].sort().slice(-1)[0];
-    perEarner.push({ name: docs[0].fields!["employee_name"] || key, total: (reg?.value ?? 0) + (bon?.value ?? 0), through: eThrough });
+    // Monthly pace (owner QA, 2026-11-08: the retirement outlook
+    // showed $0/mo while the payslips prove a real payroll pace):
+    // the freshest REGULAR slip's current-period contribution,
+    // annualized by the pay frequency (job record when known, else
+    // the semimonthly signature). Bonus contributions are events,
+    // not a pace, so they never set it.
+    let monthlyPace: number | null = null;
+    const job = jobs.find((j) => normName(j.memberName) === key);
+    const perYear = ({ weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 } as Record<string, number>)[(job?.payFrequency ?? "semimonthly").toLowerCase()] ?? 24;
+    for (const x of withEnd) {
+      const f = x.d.fields ?? {};
+      if ((f["payslip_kind"] ?? "regular") === "bonus") continue;
+      const cur = num(f["k401_contribution"]);
+      if (cur !== null) { monthlyPace = Math.round(((cur * perYear) / 12) * 100) / 100; break; }
+    }
+    perEarner.push({ name: docs[0].fields!["employee_name"] || key, total: (reg?.value ?? 0) + (bon?.value ?? 0), through: eThrough, monthlyPace });
     if (eThrough > through) through = eThrough;
     void key;
   }
