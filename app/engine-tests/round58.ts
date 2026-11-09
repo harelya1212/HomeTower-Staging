@@ -75,7 +75,7 @@ const sa = (type: string, year: string, acct: string): DocumentRecord => ({
   docType: type, status: "parsed", capturedOn: "2026-11-09",
   fields: { tax_year: year, account_id: acct },
 });
-eq("KEY: 1099-SA is type + tax year + account", semanticKeyFor(sa("hsa_1099_sa", "2025", "231-851100-001")), "hsa_1099_sa|yr:2025|acct:231-851100-001");
+eq("KEY: 1099-SA is type + tax year + account", semanticKeyFor(sa("hsa_1099_sa", "2025", "231-851100-001")), "hsa_1099_sa|yr:2025|acct:231851100001"); // round 59: account strings compare without punctuation (TRACE B)
 ok("KEY: the two SA forms never share a key", semanticKeyFor(sa("hsa_1099_sa", "2025", "231-851100")) !== semanticKeyFor(sa("hsa_5498_sa", "2025", "231-851100")));
 eq("KEY: an SA form without a tax year has no key", semanticKeyFor({ docType: "hsa_1099_sa", status: "parsed", fields: { account_id: "231-851100-001" } }), null);
 const fanned = (acct: string, asOf: string): DocumentRecord => ({
