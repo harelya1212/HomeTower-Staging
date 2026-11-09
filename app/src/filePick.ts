@@ -17,6 +17,12 @@ export interface PickedImages {
   error?: string;
 }
 
+export interface PickedFiles {
+  files: PickedFile[];
+  cancelled?: boolean;
+  error?: string;
+}
+
 /** Native photo picking goes through expo-image-picker (ocr.ts);
  * this DOM-input variant exists for web builds only. */
 export async function pickImageFiles(): Promise<PickedImages> {
@@ -31,5 +37,18 @@ export async function pickFile(): Promise<PickedFile> {
     return { uri: a.uri, name: a.name ?? "document" };
   } catch (e) {
     return { name: "", error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Round 56: multi-file picking on native - the document picker
+ * allows several files at once; each becomes its own intake-queue
+ * item and is confirmed one at a time. */
+export async function pickFiles(): Promise<PickedFiles> {
+  try {
+    const result = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true, multiple: true });
+    if (result.canceled || !result.assets?.length) return { files: [], cancelled: true };
+    return { files: result.assets.map((a) => ({ uri: a.uri, name: a.name ?? "document" })) };
+  } catch (e) {
+    return { files: [], error: e instanceof Error ? e.message : String(e) };
   }
 }

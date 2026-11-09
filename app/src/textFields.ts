@@ -4,6 +4,24 @@
 // "Label value" and label-line/value-line layouts.
 import type { RawField } from "../engine/extract.ts";
 
+/** Round 56 (device QA defect 3): the empty-read test. A reading is
+ * EMPTY when the text carries fewer than EMPTY_READ_MIN_ALNUM
+ * alphanumeric characters. The threshold: classification needs
+ * several anchor tokens and any real document page - even a sparse
+ * form - yields hundreds of alphanumeric characters; 40 characters
+ * is roughly one short line, so below it there is provably nothing
+ * to classify or fill. An empty read is an extraction failure, not
+ * a classification outcome, and the confirm card must say so. */
+export const EMPTY_READ_MIN_ALNUM = 40;
+
+export function alnumCount(text: string): number {
+  return (text.match(/[0-9A-Za-z]/g) ?? []).length;
+}
+
+export function isEmptyRead(text: string): boolean {
+  return alnumCount(text) < EMPTY_READ_MIN_ALNUM;
+}
+
 /** Turn OCR/plain text into label-value pairs the extractor understands.
  * Handles "Label: value", "Label value" and label-line/value-line layouts. */
 export function textToRawFields(text: string, confidence = 0.9): RawField[] {
