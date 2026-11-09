@@ -23,6 +23,7 @@
 //   values are never overwritten by a re-read of the same source.
 import { extractFields } from "../engine/extract.ts";
 import type { DocumentRecord } from "../engine/intake.ts";
+import { payslipKey } from "./payslips.ts";
 import { textToRawFields } from "./textFields.ts";
 import {
   extractSectionReading,
@@ -226,39 +227,79 @@ function firstName(name: string): string {
   return (name || "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
 }
 
+export interface EduReconYear {
+  year: number;
+  distributions: number;
+  verified: number;
+  unverified: number;
+  asOf: string;
+}
+
+/** The state key for one child's verified education expenses in
+ * one tax year (the persisted eduVerifiedExpenses record). */
+export function eduVerifiedKey(childId: string, year: number): string {
+  return `${childId}:${year}`;
+}
+
+/** One child's 529 distributions per tax year against the
+ * education-expense evidence the user has verified - the exact
+ * mirror of hsaReconciliation (round 58): the distributions side
+ * is document-derived (the freshest reading per year), the
+ * verified side is the user's own count, and the task lifecycle
+ * reads the difference. A record assigned to the child wins; an
+ * unassigned record still counts via the printed beneficiary
+ * name, as the tasks have always resolved it. */
+export function eduReconYearsFor(
+  docs: DocumentRecord[],
+  child: { id: string; name: string },
+  verifiedByChildYear: Record<string, number>,
+): EduReconYear[] {
+  let owned = docs.filter((d) => d.docType === "529_statement" && d.ownerMemberId === child.id);
+  if (!owned.length && firstName(child.name)) {
+    owned = docs.filter((d) => d.docType === "529_statement" && !d.ownerMemberId
+      && firstName(d.fields?.["beneficiary_name"] ?? "") === firstName(child.name));
+  }
+  const byYear = new Map<number, { dist: number; asOf: string }>();
+  for (const d of owned) {
+    const dist = fieldNum(d.fields, "distributions_ytd");
+    if (dist === null || dist <= 0) continue;
+    const asOf = docAsOf(d);
+    const year = Number((asOf || d.capturedOn || "").slice(0, 4));
+    if (!(year > 1900)) continue;
+    const cur = byYear.get(year);
+    if (!cur || asOf > cur.asOf) byYear.set(year, { dist, asOf });
+  }
+  return [...byYear.entries()]
+    .map(([year, v]) => {
+      const verified = Math.max(0, verifiedByChildYear[eduVerifiedKey(child.id, year)] ?? 0);
+      return { year, distributions: v.dist, verified, unverified: Math.max(0, v.dist - verified), asOf: v.asOf };
+    })
+    .sort((a, b) => b.year - a.year);
+}
+
 /** The reconciliation tasks (derived, so one per child/HSA per tax
  * year by construction). Wording is Copilot's, verbatim in shape:
  * the 529 task names the rounded distributions and the tax year;
  * the HSA task names the exact distributions and carries the
- * receipts shape. Unverified never reads as taxable. */
+ * receipts shape. Unverified never reads as taxable. Round 58:
+ * both tasks track an UNRESOLVED remainder - evidence the user
+ * verifies (receipts matched, education expenses verified)
+ * shrinks the figure the task names, and at $0 the task is gone. */
 export function reconciliationTasks(
   docs: DocumentRecord[],
   children: { id: string; name: string }[],
   matchedByYear: Record<string, number>,
+  eduVerifiedByChildYear: Record<string, number> = {},
 ): ReconTask[] {
   const tasks: ReconTask[] = [];
   for (const child of children) {
-    let owned = docs.filter((d) => d.docType === "529_statement" && d.ownerMemberId === child.id);
-    if (!owned.length && firstName(child.name)) {
-      owned = docs.filter((d) => d.docType === "529_statement" && !d.ownerMemberId
-        && firstName(d.fields?.["beneficiary_name"] ?? "") === firstName(child.name));
-    }
-    const byYear = new Map<number, { dist: number; asOf: string }>();
-    for (const d of owned) {
-      const dist = fieldNum(d.fields, "distributions_ytd");
-      if (dist === null || dist <= 0) continue;
-      const asOf = docAsOf(d);
-      const year = Number((asOf || d.capturedOn || "").slice(0, 4));
-      if (!(year > 1900)) continue;
-      const cur = byYear.get(year);
-      if (!cur || asOf > cur.asOf) byYear.set(year, { dist, asOf });
-    }
-    for (const [year, v] of [...byYear.entries()].sort((a, b) => b[0] - a[0])) {
+    for (const y of eduReconYearsFor(docs, child, eduVerifiedByChildYear)) {
+      if (y.unverified <= 0) continue;
       tasks.push({
-        key: `recon529-${child.id}-${year}`,
+        key: `recon529-${child.id}-${y.year}`,
         icon: "🎓",
-        title: `${money0(v.dist)} of ${year} 529 distributions detected. Qualified education expense evidence needs reconciliation.`,
-        detail: `Read from ${child.name || "your child"}'s 529 statement (${dateLabel(v.asOf)}). Bursar ledgers, tuition receipts and scholarship records are the evidence - add them in Documents.`,
+        title: `${money0(y.unverified)} of ${y.year} 529 distributions detected. Qualified education expense evidence needs reconciliation.`,
+        detail: `Read from ${child.name || "your child"}'s 529 statement (${dateLabel(y.asOf)}). 529 distributions ${money0(y.distributions)} / Education expenses verified ${money0(y.verified)} / Still unverified ${money0(y.unverified)} (${y.year}). Bursar ledgers, tuition receipts and scholarship records are the evidence - add them in Documents. Unverified does not mean non-qualified - this is an evidence reminder, not a tax conclusion.`,
         target: "Documents",
       });
     }
@@ -274,6 +315,139 @@ export function reconciliationTasks(
     });
   }
   return tasks;
+}
+
+// ---------------------------------------------------------------------------
+// Dedupe on save (round 58, Copilot's idempotency condition)
+// ---------------------------------------------------------------------------
+//
+// A re-upload of a document the app already holds must refresh the
+// existing evidence, never stack a second copy: same document ->
+// update/reconcile in place -> no duplicate financial facts. Two
+// identity signals, checked in this order at every save:
+//
+// 1. The content FINGERPRINT: an FNV-1a 32-bit hash of the
+//    normalized extracted text (lowercased, whitespace collapsed),
+//    stored on the record at save and at reprocess. The same file
+//    read again produces the same text and therefore the same
+//    fingerprint. Texts that normalize to fewer than
+//    FINGERPRINT_MIN_CHARS characters never fingerprint-match - a
+//    near-empty read is not an identity. A record saved before
+//    fingerprints existed recomputes its own from the retained
+//    rawText, so older saves dedupe too.
+// 2. A SEMANTIC KEY per document kind, for a corrected reading of
+//    the same document whose text (and fingerprint) changed:
+//    payslip = earner + period end; a fanned statement section =
+//    account + period end; a standalone 401(k) statement = owner
+//    + period end; a standalone 529/HSA statement = owner +
+//    period end; an SA tax form = type + tax year + account; an
+//    SSA statement = member + statement date (fingerprint only
+//    when the reading carries no statement date). Every save path
+//    goes through upsertDocument - the fan-out replace and the
+//    payslip replace that rounds 55/56 built by hand are this one
+//    path now.
+
+/** Normalized text is the fingerprint's input: case and spacing
+ * differences between two reads of one document never change its
+ * identity. */
+export function normalizeTextForFingerprint(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** FNV-1a 32-bit over the normalized text, with the normalized
+ * length appended - deterministic, dependency-free, and stable
+ * across runs and platforms. */
+export function fingerprintText(text: string): string {
+  const norm = normalizeTextForFingerprint(text);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < norm.length; i++) {
+    h ^= norm.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `fnv1a:${(h >>> 0).toString(16).padStart(8, "0")}:${norm.length}`;
+}
+
+export const FINGERPRINT_MIN_CHARS = 40;
+
+/** The fingerprint to stamp on a fresh save of this text, or null
+ * when the text is too short to be an identity. */
+export function fingerprintForSave(text: string): string | null {
+  return normalizeTextForFingerprint(text).length >= FINGERPRINT_MIN_CHARS ? fingerprintText(text) : null;
+}
+
+/** A record's fingerprint: the stored stamp when it has one, else
+ * recomputed from its retained text (records saved before round
+ * 58 carry no stamp but do carry their text). */
+export function recordFingerprint(d: DocumentRecord): string | null {
+  if (d.fingerprint) return d.fingerprint;
+  if (d.rawText && normalizeTextForFingerprint(d.rawText).length >= FINGERPRINT_MIN_CHARS) return fingerprintText(d.rawText);
+  return null;
+}
+
+/** The semantic identity of a reading, per document kind (see the
+ * section header). Null when the reading does not carry the facts
+ * its kind's key needs - such a reading dedupes by fingerprint
+ * only, and a genuinely new document always appends. */
+export function semanticKeyFor(d: DocumentRecord): string | null {
+  const f = d.fields ?? {};
+  const asOf = f["statement_as_of"] ?? "";
+  if (d.docType === "hsa_1099_sa" || d.docType === "hsa_5498_sa") {
+    const year = f["tax_year"] ?? "";
+    if (!year) return null;
+    return `${d.docType}|yr:${year}|acct:${f["account_id"] ?? d.accountId ?? ""}`;
+  }
+  if (d.docType === "payslip") {
+    const k = payslipKey(f);
+    return k ? `payslip|${k}` : null;
+  }
+  if (d.accountId) {
+    return asOf ? `${d.docType}|acct:${d.accountId}|${asOf}` : null;
+  }
+  if (d.docType === "401k_statement") {
+    return d.ownerMemberId && asOf ? `401k_statement|owner:${d.ownerMemberId}|${asOf}` : null;
+  }
+  if (d.docType === "529_statement" || d.docType === "hsa_statement") {
+    return asOf ? `${d.docType}|owner:${d.ownerMemberId ?? ""}|${asOf}` : null;
+  }
+  if (d.docType === "ssa_statement") {
+    const date = f["statement_as_of"] || f["source_date"] || f["statement_date"] || "";
+    return d.ownerMemberId && date ? `ssa_statement|owner:${d.ownerMemberId}|${date}` : null;
+  }
+  return null;
+}
+
+export interface UpsertResult {
+  docs: DocumentRecord[];
+  /** Where the reading landed: the replaced record's slot, or the
+   * append position for a genuinely new document. */
+  index: number;
+  /** True when the save refreshed an existing document in place
+   * (by fingerprint or by semantic key) instead of appending. */
+  refreshed: boolean;
+}
+
+/** The single save path for every reading (round 58): fingerprint
+ * match first, then the kind's semantic key, else append. A
+ * refresh replaces the record in its own slot with the new
+ * reading - refreshed facts and stamps - and keeps the earlier
+ * record's owner assignment when the new reading carries none,
+ * so a re-upload can never un-assign a document. */
+export function upsertDocument(docs: DocumentRecord[], record: DocumentRecord): UpsertResult {
+  let idx = -1;
+  const fp = recordFingerprint(record);
+  if (fp) idx = docs.findIndex((d) => d.docType === record.docType && recordFingerprint(d) === fp);
+  if (idx < 0) {
+    const key = semanticKeyFor(record);
+    if (key) idx = docs.findIndex((d) => semanticKeyFor(d) === key);
+  }
+  if (idx < 0) return { docs: [...docs, record], index: docs.length, refreshed: false };
+  const existing = docs[idx];
+  const merged: DocumentRecord = record.ownerMemberId || !existing.ownerMemberId
+    ? record
+    : { ...record, ownerMemberId: existing.ownerMemberId };
+  const out = docs.slice();
+  out[idx] = merged;
+  return { docs: out, index: idx, refreshed: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +509,7 @@ function sectionRecord(section: StatementSection, base: DocumentRecord, periodEn
   const owner = section.kind === "529"
     ? nameMatch(section.personName, members, ["child"])
     : nameMatch(section.personName, members, ["self", "spouse"]);
+  const sectionText = boundRawText(section.text);
   return {
     docType: section.docType,
     status: reading.status,
@@ -345,9 +520,13 @@ function sectionRecord(section: StatementSection, base: DocumentRecord, periodEn
     ...(base.ownerMemberId && section.kind === "529" && !owner ? { ownerMemberId: base.ownerMemberId } : {}),
     uploadId,
     accountId: section.accountId,
-    rawText: boundRawText(section.text),
+    rawText: sectionText,
     mapsVersion,
     extractorVersion: EXTRACTOR_VERSION,
+    // Round 58: a fanned-out reading carries its section text's
+    // fingerprint, so a later re-upload of the same statement
+    // refreshes it in place.
+    ...(fingerprintForSave(sectionText) ? { fingerprint: fingerprintForSave(sectionText) } : {}),
   };
 }
 
@@ -389,7 +568,7 @@ export function reprocessDocuments(
       if (form.sourceDate) fields["source_date"] = form.sourceDate;
       const formBoxes: Record<string, string> = {};
       for (const [k, v] of Object.entries(fields)) if (k.startsWith("box_")) formBoxes[k] = v;
-      out.push({ ...doc, docType: form.kind, fields, formBoxes, mapsVersion: currentVersion, extractorVersion: EXTRACTOR_VERSION });
+      out.push({ ...doc, docType: form.kind, fields, formBoxes, mapsVersion: currentVersion, extractorVersion: EXTRACTOR_VERSION, ...(doc.fingerprint ? {} : fingerprintForSave(text) ? { fingerprint: fingerprintForSave(text) } : {}) });
       notes.push(`Re-read ${label}: it is a ${form.kind === "hsa_5498_sa" ? "Form 5498-SA" : "Form 1099-SA"} (${form.taxYear ?? ""}) - saved under its own type now, with its boxes read.`);
       return;
     }
@@ -458,7 +637,7 @@ export function reprocessDocuments(
         fill(Object.fromEntries(Object.entries(r.fields).map(([k, v]) => [k, String(v)])));
       } catch { /* a type the maps no longer carry: leave the record as it is */ }
     }
-    let next: DocumentRecord = { ...doc, fields: merged, mapsVersion: currentVersion, extractorVersion: EXTRACTOR_VERSION };
+    let next: DocumentRecord = { ...doc, fields: merged, mapsVersion: currentVersion, extractorVersion: EXTRACTOR_VERSION, ...(doc.fingerprint ? {} : fingerprintForSave(text) ? { fingerprint: fingerprintForSave(text) } : {}) };
     if (doc.docType === "401k_statement") {
       const detail = parse401kDetail(text);
       if (detail) {

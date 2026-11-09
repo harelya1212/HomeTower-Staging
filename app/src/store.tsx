@@ -173,6 +173,14 @@ export interface HouseholdState {
    * side is document-derived; this side is the user's own count -
    * the reconciliation on Documents and the Tasks page reads both. */
   hsaReceiptsMatched: Record<string, number>;
+  /** Round 58: qualified education expenses the user has verified
+   * against a child's 529 distributions, in dollars, keyed
+   * "childId:taxYear" (eduVerifiedKey in reconcile.ts). The mirror
+   * of hsaReceiptsMatched: distributions are document-derived,
+   * this side is the user's own count, and the derived 529 task's
+   * unresolved remainder is the difference - at $0 the task is
+   * gone. */
+  eduVerifiedExpenses: Record<string, number>;
   /** Round 55 (workstream G): what the load-time reprocess pass
    * changed, shown once on Documents and dismissible. */
   reprocessNotes: string[];
@@ -233,6 +241,7 @@ export function defaultState(): HouseholdState {
     eduAssignChildId: null,
     events: [],
     hsaReceiptsMatched: {},
+    eduVerifiedExpenses: {},
     reprocessNotes: [],
   };
 }
@@ -331,6 +340,7 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     eduAssignChildId: parsed.eduAssignChildId ?? null,
     events: parsed.events ?? [],
     hsaReceiptsMatched: parsed.hsaReceiptsMatched && typeof parsed.hsaReceiptsMatched === "object" ? parsed.hsaReceiptsMatched : {},
+    eduVerifiedExpenses: parsed.eduVerifiedExpenses && typeof parsed.eduVerifiedExpenses === "object" ? parsed.eduVerifiedExpenses : {},
     reprocessNotes: Array.isArray(parsed.reprocessNotes) ? parsed.reprocessNotes.filter((n) => typeof n === "string") : [],
   };
   // Round 55 reprocessing (workstream G): documents that retained
