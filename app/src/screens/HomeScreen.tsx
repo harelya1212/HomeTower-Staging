@@ -8,7 +8,7 @@ import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { computeFederalTax } from "../../engine/federal.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
-import { ageOn, chooseSpending, deflateToToday, educationFunding, educationLine, householdRetirement, inflateToFuture, projectToCommonDate, projectValue, requiredMonthly, retirementAccuracy, ssForMember, WITHDRAWAL_RATES } from "../goals.ts";
+import { adultStartingBalance, ageOn, chooseSpending, deflateToToday, educationFunding, educationLine, householdRetirement, inflateToFuture, k401StatementFor, monthYearLabel, projectToCommonDate, projectValue, requiredMonthly, retirementAccuracy, ssForMember, WITHDRAWAL_RATES } from "../goals.ts";
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
@@ -125,7 +125,17 @@ export default function HomeScreen() {
   const adultOutlook = adults.map((m) => {
     const age = ageOn(m.dob, today);
     const owned = state.assets.filter((a) => (a.kind === "401k" || a.kind === "ira" || a.kind === "hsa") && m.name.trim() !== "" && a.ownerName.trim().toLowerCase() === m.name.trim().toLowerCase());
-    const bal = owned.length ? owned.reduce((s, a) => s + a.value, 0) : m.role === "self" ? retBalance : 0;
+    // Statement precedence (round 51, Copilot's source doctrine:
+    // statements say what the household HAS): an owned 401(k)
+    // statement's ending balance is this adult's 401(k) starting
+    // balance - it replaces their own 401(k) asset rows inside the
+    // composition, so the same account never counts twice.
+    // adultStartingBalance owns the rule; with no owned statement
+    // it reproduces the pre-round-51 composition exactly.
+    const stmt401kDoc = k401StatementFor(state.intake.documents, m.id);
+    const start = adultStartingBalance({ owned, fallback: m.role === "self" ? retBalance : 0, statement401k: stmt401kDoc?.balance ?? 0 });
+    const bal = start.balance;
+    const stmt401k = start.statementApplied && stmt401kDoc ? { balance: stmt401kDoc.balance, capturedOn: stmt401kDoc.capturedOn } : null;
     const assetMo = owned.length ? owned.reduce((s, a) => s + a.monthly, 0) : m.role === "self" ? retMonthly : 0;
     // Payslip evidence (owner QA, 2026-11-08): when no asset row
     // carries a monthly figure, the payroll pace the payslips prove
@@ -137,10 +147,16 @@ export default function HomeScreen() {
       ?? k401Totals?.perEarner.find((e) => { const a = norm(e.name).split(" "); const b = norm(m.name).split(" "); return a.length > 1 && b.length > 1 && a[0] === b[0] && a[a.length - 1] === b[b.length - 1]; });
     const paceFromSlips = !(assetMo > 0) && slipEarner?.monthlyPace != null && slipEarner.monthlyPace > 0;
     const mo = assetMo > 0 ? assetMo : paceFromSlips ? slipEarner!.monthlyPace! : assetMo;
-    if (age === null) return { m, age, bal, mo, years: 0, projected: 0, paceFromSlips };
+    // Employer match (round 51): when the payslip pace is the pace,
+    // the employer's match proven by the same slips joins the
+    // contribution stream as its own component - it accumulates in
+    // the projection, is displayed on its own line in the
+    // assumptions, and is never folded into the employee figure.
+    const matchMo = paceFromSlips ? (slipEarner?.matchMonthlyPace ?? 0) : 0;
+    if (age === null) return { m, age, bal, mo, matchMo, years: 0, projected: 0, paceFromSlips, stmt401k };
     const years = Math.max(0, (m.retireAge || 67) - age);
-    const projected = projectValue(bal, mo, years, g.assumedReturnPct);
-    return { m, age, bal, mo, years, projected, paceFromSlips };
+    const projected = projectValue(bal, mo + matchMo, years, g.assumedReturnPct);
+    return { m, age, bal, mo, matchMo, years, projected, paceFromSlips, stmt401k };
   });
 
   // Retirement is a HOUSEHOLD goal (round 46, Copilot's pension
@@ -193,7 +209,7 @@ export default function HomeScreen() {
   const projectHousehold = (delay: boolean) => {
     const yearsOwn = adultOutlook.map((a) => a.years + (delay ? flexYearsOf(a.m) : 0));
     const laterYears = yearsOwn.reduce((mx, y) => Math.max(mx, y), 0);
-    const perAtLater = adultOutlook.map((a, i) => projectToCommonDate(a.bal, a.mo, yearsOwn[i], laterYears, g.assumedReturnPct));
+    const perAtLater = adultOutlook.map((a, i) => projectToCommonDate(a.bal, a.mo + a.matchMo, yearsOwn[i], laterYears, g.assumedReturnPct));
     const nominal = perAtLater.reduce((sum, v) => sum + v, 0);
     return { yearsOwn, laterYears, perAtLater, nominal, todays: deflateToToday(nominal, laterYears, g.inflationPct) };
   };
@@ -661,6 +677,12 @@ export default function HomeScreen() {
                     <Text key={m.id} style={styles.line}>Social Security - {m.name || (m.role === "self" ? "You" : "Spouse")}: {ssPerAdult[i].annual > 0 ? (ssPerAdult[i].source === "statement" ? `${money(ssPerAdult[i].annual)}/year (from your Social Security statement)` : `${money(ssPerAdult[i].annual)}/year, claim at ${m.ssClaimAge || 67}`) : "not entered"}</Text>
                   ))}
                   <Text style={styles.line}>Pension: {money(pensionAnnualEff)}/year{pensionFromStatement ? " (from your pension statement)" : ""}</Text>
+                  {adultOutlook.map((a) => (a.matchMo > 0 ? (
+                    <Text key={`match-${a.m.id}`} style={styles.line}>Employer match ({a.m.name || (a.m.role === "self" ? "You" : "Spouse")}): {money(a.matchMo)}/mo (from your payslips)</Text>
+                  ) : null))}
+                  {adultOutlook.map((a) => (a.stmt401k ? (
+                    <Text key={`stmt401k-${a.m.id}`} style={styles.line}>{a.m.name || (a.m.role === "self" ? "You" : "Spouse")} - 401(k) balance from your statement ({monthYearLabel(a.stmt401k.capturedOn)}): {money(a.stmt401k.balance)}</Text>
+                  ) : null))}
                   <Text style={styles.line}>Net rental / other dependable: {money(g.otherRetirementIncomeAnnual || 0)}/year</Text>
                   <Text style={styles.line}>Home equity: excluded from the investable portfolio</Text>
                   {phases && <Text style={styles.line}>Bridge years ({phases.y1}-{phases.y2}): the retired spouse's portfolio keeps growing and is not drawn - the working spouse's income covers those years</Text>}
@@ -678,7 +700,7 @@ export default function HomeScreen() {
                   )}
                 </View>
               ))}
-              {adultOutlook.some((a) => a.paceFromSlips) && k401Totals && (
+              {adultOutlook.some((a) => a.paceFromSlips) && k401Totals && !adultOutlook.some((a) => a.stmt401k) && (
                 <Text style={styles.footnote}>Pace from payslips: {money(k401Totals.total)} contributed in {k401Totals.year} across {k401Totals.earners} earner{k401Totals.earners === 1 ? "" : "s"}. Balances still count as $0 until a 401(k) statement is added - the funded % can only rise from here.</Text>
               )}
             </>

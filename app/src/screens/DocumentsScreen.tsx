@@ -70,6 +70,7 @@ export default function DocumentsScreen() {
   // document so its estimated benefit feeds that adult's dependable
   // income (Home + Retirement Lifestyle).
   const [assignMemberId, setAssignMemberId] = useState<string | null>(null);
+  const [assign401kMemberId, setAssign401kMemberId] = useState<string | null>(null);
   const adults = state.family.filter((m) => m.role === "self" || m.role === "spouse");
   useEffect(() => {
     if (state.eduAssignChildId) {
@@ -500,13 +501,15 @@ export default function DocumentsScreen() {
       savedFields["payslip_kind"] = pendingText && /on demand/i.test(pendingText) ? "bonus" : "regular";
     }
     const ssaOwner = extractionType === "ssa_statement" ? (assignMemberId ?? (adults.length === 1 ? adults[0].id : null)) : null;
+    const k401Owner = extractionType === "401k_statement" ? (assign401kMemberId ?? (adults.length === 1 ? adults[0].id : null)) : null;
+    const docOwner = ssaOwner ?? k401Owner;
     const record: DocumentRecord = {
       docType: extractionType,
       status: extraction.status,
       confidence: extraction.confidence,
       capturedOn: today,
       fields: savedFields,
-      ...(ssaOwner ? { ownerMemberId: ssaOwner } : {}),
+      ...(docOwner ? { ownerMemberId: docOwner } : {}),
       ...(extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.positions.length > 0 ? { holdings: pendingHoldings.positions } : {}),
       ...(pendingSpending && (extractionType === "bank_statement" || extractionType === "card_statement")
         ? { spendingSummary: { months: pendingSpending.months, byCategory: pendingSpending.byCategory } }
@@ -588,6 +591,18 @@ export default function DocumentsScreen() {
         assignNote = ` Saved without an owner - pick whose statement it is so its benefit can count as that adult's Social Security.`;
       }
       setAssignMemberId(null);
+    }
+    if (extractionType === "401k_statement") {
+      const bal = Number(extraction.fields["ending_balance"]);
+      const owner = k401Owner ? state.family.find((m) => m.id === k401Owner) : undefined;
+      if (owner && Number.isFinite(bal) && bal > 0) {
+        assignNote = ` Saved as ${owner.name || "the adult"}'s 401(k) statement: its ending balance ($${bal.toLocaleString("en-US")}) is now the starting balance of their 401(k) in the retirement outlook on Home, replacing the 401(k) figure entered for them in My House so the account is never counted twice. Their payslip pace still sets future contributions.`;
+      } else if (owner) {
+        assignNote = ` Saved as ${owner.name || "the adult"}'s 401(k) statement, but no ending balance could be read from it, so their retirement outlook balance is unchanged.`;
+      } else {
+        assignNote = ` Saved without an owner - pick whose statement it is so its ending balance can count as that adult's 401(k) starting balance.`;
+      }
+      setAssign401kMemberId(null);
     }
     setExtraction(null);
     setDetection(null);
@@ -822,6 +837,21 @@ export default function DocumentsScreen() {
                   const picked = (assignMemberId ?? (adults.length === 1 ? adults[0].id : null)) === m.id;
                   return (
                     <Pressable key={m.id} style={[styles.chip, picked && styles.chipSelected]} onPress={() => setAssignMemberId(m.id)}>
+                      <Text style={picked ? styles.chipTextSelected : styles.chipText}>{m.name || (m.role === "self" ? "You" : "Spouse")}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </>
+          )}
+          {extractionType === "401k_statement" && adults.length > 0 && (
+            <>
+              <Text style={styles.line}>Whose statement is this? Its ending balance becomes that adult's 401(k) starting balance in the retirement outlook:</Text>
+              <View style={styles.chips}>
+                {adults.map((m) => {
+                  const picked = (assign401kMemberId ?? (adults.length === 1 ? adults[0].id : null)) === m.id;
+                  return (
+                    <Pressable key={m.id} style={[styles.chip, picked && styles.chipSelected]} onPress={() => setAssign401kMemberId(m.id)}>
                       <Text style={picked ? styles.chipTextSelected : styles.chipText}>{m.name || (m.role === "self" ? "You" : "Spouse")}</Text>
                     </Pressable>
                   );
