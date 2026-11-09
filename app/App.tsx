@@ -9,6 +9,7 @@ import { checkBuildFreshness } from "./src/buildCheck.ts";
 import DocumentsScreen from "./src/screens/DocumentsScreen.tsx";
 import HomeScreen, { NAVY, TEAL } from "./src/screens/HomeScreen.tsx";
 import IntakeScreen from "./src/screens/IntakeScreen.tsx";
+import LifestyleScreen from "./src/screens/LifestyleScreen.tsx";
 import MyHouseScreen from "./src/screens/MyHouseScreen.tsx";
 import OnboardingScreen from "./src/screens/OnboardingScreen.tsx";
 import PlanScreen from "./src/screens/PlanScreen.tsx";
@@ -83,6 +84,11 @@ function Shell() {
         />
         <Tab.Screen name="Plan" component={PlanScreen} />
         <Tab.Screen name="Intake" component={IntakeScreen} />
+        <Tab.Screen
+          name="Lifestyle"
+          component={LifestyleScreen}
+          options={{ tabBarButton: () => null }}
+        />
       </Tab.Navigator>
     </NavigationContainer>
     <View style={styles.adOverlay}>
