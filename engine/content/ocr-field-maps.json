@@ -34,14 +34,27 @@
    "statement period": "statement_period",
    "ending balance": "ending_balance",
    "loan balance": "loan_balance",
-   "vested balance": "vested_balance"
+   "vested balance": "vested_balance",
+   "pretax roth ytd contributions": "employee_pretax_roth_ytd",
+   "after tax ytd contributions": "after_tax_ytd",
+   "er match ytd contributions": "employer_contribution_period",
+   "total ytd 415 limit contrib": "total_415_ytd",
+   "your contributions": "employee_contributions"
   },
   "hsa_statement": {
    "contributions": "total_contributions",
    "distributions": "total_distributions",
    "employee contribution": "employee_contribution",
    "employer contribution": "employer_contribution",
-   "ending balance": "ending_balance"
+   "ending balance": "ending_balance",
+   "account value": "ending_balance",
+   "balance": "ending_balance",
+   "amount contributed": "total_contributions",
+   "your contribution": "employee_contribution",
+   "statement ending balance": "ending_balance",
+   "statement contributions ytd": "contributions_ytd",
+   "statement distributions ytd": "distributions_ytd",
+   "statement contributions period": "contributions_period"
   },
   "payslip": {
    "401(k)": "k401_contribution",
@@ -130,7 +143,13 @@
    "monthly contribution": "monthly_contribution",
    "automatic contribution": "monthly_contribution",
    "recurring contribution": "monthly_contribution",
-   "total contributions": "contributions_total"
+   "total contributions": "contributions_total",
+   "ending account value": "ending_balance",
+   "statement ending balance": "ending_balance",
+   "statement contributions ytd": "contributions_ytd",
+   "statement distributions ytd": "distributions_ytd",
+   "statement contributions period": "contributions_period",
+   "statement monthly contribution": "monthly_contribution"
   },
   "prior_return": {
    "total income": "total_income",
@@ -161,10 +180,24 @@
    "retirement benefit": "monthly_benefit_estimate",
    "your estimated benefits": "monthly_benefit_estimate",
    "estimated benefits": "monthly_benefit_estimate"
+  },
+  "hsa_5498_sa": {
+   "box 2 total contributions": "box_2_contributions",
+   "box 3 contributions for prior year": "box_3_contributions_prior_year",
+   "box 4 rollover contributions": "box_4_rollover_contributions",
+   "box 5 fair market value": "box_5_fair_market_value",
+   "box 6 account type": "box_6_account_type"
+  },
+  "hsa_1099_sa": {
+   "box 1 gross distribution": "box_1_gross_distribution",
+   "box 2 earnings on excess contributions": "box_2_earnings_on_excess",
+   "box 3 distribution code": "box_3_distribution_code",
+   "box 4 fair market value on date of death": "box_4_fmv_date_of_death",
+   "box 5 account type": "box_5_account_type"
   }
  },
  "pack": "ocr-field-maps",
  "source": "hct prototype textract_service.py",
  "status": "Ported from the hct prototype textract_service.py FIELD_MAPS. Data only - the OCR engine that consumes these maps is chosen separately (local-first per VISION).",
- "version": "1.12"
+ "version": "1.13"
 }
