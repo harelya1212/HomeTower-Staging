@@ -359,7 +359,7 @@ export default function HomeScreen() {
                       </View>
                       <View style={styles.tile}>
                         <Text numberOfLines={1} style={styles.tileValue}>{moneyShort(need)}</Text>
-                        <Text style={styles.tileLabel}>Need</Text>
+                        <Text style={styles.tileLabel}>{adults.length > 1 ? "Need (each)" : "Need"}</Text>
                       </View>
                     </View>
                     <Text style={styles.line}>{onTrack ? `🟢 On track for age ${m.retireAge || 67}.` : realisticAge !== null ? `🔴 Ready at ${realisticAge} at today's pace (${money(mo)}/mo${paceFromSlips ? " from payslips" : ""}) - or save ${money(reqMo)}/mo in total to retire at ${m.retireAge || 67}.` : `🔴 Not ready by 80 at today's pace (${money(mo)}/mo${paceFromSlips ? " from payslips" : ""}) - save ${money(reqMo)}/mo in total to retire at ${m.retireAge || 67}.`}</Text>
