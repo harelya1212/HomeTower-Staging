@@ -17,6 +17,7 @@ import {
   householdRetirement,
   inflateToFuture,
   k401StatementFor,
+  k401StatementFacts,
   k401StatementMatchFor,
   projectToCommonDate,
   projectValue,
@@ -26,6 +27,7 @@ import {
   ssForMember,
   WITHDRAWAL_RATES,
   type DirectionalOutlook,
+  type K401Facts,
   type MatchResolution,
   type RetirementTimeline,
   type StatementMatch,
@@ -48,6 +50,12 @@ export interface AdultOutlook {
    * matchRes for the source label (AC-D5). */
   matchRes: MatchResolution;
   stmtMatch: StatementMatch | null;
+  /** Round 55 (workstream F): the adult's expanded 401(k)
+   * statement facts for DISPLAY in the details (composition, Mega
+   * Backdoor, holdings, election - each with its provenance). The
+   * forecast math never reads this: balances and pace come from
+   * the round-51/52 paths above. */
+  facts: K401Facts | null;
 }
 
 export interface RetirementModel {
@@ -163,10 +171,10 @@ export function computeRetirementModel(input: {
     const stmtMatch = k401StatementMatchFor(state.intake.documents, m.id);
     const matchRes = employerMatchFor({ payslipMonthly: slipEarner?.matchMonthlyPace ?? null, statement: stmtMatch, relevantDocsExist });
     const matchMo = assetMo > 0 ? 0 : matchRes.monthly;
-    if (age === null) return { m, age, bal, mo, matchMo, years: 0, projected: 0, paceFromSlips, stmt401k, matchRes, stmtMatch };
+    if (age === null) return { m, age, bal, mo, matchMo, years: 0, projected: 0, paceFromSlips, stmt401k, matchRes, stmtMatch, facts: k401StatementFacts(state.intake.documents, m.id) };
     const years = Math.max(0, (m.retireAge || 67) - age);
     const projected = projectValue(bal, mo + matchMo, years, g.assumedReturnPct);
-    return { m, age, bal, mo, matchMo, years, projected, paceFromSlips, stmt401k, matchRes, stmtMatch };
+    return { m, age, bal, mo, matchMo, years, projected, paceFromSlips, stmt401k, matchRes, stmtMatch, facts: k401StatementFacts(state.intake.documents, m.id) };
   });
 
   // Retirement is a HOUSEHOLD goal (round 46, Copilot's pension

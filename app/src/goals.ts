@@ -1238,7 +1238,35 @@ export function group2RowProvenance(input: { amount: number; derivedAnnual: numb
 export interface TimelineAdultInput { name: string; currentAge: number; retireAge: number }
 export interface TimelineChip { label: string; age: number }
 export interface TimelineRow { name: string; firstName: string; currentAge: number; desiredAge: number; isReference: boolean }
-export interface TimelineBand { startAge: number; endAge: number; label: string; unreached: boolean }
+export interface TimelineBand {
+  startAge: number;
+  endAge: number;
+  label: string;
+  unreached: boolean;
+  /** Round 54: when NO scenario reaches, the band is drawn as a
+   * faded run-off segment from this age to the axis end instead of
+   * a solid pill at the end. Null for reached and partially reached
+   * paths, whose solid band rendering is unchanged. */
+  fadedStartAge: number | null;
+}
+
+/** One tick-strip label after collision-aware layout (round 54).
+ * The layout is pure and deterministic: boxes come from an estimated
+ * text width at the label font size, never from measured rendering,
+ * so the tests and both usages (compact card, full details) agree. */
+export interface TimelineLabel {
+  kind: "tick" | "goal" | "range";
+  text: string;
+  anchorAge: number;
+  /** Rendered box, in the same units as the axisWidth laid out at. */
+  left: number;
+  right: number;
+  align: "left" | "center" | "right";
+  /** "strip" = the tick strip under the axis; "above" = over the
+   * axis end (the fully unreached range label). */
+  placement: "strip" | "above";
+  dropped: boolean;
+}
 
 export interface RetirementTimeline {
   minAge: number;
@@ -1248,6 +1276,9 @@ export interface RetirementTimeline {
   band: TimelineBand;
   chips: TimelineChip[];
   ticks: number[];
+  /** Collision-aware label layout at TIMELINE_REF_WIDTH; the
+   * component re-runs timelineLabelLayout at its measured width. */
+  labels: TimelineLabel[];
 }
 
 export function retirementTimelineModel(input: {
@@ -1273,12 +1304,16 @@ export function retirementTimelineModel(input: {
     isReference: i === input.referenceIndex,
   }));
   const band: TimelineBand = input.reach.r7 === null
-    ? { startAge: 80, endAge: maxAge, label: "80+", unreached: true }
+    ? {
+        startAge: 80, endAge: maxAge, label: "80+", unreached: true,
+        fadedStartAge: minAge + 0.85 * (maxAge - minAge),
+      }
     : {
         startAge: input.reach.r7,
         endAge: input.reach.r5 === null ? maxAge : input.reach.r5,
         label: input.rangeLabel,
         unreached: input.reach.r5 === null,
+        fadedStartAge: null,
       };
   const raw: TimelineChip[] = [{ label: "Medicare 65", age: 65 }];
   for (const claim of input.ssClaimAges) raw.push({ label: `Social Security ${claim}`, age: claim });
@@ -1294,7 +1329,224 @@ export function retirementTimelineModel(input: {
   chips.sort((a, b) => a.age - b.age);
   const ticks: number[] = [];
   for (let t = Math.ceil(minAge / 10) * 10; t <= maxAge; t += 10) ticks.push(t);
-  return { minAge, maxAge, rows, band, chips, ticks };
+  const labels = timelineLabelLayout({
+    minAge, maxAge, ticks,
+    goalAge: rows[input.referenceIndex].desiredAge,
+    band, axisWidth: TIMELINE_REF_WIDTH,
+  });
+  return { minAge, maxAge, rows, band, chips, ticks, labels };
+}
+
+// ---------------------------------------------------------------------------
+// Tick-strip label layout (round 54, device QA). Round 53 positioned
+// every label with a fixed translateX, so the "Goal 50" label landed
+// on the 50 decade tick and the "80+" range label landed on the 80
+// end tick - unreadable garble at both ends of the axis. The rules:
+// - The goal label and the range label are NEVER dropped.
+// - A decade tick that would overlap either of them (or a tick
+//   already kept) is dropped; the goal label carries its number
+//   anyway, and the range label is the end label when it sits at
+//   the axis end.
+// - If the goal and range labels collide with each other, the range
+//   label slides away first (its anchor is a region, the goal's is
+//   a point); if it is still colliding at the bound, the goal label
+//   slides the other way.
+// - Every box is clamped inside the axis: a box that would cross
+//   the start is left-aligned at the start, one that would cross
+//   the end is right-aligned at the end.
+// - A fully unreached path carries its "80+" label ABOVE the axis
+//   end, right-aligned, and the axis-end tick is dropped: the label
+//   replaces it.
+// ---------------------------------------------------------------------------
+
+/** Canonical axis width the model's own labels are laid out at; the
+ * component re-runs the same pure layout at its measured width. */
+export const TIMELINE_REF_WIDTH = 360;
+const TIMELINE_LABEL_FONT_SIZE = 12;
+const TIMELINE_LABEL_GAP = 2;
+
+/** Deterministic rendered-width estimate for a tick-strip label:
+ * per-character factors at the label font size, plus padding. The
+ * factors run slightly generous on purpose - an overestimate drops
+ * a decade tick a hair early, while an underestimate re-creates the
+ * overlap defect this layout exists to fix. */
+export function timelineTextWidth(text: string, fontSize: number = TIMELINE_LABEL_FONT_SIZE): number {
+  let units = 0;
+  for (const ch of text) {
+    if (ch >= "0" && ch <= "9") units += 0.58;
+    else if (ch >= "A" && ch <= "Z") units += 0.72;
+    else if (ch === " " || ch === "l" || ch === "i") units += 0.3;
+    else if (ch === "-") units += 0.38;
+    else if (ch === "+") units += 0.58;
+    else units += 0.52;
+  }
+  return Math.ceil(units * fontSize) + 4;
+}
+
+export function timelineLabelLayout(input: {
+  minAge: number;
+  maxAge: number;
+  ticks: number[];
+  goalAge: number;
+  band: TimelineBand;
+  axisWidth: number;
+}): TimelineLabel[] {
+  const W = Math.max(1, input.axisWidth);
+  const span = Math.max(1, input.maxAge - input.minAge);
+  const x = (age: number) => ((age - input.minAge) / span) * W;
+  const hit = (a: { left: number; right: number }, b: { left: number; right: number }) =>
+    a.left < b.right + TIMELINE_LABEL_GAP && b.left < a.right + TIMELINE_LABEL_GAP;
+  const place = (anchor: number, width: number) => {
+    let left = anchor - width / 2;
+    if (left < 0) left = 0;
+    if (left + width > W) left = W - width;
+    if (left < 0) left = 0;
+    return { left, right: left + width };
+  };
+  const alignOf = (b: { left: number; right: number }): TimelineLabel["align"] =>
+    b.left <= 0 ? "left" : b.right >= W ? "right" : "center";
+
+  // The range label: a fully unreached path carries it above the
+  // axis end, right-aligned; every other path centres it on the band.
+  const rangeAbove = input.band.fadedStartAge !== null;
+  const rangeWidth = timelineTextWidth(input.band.label);
+  const rangeAnchorAge = rangeAbove ? input.maxAge : (input.band.startAge + input.band.endAge) / 2;
+  const rangeBox = rangeAbove
+    ? { left: Math.max(0, W - rangeWidth), right: W }
+    : place(x(rangeAnchorAge), rangeWidth);
+  const rangeLabel: TimelineLabel = {
+    kind: "range", text: input.band.label, anchorAge: rangeAnchorAge,
+    left: rangeBox.left, right: rangeBox.right, align: alignOf(rangeBox),
+    placement: rangeAbove ? "above" : "strip", dropped: false,
+  };
+
+  const goalText = `Goal ${input.goalAge}`;
+  const goalWidth = timelineTextWidth(goalText);
+  const goalBox = place(x(input.goalAge), goalWidth);
+  if (!rangeAbove && hit(goalBox, rangeBox)) {
+    const dir = rangeBox.left + rangeWidth / 2 >= goalBox.left + goalWidth / 2 ? 1 : -1;
+    let moved = dir > 0
+      ? { left: goalBox.right + TIMELINE_LABEL_GAP, right: goalBox.right + TIMELINE_LABEL_GAP + rangeWidth }
+      : { left: goalBox.left - TIMELINE_LABEL_GAP - rangeWidth, right: goalBox.left - TIMELINE_LABEL_GAP };
+    if (moved.left < 0) moved = { left: 0, right: rangeWidth };
+    if (moved.right > W) moved = { left: W - rangeWidth, right: W };
+    rangeBox.left = moved.left; rangeBox.right = moved.right;
+    rangeLabel.left = moved.left; rangeLabel.right = moved.right;
+    rangeLabel.align = alignOf(moved);
+    if (hit(goalBox, rangeBox)) {
+      let g = dir > 0
+        ? { left: rangeBox.left - TIMELINE_LABEL_GAP - goalWidth, right: rangeBox.left - TIMELINE_LABEL_GAP }
+        : { left: rangeBox.right + TIMELINE_LABEL_GAP, right: rangeBox.right + TIMELINE_LABEL_GAP + goalWidth };
+      if (g.left < 0) g = { left: 0, right: goalWidth };
+      if (g.right > W) g = { left: W - goalWidth, right: W };
+      goalBox.left = g.left; goalBox.right = g.right;
+    }
+  }
+  const goalLabel: TimelineLabel = {
+    kind: "goal", text: goalText, anchorAge: input.goalAge,
+    left: goalBox.left, right: goalBox.right, align: alignOf(goalBox),
+    placement: "strip", dropped: false,
+  };
+
+  const labels: TimelineLabel[] = [goalLabel, rangeLabel];
+  const kept: { left: number; right: number }[] = rangeAbove ? [goalBox] : [goalBox, rangeBox];
+  const maxTick = input.ticks.length ? Math.max(...input.ticks) : null;
+  for (const t of input.ticks) {
+    const text = t >= 80 ? "80+" : String(t);
+    const box = place(x(t), timelineTextWidth(text));
+    let dropped = kept.some((k) => hit(box, k));
+    if (rangeAbove && t === maxTick) dropped = true; // the above-axis label IS the end label
+    labels.push({
+      kind: "tick", text, anchorAge: t, left: box.left, right: box.right,
+      align: alignOf(box), placement: "strip", dropped,
+    });
+    if (!dropped) kept.push(box);
+  }
+  return labels.sort((a, b) => a.anchorAge - b.anchorAge || a.left - b.left);
+}
+
+// ---------------------------------------------------------------------------
+// ROUND 55 - the expanded 401(k) fact set (workstream F). One owned
+// statement carries the whole picture: balance, the year's
+// contribution streams (pretax/Roth, after-tax, employer match, the
+// 415-limit total), the balance composition, the Mega Backdoor Roth
+// figures (after-tax in, Roth conversion balance, after-tax
+// residual), the holdings and the future election. Every fact
+// carries its provenance: the statement and its as-of date. The
+// forecast consumes the balance (round 51) and the match
+// (rounds 51-52); the rest is persisted and displayed - no new
+// projection stream is inferred from it.
+// ---------------------------------------------------------------------------
+
+export interface K401Facts {
+  balance: number | null;
+  pretaxRothYtd: number | null;
+  afterTaxYtd: number | null;
+  matchYtd: number | null;
+  total415Ytd: number | null;
+  employeeContributionsYtd: number | null;
+  pretaxBalance: number | null;
+  matchBalance: number | null;
+  rothConversionBalance: number | null;
+  /** Exactly 0 when the statement prints $0.00 after-tax - a
+   * confirmed zero, distinct from null (not read). */
+  afterTaxBalance: number | null;
+  election: string | null;
+  holdings: { label: string; value: number }[];
+  /** Statement period end (ISO) when the record carries one. */
+  statementAsOf: string | null;
+  capturedOn: string | null;
+}
+
+function factsFromDoc(d: SsDocLike & { capturedOn?: string | null }): K401Facts | null {
+  if (!d.fields) return null;
+  const num = (k: string): number | null => {
+    const raw = d.fields?.[k];
+    if (raw === undefined || raw === "") return null;
+    const v = Number(String(raw).replace(/[^0-9.-]/g, ""));
+    return Number.isFinite(v) ? v : null;
+  };
+  let holdings: { label: string; value: number }[] = [];
+  try {
+    const parsed = JSON.parse(d.fields["holdings_detail"] ?? "[]") as { label: string; value: number }[];
+    if (Array.isArray(parsed)) holdings = parsed.filter((h) => typeof h?.label === "string" && Number.isFinite(h?.value));
+  } catch { holdings = []; }
+  const facts: K401Facts = {
+    balance: num("ending_balance"),
+    pretaxRothYtd: num("employee_pretax_roth_ytd"),
+    afterTaxYtd: num("after_tax_ytd"),
+    matchYtd: num("employer_contribution_period") ?? num("employer_contributions"),
+    total415Ytd: num("total_415_ytd"),
+    employeeContributionsYtd: num("employee_contributions"),
+    pretaxBalance: num("pretax_balance"),
+    matchBalance: num("match_balance"),
+    rothConversionBalance: num("roth_conversion_balance"),
+    afterTaxBalance: num("after_tax_balance"),
+    election: d.fields["future_election"] || null,
+    holdings,
+    statementAsOf: d.fields["statement_as_of"] || null,
+    capturedOn: d.capturedOn ?? null,
+  };
+  return facts.balance !== null || facts.pretaxRothYtd !== null || facts.matchYtd !== null ? facts : null;
+}
+
+/** The freshest 401(k) statement fact set. With a member id, only
+ * that member's OWNED statements count (AC-D3 - no guessing whose
+ * statement it is); without one, the household's freshest statement
+ * (the Documents card is a household surface). */
+export function k401StatementFacts(docs: SsDocLike[], memberId?: string): K401Facts | null {
+  let best: (K401Facts & { key: string }) | null = null;
+  for (const d of docs) {
+    if (d.docType !== "401k_statement") continue;
+    if (memberId !== undefined && d.ownerMemberId !== memberId) continue;
+    const f = factsFromDoc(d);
+    if (!f) continue;
+    const key = f.statementAsOf ?? f.capturedOn ?? "";
+    if (!best || key >= best.key) best = { ...f, key };
+  }
+  if (!best) return null;
+  const { balance, pretaxRothYtd, afterTaxYtd, matchYtd, total415Ytd, employeeContributionsYtd, pretaxBalance, matchBalance, rothConversionBalance, afterTaxBalance, election, holdings, statementAsOf, capturedOn } = best;
+  return { balance, pretaxRothYtd, afterTaxYtd, matchYtd, total415Ytd, employeeContributionsYtd, pretaxBalance, matchBalance, rothConversionBalance, afterTaxBalance, election, holdings, statementAsOf, capturedOn };
 }
 
 /** Monthly contribution needed to reach a target from a balance in a

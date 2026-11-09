@@ -5,6 +5,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { DocumentRecord, HouseholdIntake, Member } from "../engine/intake.ts";
+import { ocrMapsPack } from "../engine/packs.ts";
+import { reprocessDocuments } from "./reconcile.ts";
 
 /** The Retirement Lifestyle page's working state (round 48): the
  * household's spending today, per category, with each lifestyle
@@ -166,6 +168,14 @@ export interface HouseholdState {
   // (tickers, quantities, cash total) leave the device, to the
   // HomeTower sender, under the device secret. See MARKET_PUSH.md.
   marketPush: { consent: boolean; deviceSecret: string | null; syncedOn: string | null };
+  /** Round 55 (workstream D): HSA receipts the user has matched to
+   * distributions, in dollars, keyed by tax year. The distributions
+   * side is document-derived; this side is the user's own count -
+   * the reconciliation on Documents and the Tasks page reads both. */
+  hsaReceiptsMatched: Record<string, number>;
+  /** Round 55 (workstream G): what the load-time reprocess pass
+   * changed, shown once on Documents and dismissible. */
+  reprocessNotes: string[];
 }
 
 const STORAGE_KEY = "hometower.state.v1";
@@ -222,6 +232,8 @@ export function defaultState(): HouseholdState {
     marketPush: { consent: false, deviceSecret: null, syncedOn: null },
     eduAssignChildId: null,
     events: [],
+    hsaReceiptsMatched: {},
+    reprocessNotes: [],
   };
 }
 
@@ -318,7 +330,25 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     marketPush: parsed.marketPush ?? { consent: false, deviceSecret: null, syncedOn: null },
     eduAssignChildId: parsed.eduAssignChildId ?? null,
     events: parsed.events ?? [],
+    hsaReceiptsMatched: parsed.hsaReceiptsMatched && typeof parsed.hsaReceiptsMatched === "object" ? parsed.hsaReceiptsMatched : {},
+    reprocessNotes: Array.isArray(parsed.reprocessNotes) ? parsed.reprocessNotes.filter((n) => typeof n === "string") : [],
   };
+  // Round 55 reprocessing (workstream G): documents that retained
+  // their extracted text are re-read whenever the field maps have
+  // advanced since they were saved - new facts merge in, a combined
+  // statement fans out, a tax form finds its own type. Idempotent:
+  // re-read records are stamped with the current maps version, so
+  // the pass is a no-op until the maps advance again. It must never
+  // break a load, so a failure leaves the saved state untouched.
+  try {
+    const rp = reprocessDocuments(
+      merged.intake.documents ?? [],
+      merged.family.map((m) => ({ id: m.id, name: m.name, role: m.role })),
+      String(ocrMapsPack().version ?? ""),
+    );
+    merged.intake = { ...merged.intake, documents: rp.docs };
+    if (rp.notes.length) merged.reprocessNotes = rp.notes;
+  } catch { /* the saved state stands */ }
   // Migrate legacy member roles saved before the vocabulary bridge:
   // any role outside the engine's three words is mapped now, using
   // the family table (matched by name) for the student flag.
