@@ -35,6 +35,14 @@ export interface DocumentRecord {
    * with; the reprocess pass re-reads records behind the current
    * version when they carry rawText. */
   mapsVersion?: string | null;
+  /** Round 57: the extractor/parser generation that read this
+   * record (EXTRACTOR_VERSION in src/reconcile.ts). The reprocess
+   * pass ALSO re-reads a record whose extractor stamp is behind,
+   * even when its maps version is current - a parser improvement
+   * alone (like the HSA deposit detail) reaches saved records
+   * without a re-upload. Absent on records saved before round 57;
+   * those are governed by their mapsVersion alone. */
+  extractorVersion?: number | null;
   /** Round 55: structured tax-form boxes (hsa_1099_sa / hsa_5498_sa)
    * - the numbered boxes exactly as the form printed them. */
   formBoxes?: Record<string, string> | null;
