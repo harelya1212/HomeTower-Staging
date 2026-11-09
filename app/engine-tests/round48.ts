@@ -1,12 +1,16 @@
 // Round 48 tests: the Copilot golden household example, the
 // lifestyle waterfall identity, the statement CSV parser, and the
-// Assaf harness - his real fixture state stays accuracy X and the
-// collapsed Home card face shows Not personalized / 3 inputs.
+// Assaf harness - his real fixture state stays accuracy X with 3
+// inputs missing. (Round 52 superseded the X card FACE for a
+// data-sufficient household: it is now the directional outlook -
+// the harness face assertions below were updated to exactly that,
+// and only those; the no-target / no-readiness-% law is unchanged.)
 // Run: node engine-tests/round48.ts   (Node >= 22 type stripping)
 import { readFileSync } from "node:fs";
 import {
   ageOn,
   deflateToToday,
+  directionalOutlook,
   householdRetirement,
   lifestyleBreakdown,
   projectToCommonDate,
@@ -121,9 +125,9 @@ function near(name: string, got: number, want: number, tol: number) {
 
 // --- 4. Assaf harness ----------------------------------------------
 // His 5 fixture payslips, nothing personalized: the state must stay
-// accuracy X, the card face must read Not ready to score / Not
-// personalized yet / 3 inputs needed, and the details placeholder
-// must equal the round-47 needBase of 8,539,150.
+// accuracy X with 3 inputs needed, and the details placeholder
+// must equal the round-47 needBase of 8,539,150. (The X face for
+// this state is round 52's directional outlook - see below.)
 {
   const fixture = JSON.parse(readFileSync("/home/hatch/workspace/hometower/prepared-payslips.json", "utf-8"));
   const documents = fixture.records;
@@ -180,17 +184,42 @@ function near(name: string, got: number, want: number, tol: number) {
   eq("harness accuracy level", accuracy.level, "X");
   eq("harness missing count", accuracy.missing.length, 3);
 
-  // The collapsed card-face model the screen renders from these:
+  // The collapsed card-face model the screen renders from these.
+  // ROUND 52 SUPERSESSION (only these face assertions changed): at
+  // X with a drawable path (this harness has pace), the face is the
+  // directional outlook - desired age, current-path range, rating,
+  // one action - still with NO dollar target and NO readiness %.
+  // "Not ready to score" survives only for the not-enough-data
+  // state, which this harness is not (pace is present).
+  const directional = directionalOutlook({
+    adults: adultsModel.map((a) => ({
+      name: "",
+      currentAge: ageOn(a.dob, today),
+      retireAge: a.retireAge,
+      yearsToRetire: Math.max(0, a.retireAge - (ageOn(a.dob, today) ?? 0)),
+      startingBalance: 0,
+      monthly: a.mo,
+    })),
+    spendingAnnual,
+    dependableAnnual: 0,
+    withdrawalRate: 0.04,
+    inflationPct: 2.5,
+    monthlyNet: 0,
+  }, (n) => `$${Math.round(n).toLocaleString("en-US")}`);
   const face = {
-    headline: accuracy.level === "X" ? "Not ready to score" : "?",
-    middleTile: accuracy.level === "X" ? "Not personalized yet" : "?",
+    headline: directional.sufficient ? directional.ratingLabel : "Not ready to score",
+    desiredAge: directional.desiredAge,
+    currentPath: directional.rangeLabel,
     inputsNeeded: accuracy.missing.length,
-    readinessShown: accuracy.level !== "X",
+    readinessShown: false,
+    targetShown: false,
   };
-  eq("face headline", face.headline, "Not ready to score");
-  eq("face middle tile", face.middleTile, "Not personalized yet");
+  eq("face headline (round 52 directional)", face.headline, "Current path misses target");
+  eq("face desired age", face.desiredAge, 50);
+  eq("face current path", face.currentPath, "80+");
   eq("face inputs needed", face.inputsNeeded, 3);
   eq("face shows no readiness %", face.readinessShown, false);
+  eq("face shows no target figure", face.targetShown, false);
 }
 
 console.log(`\nround48: ${pass} passed, ${fail} failed`);
