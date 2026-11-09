@@ -47,6 +47,211 @@ export function retirementNeedEstimate(annualIncome: number): number {
   return Math.round(annualIncome * 0.7 * 25);
 }
 
+/** Starting withdrawal rates (owner QA round 46, Copilot's pension
+ * review): a PARAMETER with named scenarios, never a hardcoded 25x -
+ * 25 is just 1 / 4%. ~3.9% is the cited rate for a 30-year retirement
+ * at 90% success; the base case here is 4.0%. */
+export const WITHDRAWAL_RATES = { conservative: 0.035, base: 0.04, flexible: 0.045 } as const;
+
+export interface HouseholdRetirement {
+  spendingAnnual: number;
+  dependableAnnual: number; // Social Security + pension + other dependable income
+  portfolioGapAnnual: number; // the yearly spending the portfolio itself must fund
+  needBase: number; // portfolio required at the base 4.0% rate
+  needConservative: number; // at 3.5%
+  needFlexible: number; // at 4.5%
+  projectedIncomeAnnual: number; // dependable + projected portfolio x base rate
+  incomeGapAnnual: number; // spending - projected income (negative = covered with spare)
+}
+
+/** Retirement need is a HOUSEHOLD figure (round 46): a couple sharing
+ * one home does not need twice a single's portfolio - housing,
+ * utilities, insurance and food are shared. The need is the spending
+ * the portfolio must fund after dependable income, divided by the
+ * starting withdrawal rate. A single is the same math with one
+ * person\'s inputs - there is no per-person doubling rule. */
+export function householdRetirement(input: {
+  spendingAnnual: number;
+  socialSecurityAnnual: number;
+  pensionAnnual: number;
+  otherAnnual: number;
+  projectedPortfolio: number;
+}): HouseholdRetirement {
+  const dependable =
+    Math.max(0, input.socialSecurityAnnual) + Math.max(0, input.pensionAnnual) + Math.max(0, input.otherAnnual);
+  const gap = Math.max(0, input.spendingAnnual - dependable);
+  const needAt = (rate: number) => (gap > 0 ? Math.round(gap / rate) : 0);
+  const projectedIncome = dependable + Math.max(0, input.projectedPortfolio) * WITHDRAWAL_RATES.base;
+  return {
+    spendingAnnual: input.spendingAnnual,
+    dependableAnnual: dependable,
+    portfolioGapAnnual: gap,
+    needBase: needAt(WITHDRAWAL_RATES.base),
+    needConservative: needAt(WITHDRAWAL_RATES.conservative),
+    needFlexible: needAt(WITHDRAWAL_RATES.flexible),
+    projectedIncomeAnnual: Math.round(projectedIncome),
+    incomeGapAnnual: Math.round(input.spendingAnnual - projectedIncome),
+  };
+}
+
+/** Value of one person's savings at a COMMON household date (round
+ * 47, the timeline fix): contributions stop at their own retirement,
+ * then the balance keeps growing - no draws - until the common date.
+ * Summing two projections taken at different dates was the round-46
+ * shortcut Copilot flagged; every household figure is now valued at
+ * the later retirement date. */
+export function projectToCommonDate(balance: number, monthly: number, yearsContributing: number, yearsTotal: number, annualReturnPct: number): number {
+  const atOwn = projectValue(balance, monthly, yearsContributing, annualReturnPct);
+  return projectValue(atOwn, 0, Math.max(0, yearsTotal - yearsContributing), annualReturnPct);
+}
+
+/** Today's purchasing power of a future amount, and its inverse
+ * (round 47): retirement figures are presented in today's dollars
+ * first, with the future-dollar equivalent shown second. */
+export function deflateToToday(amount: number, years: number, inflationPct: number): number {
+  if (years <= 0 || inflationPct <= 0) return amount;
+  return amount / Math.pow(1 + inflationPct / 100, years);
+}
+export function inflateToFuture(amount: number, years: number, inflationPct: number): number {
+  if (years <= 0 || inflationPct <= 0) return amount;
+  return amount * Math.pow(1 + inflationPct / 100, years);
+}
+
+export type RetirementAccuracyLevel = "X" | "X+" | "X++";
+export interface RetirementAccuracy {
+  level: RetirementAccuracyLevel;
+  label: string; // "Early estimate" | "Planning forecast" | "High-confidence planning forecast"
+  missing: string[]; // the personalization asks, in the order to present them
+}
+
+/** Accuracy levels for the retirement forecast (round 47, Copilot's
+ * scale): X = only age + income known, the card is an early estimate
+ * and must not read as a verdict; X+ = the funding path and at least
+ * one personal input are known; X++ = a real spending target, Social
+ * Security for every adult, pension known (or none, by declaration)
+ * and balances on file. */
+export function retirementAccuracy(input: {
+  spendingSet: boolean;
+  ssEnteredAdults: number;
+  adultCount: number;
+  pensionKnown: boolean;
+  hasBalances: boolean;
+  hasPace: boolean;
+}): RetirementAccuracy {
+  const missing: string[] = [];
+  if (!input.spendingSet) missing.push("a retirement spending target of your own");
+  if (input.adultCount > 0 && input.ssEnteredAdults < input.adultCount) missing.push("a Social Security estimate for each adult");
+  if (!input.pensionKnown) missing.push("pension or other dependable retirement income");
+  const hasFunding = input.hasBalances || input.hasPace;
+  if (input.spendingSet && input.adultCount > 0 && input.ssEnteredAdults >= input.adultCount && input.pensionKnown && input.hasBalances) {
+    return { level: "X++", label: "High-confidence planning forecast", missing };
+  }
+  if (hasFunding && (input.spendingSet || input.ssEnteredAdults > 0 || input.pensionKnown)) {
+    return { level: "X+", label: "Planning forecast", missing };
+  }
+  return { level: "X", label: "Early estimate", missing };
+}
+
+export type LifestyleCategoryState = "continues" | "ends" | "changes";
+
+export interface LifestyleData {
+  amounts: Record<string, number>; // what the household spends today, $/yr, per category
+  states: Record<string, LifestyleCategoryState>; // group-1 rows only; group 2 always ends
+  adjusted: Record<string, number>; // group-1 "changes" rows: the $/yr in retirement
+  additionsAnnual: number; // retirement-only additions $/yr
+  confirmed: boolean; // the user confirmed this target - only then does Home use it
+}
+
+export interface LifestyleCategory {
+  key: string;
+  label: string;
+  group: 1 | 2;
+}
+
+/** The Retirement Lifestyle taxonomy (round 48, Copilot's
+ * expense-based method). Group 1 is lifestyle spending: each row
+ * continues into retirement, ends, or changes amount. Group 2 is
+ * savings and work costs: NOT lifestyle spending - 401(k)/HSA/ESPP/
+ * 529 contributions, payroll taxes and commuting are exactly what
+ * a percentage-of-gross fallback wrongly counts as retirement
+ * spending, which is a core reason that fallback inflates the
+ * target. Group-2 rows end at retirement by definition. */
+export const LIFESTYLE_CATEGORIES: LifestyleCategory[] = [
+  { key: "housing", label: "Housing (mortgage or rent)", group: 1 },
+  { key: "property_tax_hoa", label: "Property tax & HOA", group: 1 },
+  { key: "utilities", label: "Utilities", group: 1 },
+  { key: "food", label: "Food", group: 1 },
+  { key: "transportation", label: "Transportation", group: 1 },
+  { key: "insurance", label: "Insurance", group: 1 },
+  { key: "healthcare", label: "Healthcare", group: 1 },
+  { key: "travel", label: "Travel", group: 1 },
+  { key: "entertainment", label: "Entertainment", group: 1 },
+  { key: "home_maintenance", label: "Home maintenance", group: 1 },
+  { key: "personal", label: "Personal spending", group: 1 },
+  { key: "taxes_retirement", label: "Taxes in retirement", group: 1 },
+  { key: "other", label: "Other spending", group: 1 },
+  { key: "k401", label: "401(k) contributions", group: 2 },
+  { key: "hsa_contrib", label: "HSA contributions", group: 2 },
+  { key: "espp", label: "ESPP purchases", group: 2 },
+  { key: "contrib529", label: "529 contributions", group: 2 },
+  { key: "payroll_taxes", label: "Payroll taxes", group: 2 },
+  { key: "work_commuting", label: "Work & commuting", group: 2 },
+  { key: "college_support", label: "College support (ends when studies end)", group: 2 },
+  { key: "mortgage_ending", label: "Mortgage that ends before retirement", group: 2 },
+];
+
+export const LIFESTYLE_GROUP1 = LIFESTYLE_CATEGORIES.filter((c) => c.group === 1);
+export const LIFESTYLE_GROUP2 = LIFESTYLE_CATEGORIES.filter((c) => c.group === 2);
+
+export interface LifestyleBreakdown {
+  currentSpending: number; // everything the household spends today: both groups
+  endingTotal: number; // group 2 in full + group-1 rows marked Ends
+  changesDelta: number; // signed: sum of (in-retirement - today) over Changes rows
+  additions: number; // retirement-only additions
+  lifestyleAnnual: number; // the retirement lifestyle target, today's dollars
+  lifestyleToday: number; // group-1 today total, before states are applied
+}
+
+/** The waterfall identity, by construction:
+ * currentSpending - endingTotal + changesDelta + additions
+ *   = lifestyleAnnual.
+ * Continues rows contribute today's amount; Changes rows contribute
+ * their adjusted amount (today's amount until one is entered); Ends
+ * rows and all of group 2 contribute nothing. */
+export function lifestyleBreakdown(l: LifestyleData): LifestyleBreakdown {
+  const amt = (k: string) => Math.max(0, l.amounts[k] || 0);
+  let g1Today = 0;
+  let g2Today = 0;
+  let endsG1 = 0;
+  let changesDelta = 0;
+  let lifestyle = 0;
+  for (const c of LIFESTYLE_GROUP1) {
+    const a = amt(c.key);
+    g1Today += a;
+    const st = l.states[c.key] ?? "continues";
+    if (st === "ends") {
+      endsG1 += a;
+    } else if (st === "changes") {
+      const adj = Math.max(0, l.adjusted[c.key] ?? a);
+      changesDelta += adj - a;
+      lifestyle += adj;
+    } else {
+      lifestyle += a;
+    }
+  }
+  for (const c of LIFESTYLE_GROUP2) g2Today += amt(c.key);
+  const additions = Math.max(0, l.additionsAnnual || 0);
+  lifestyle += additions;
+  return {
+    currentSpending: g1Today + g2Today,
+    endingTotal: g2Today + endsG1,
+    changesDelta,
+    additions,
+    lifestyleAnnual: lifestyle,
+    lifestyleToday: g1Today,
+  };
+}
+
 /** Monthly contribution needed to reach a target from a balance in a
  * given number of years (the inverse of projectValue). */
 export function requiredMonthly(balance: number, target: number, years: number, annualReturnPct: number): number {

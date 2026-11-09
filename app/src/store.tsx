@@ -6,6 +6,23 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { DocumentRecord, HouseholdIntake, Member } from "../engine/intake.ts";
 
+/** The Retirement Lifestyle page's working state (round 48): the
+ * household's spending today, per category, with each lifestyle
+ * category marked continues / ends / changes. The confirmed
+ * breakdown is the top source for Home's spending target - it is
+ * built from actual spending, not a percentage of income. */
+export interface LifestyleState {
+  amounts: Record<string, number>;
+  states: Record<string, "continues" | "ends" | "changes">;
+  adjusted: Record<string, number>;
+  additionsAnnual: number;
+  confirmed: boolean;
+}
+
+export function defaultLifestyle(): LifestyleState {
+  return { amounts: {}, states: {}, adjusted: {}, additionsAnnual: 0, confirmed: false };
+}
+
 export interface GoalInputs {
   retirementBalance: number;
   retirementMonthly: number;
@@ -16,6 +33,20 @@ export interface GoalInputs {
   eduYears: number;
   eduTarget: number;
   assumedReturnPct: number; // labelled assumption, editable - never hidden
+  // Household retirement income (round 46): the need is a household
+  // figure - spending minus dependable income, over a withdrawal rate.
+  pensionAnnual: number; // expected pension $/yr, 0 = unset (a pension statement's monthly benefit feeds it when unset)
+  otherRetirementIncomeAnnual: number; // other dependable $/yr (net rent, annuities), 0 = unset
+  retirementSpendingAnnual: number; // target retirement spending $/yr, 0 = unset (default: 70% of projected income, a starting assumption)
+  // Round 47: how the spending target is set, the budget worksheet
+  // behind "build a budget", the inflation assumption behind
+  // today's-dollars figures, and the no-pension declaration that
+  // lets a household with no pension reach the top accuracy level.
+  spendingMode: "estimate" | "custom" | "budget";
+  retirementBudget: { housing: number; food: number; healthcare: number; travel: number; other: number };
+  inflationPct: number; // labelled assumption, default 2.5
+  noPension: boolean; // household declares it has no pension (pension then counts as known)
+  lifestyle: LifestyleState; // round 48: the expense-based retirement target page
   stateRefundTargetLow: number;
   stateRefundTargetHigh: number;
 }
@@ -31,6 +62,10 @@ export interface UiMember {
   dob: string; // YYYY-MM-DD or ""
   retireAge: number; // adults: planned retirement age
   retireTarget: number; // adults: personal retirement target $, 0 = unset (owner QA round 8: per person, not one household figure)
+  ssAnnual: number; // adults: expected Social Security $/yr in retirement, 0 = unset (round 46: feeds the household retirement need)
+  ssClaimAge: number; // adults: planned Social Security claiming age (round 47; 67 = full retirement age)
+  retireFlex: "fixed" | "plus1" | "plus3" | "flexible"; // adults: retirement-age flexibility (round 47 - powers the "work a little longer" sensitivity line)
+  pensionAnnual: number; // adults: this person's own pension $/yr, 0 = unset (round 47: pension is per adult; a statement feeds the household when no one has entered one)
   eduTarget: number; // children: education target for THIS child $, 0 = unset (owner QA round 8: per child)
   studentNow: boolean; // children: currently in college
   collegeStartYear: number; // children: 0 = unknown
@@ -140,6 +175,14 @@ export function defaultState(): HouseholdState {
       assumedReturnPct: 6,
       stateRefundTargetLow: 1000,
       stateRefundTargetHigh: 3000,
+      pensionAnnual: 0,
+      otherRetirementIncomeAnnual: 0,
+      retirementSpendingAnnual: 0,
+      spendingMode: "estimate",
+      retirementBudget: { housing: 0, food: 0, healthcare: 0, travel: 0, other: 0 },
+      inflationPct: 2.5,
+      noPension: false,
+      lifestyle: defaultLifestyle(),
     },
     onboarded: false,
     payrollCheck: { lastConfirmedOn: null, consecutive: 0 },
@@ -196,12 +239,23 @@ export function toEngineRole(uiRole: string, studentNow?: boolean): string {
 
 export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
   const d = defaultState();
+  // Round 48: the lifestyle record is nested - merge it over its own
+  // defaults so a save from before the page existed (or a partial
+  // backup) restores with every sub-field present.
+  const savedLifestyle = (parsed.goals?.lifestyle ?? {}) as Partial<LifestyleState>;
+  const lifestyle: LifestyleState = {
+    ...defaultLifestyle(),
+    ...savedLifestyle,
+    amounts: savedLifestyle.amounts && typeof savedLifestyle.amounts === "object" ? savedLifestyle.amounts : {},
+    states: savedLifestyle.states && typeof savedLifestyle.states === "object" ? savedLifestyle.states : {},
+    adjusted: savedLifestyle.adjusted && typeof savedLifestyle.adjusted === "object" ? savedLifestyle.adjusted : {},
+  };
   const merged: HouseholdState = {
     ...d,
     ...parsed,
     intake: { ...d.intake, ...(parsed.intake ?? {}) },
-    goals: { ...d.goals, ...(parsed.goals ?? {}) },
-    family: (parsed.family ?? []).map((m) => ({ retireTarget: 0, eduTarget: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4, ...m })),
+    goals: { ...d.goals, ...(parsed.goals ?? {}), lifestyle },
+    family: (parsed.family ?? []).map((m) => ({ retireTarget: 0, ssAnnual: 0, ssClaimAge: 67, retireFlex: "fixed" as const, pensionAnnual: 0, eduTarget: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4, ...m })),
     jobs: parsed.jobs ?? [],
     assets: parsed.assets ?? [],
     payrollCheck: parsed.payrollCheck ?? { lastConfirmedOn: null, consecutive: 0 },
