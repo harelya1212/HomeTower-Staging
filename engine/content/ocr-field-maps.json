@@ -71,7 +71,11 @@
    "employee name": "employee_name",
    "employer": "employer",
    "pay period end": "pay_period_end",
-   "check date": "check_date"
+   "check date": "check_date",
+   "medicare tax": "medicare_withheld",
+   "ytd medicare tax": "ytd_medicare_withheld",
+   "medicare": "medicare_withheld",
+   "ytd medicare": "ytd_medicare_withheld"
   },
   "w2": {
    "employee's social security number": "ssn_last4",
@@ -126,10 +130,20 @@
    "monthly benefit": "monthly_benefit",
    "estimated monthly benefit": "monthly_benefit",
    "normal retirement benefit": "monthly_benefit"
+  },
+  "ssa_statement": {
+   "monthly benefit at full retirement age": "monthly_benefit_estimate",
+   "benefit at full retirement age": "monthly_benefit_estimate",
+   "estimated monthly benefit": "monthly_benefit_estimate",
+   "monthly benefit": "monthly_benefit_estimate",
+   "monthly retirement benefit": "monthly_benefit_estimate",
+   "retirement benefit": "monthly_benefit_estimate",
+   "your estimated benefits": "monthly_benefit_estimate",
+   "estimated benefits": "monthly_benefit_estimate"
   }
  },
  "pack": "ocr-field-maps",
  "source": "hct prototype textract_service.py",
  "status": "Ported from the hct prototype textract_service.py FIELD_MAPS. Data only - the OCR engine that consumes these maps is chosen separately (local-first per VISION).",
- "version": "1.8"
+ "version": "1.10"
 }
