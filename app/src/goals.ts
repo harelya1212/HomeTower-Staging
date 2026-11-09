@@ -413,7 +413,7 @@ export interface LifestyleDisplayState {
   lifestyleLabel: string;
 }
 
-export function lifestyleDisplayState(l: LifestyleData, q: QuickEstimateData, ex: LifestyleExceptionsData): LifestyleDisplayState {
+export function lifestyleDisplayState(l: LifestyleData, q: QuickEstimateData, ex: LifestyleExceptions): LifestyleDisplayState {
   const { group1Total, group2Total } = lifestyleGroupTotals(l);
   const hasSpendingEvidence = group1Total > 0 || l.confirmed || q.done;
   const anyAmount = Object.values(l.amounts).some((v) => v > 0) || l.additionsAnnual > 0;
