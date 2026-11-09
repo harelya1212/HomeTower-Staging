@@ -75,7 +75,21 @@
    "medicare tax": "medicare_withheld",
    "ytd medicare tax": "ytd_medicare_withheld",
    "medicare": "medicare_withheld",
-   "ytd medicare": "ytd_medicare_withheld"
+   "ytd medicare": "ytd_medicare_withheld",
+   "401k employer match": "k401_employer_match",
+   "ytd 401k employer match": "ytd_k401_employer_match",
+   "employer 401k match": "k401_employer_match",
+   "ytd employer 401k match": "ytd_k401_employer_match",
+   "401k match": "k401_employer_match",
+   "ytd 401k match": "ytd_k401_employer_match",
+   "employer match": "k401_employer_match",
+   "ytd employer match": "ytd_k401_employer_match",
+   "company match": "k401_employer_match",
+   "ytd company match": "ytd_k401_employer_match",
+   "employer 401k contribution": "k401_employer_match",
+   "ytd employer 401k contribution": "ytd_k401_employer_match",
+   "401k employer contribution": "k401_employer_match",
+   "ytd 401k employer contribution": "ytd_k401_employer_match"
   },
   "w2": {
    "employee's social security number": "ssn_last4",
@@ -145,5 +159,5 @@
  "pack": "ocr-field-maps",
  "source": "hct prototype textract_service.py",
  "status": "Ported from the hct prototype textract_service.py FIELD_MAPS. Data only - the OCR engine that consumes these maps is chosen separately (local-first per VISION).",
- "version": "1.10"
+ "version": "1.11"
 }
