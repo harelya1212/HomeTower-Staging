@@ -65,6 +65,12 @@ export default function DocumentsScreen() {
   // the store intent) or in the confirm card below.
   const [assignChildId, setAssignChildId] = useState<string | null>(null);
   const eduChildren = state.family.filter((m) => m.role === "child");
+  // Round 49: a Social Security statement names ONE adult - the
+  // confirm card asks whose it is, and the choice is stored on the
+  // document so its estimated benefit feeds that adult's dependable
+  // income (Home + Retirement Lifestyle).
+  const [assignMemberId, setAssignMemberId] = useState<string | null>(null);
+  const adults = state.family.filter((m) => m.role === "self" || m.role === "spouse");
   useEffect(() => {
     if (state.eduAssignChildId) {
       setAssignChildId(state.eduAssignChildId);
@@ -493,12 +499,14 @@ export default function DocumentsScreen() {
       // apart by this marker.
       savedFields["payslip_kind"] = pendingText && /on demand/i.test(pendingText) ? "bonus" : "regular";
     }
+    const ssaOwner = extractionType === "ssa_statement" ? (assignMemberId ?? (adults.length === 1 ? adults[0].id : null)) : null;
     const record: DocumentRecord = {
       docType: extractionType,
       status: extraction.status,
       confidence: extraction.confidence,
       capturedOn: today,
       fields: savedFields,
+      ...(ssaOwner ? { ownerMemberId: ssaOwner } : {}),
       ...(extractionType === "brokerage_statement" && pendingHoldings && pendingHoldings.positions.length > 0 ? { holdings: pendingHoldings.positions } : {}),
       ...(pendingSpending && (extractionType === "bank_statement" || extractionType === "card_statement")
         ? { spendingSummary: { months: pendingSpending.months, byCategory: pendingSpending.byCategory } }
@@ -568,6 +576,18 @@ export default function DocumentsScreen() {
       } else if (child) {
         assignNote = ` Saved, but no balance could be read from it, so ${child.name || "the child"}'s college funding was not filled.`;
       }
+    }
+    if (extractionType === "ssa_statement") {
+      const benefit = Number(extraction.fields["monthly_benefit_estimate"]);
+      const owner = ssaOwner ? state.family.find((m) => m.id === ssaOwner) : undefined;
+      if (owner && Number.isFinite(benefit) && benefit > 0) {
+        assignNote = ` Saved as ${owner.name || "the adult"}'s Social Security statement: the estimated benefit ($${benefit.toLocaleString("en-US")}/month at full retirement age) now counts as their dependable income on Home and the Retirement Lifestyle page, unless they type a figure of their own.`;
+      } else if (owner) {
+        assignNote = ` Saved as ${owner.name || "the adult"}'s Social Security statement, but no monthly benefit could be read from it, so nothing counts as Social Security yet.`;
+      } else {
+        assignNote = ` Saved without an owner - pick whose statement it is so its benefit can count as that adult's Social Security.`;
+      }
+      setAssignMemberId(null);
     }
     setExtraction(null);
     setDetection(null);
@@ -791,6 +811,21 @@ export default function DocumentsScreen() {
                     <Text style={assignChildId === c.id ? styles.chipTextSelected : styles.chipText}>{c.name || "Child"}</Text>
                   </Pressable>
                 ))}
+              </View>
+            </>
+          )}
+          {extractionType === "ssa_statement" && adults.length > 0 && (
+            <>
+              <Text style={styles.line}>Whose statement is this? Its estimated monthly benefit counts as that adult's Social Security:</Text>
+              <View style={styles.chips}>
+                {adults.map((m) => {
+                  const picked = (assignMemberId ?? (adults.length === 1 ? adults[0].id : null)) === m.id;
+                  return (
+                    <Pressable key={m.id} style={[styles.chip, picked && styles.chipSelected]} onPress={() => setAssignMemberId(m.id)}>
+                      <Text style={picked ? styles.chipTextSelected : styles.chipText}>{m.name || (m.role === "self" ? "You" : "Spouse")}</Text>
+                    </Pressable>
+                  );
+                })}
               </View>
             </>
           )}

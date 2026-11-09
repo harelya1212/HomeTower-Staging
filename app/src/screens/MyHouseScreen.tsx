@@ -4,7 +4,8 @@ import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from
 import { DateField, StatePicker, TextField } from "../components/Fields.tsx";
 import type { Asset, AssetKind, Job, UiMember } from "../store.tsx";
 import { todayIso, toEngineRole, useHousehold } from "../store.tsx";
-import { NAVY, TEAL } from "./HomeScreen.tsx";
+import { monthYearLabel, ssForMember } from "../goals.ts";
+import { money, NAVY, TEAL } from "./HomeScreen.tsx";
 
 // "My House" - the household's own page (owner QA round 2): the family,
 // the jobs, the assets, in editable tables with big readable type.
@@ -56,13 +57,14 @@ const KIND_BY_DOC: Record<string, AssetKind> = {
 };
 
 export default function MyHouseScreen() {
-  const { state, update, updateIntake } = useHousehold();
+  const { state, update, updateIntake, updateGoals } = useHousehold();
   const navigation = useNavigation<any>();
   const intake = state.intake;
   const family = state.family;
   const jobs = state.jobs;
   const assets = state.assets;
   const familyNames = family.map((m) => m.name.trim()).filter(Boolean);
+  const budgetTotal = (state.goals.retirementBudget.housing || 0) + (state.goals.retirementBudget.food || 0) + (state.goals.retirementBudget.healthcare || 0) + (state.goals.retirementBudget.travel || 0) + (state.goals.retirementBudget.other || 0);
   const [pickedAssets, setPickedAssets] = useState<Set<string>>(new Set());
 
   const setFamily = (next: UiMember[]) => {
@@ -147,6 +149,42 @@ export default function MyHouseScreen() {
               <TextInput style={styles.input} value={String(m.retireAge || "")} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { retireAge: num(v) })} placeholder="67" />
               <Text style={styles.label}>Retirement target ($, optional - this person's own)</Text>
               <TextInput style={styles.input} value={m.retireTarget ? String(m.retireTarget) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { retireTarget: num(v) })} placeholder="You can set this later" />
+              <Text style={styles.label}>Expected Social Security</Text>
+              <Pressable style={styles.prefill} onPress={() => navigation.navigate("Documents")}>
+                <Text style={styles.prefillText}>📄 Upload statement - a Social Security statement in Documents fills this in for {m.name || "this adult"}</Text>
+              </Pressable>
+              {(() => {
+                const ss = ssForMember(m, intake.documents);
+                if (ss.source === "statement") {
+                  const lbl = monthYearLabel(ss.statementOn);
+                  return <Text style={styles.note}>From your Social Security statement{lbl ? ` (${lbl})` : ""}: about ${ss.annual.toLocaleString("en-US")}/yr counts on Home{(m.ssAnnual || 0) > 0 ? " unless the figure below is kept" : ""}.</Text>;
+                }
+                return null;
+              })()}
+              <Text style={styles.label}>or enter manually ($ per year in retirement, optional)</Text>
+              <TextInput style={styles.input} value={m.ssAnnual ? String(m.ssAnnual) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { ssAnnual: num(v) })} placeholder="From your Social Security statement" />
+              <Text style={styles.label}>Social Security claiming age</Text>
+              <View style={styles.chipWrap}>
+                {[62, 67, 70].map((a) => (
+                  <Pressable key={a} onPress={() => patchMember(m.id, { ssClaimAge: a })} style={[styles.chip, m.ssClaimAge === a && styles.chipOn]}>
+                    <Text style={[styles.chipText, m.ssClaimAge === a && styles.chipTextOn]}>{a === 67 ? "67 (full retirement age)" : String(a)}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.label}>Pension</Text>
+              <Pressable style={styles.prefill} onPress={() => navigation.navigate("Documents")}>
+                <Text style={styles.prefillText}>📄 Upload statement - a pension statement in Documents fills this in for {m.name || "this adult"}</Text>
+              </Pressable>
+              <Text style={styles.label}>or enter manually ($ per year, this person, optional)</Text>
+              <TextInput style={styles.input} value={m.pensionAnnual ? String(m.pensionAnnual) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { pensionAnnual: num(v) })} placeholder="Or let a pension statement in Documents speak" />
+              <Text style={styles.label}>Retirement-age flexibility</Text>
+              <View style={styles.chipWrap}>
+                {([["fixed", "Fixed"], ["plus1", "+1 year"], ["plus3", "+3 years"], ["flexible", "Flexible"]] as const).map(([v, label]) => (
+                  <Pressable key={v} onPress={() => patchMember(m.id, { retireFlex: v })} style={[styles.chip, m.retireFlex === v && styles.chipOn]}>
+                    <Text style={[styles.chipText, m.retireFlex === v && styles.chipTextOn]}>{label}</Text>
+                  </Pressable>
+                ))}
+              </View>
             </>
           )}
           {m.role === "child" && (
@@ -202,9 +240,50 @@ export default function MyHouseScreen() {
           <Pressable onPress={() => setFamily(family.filter((x) => x.id !== m.id))}><Text style={styles.remove}>Remove</Text></Pressable>
         </View>
       ))}
-      <Pressable style={styles.addButton} onPress={() => setFamily([...family, { id: newId(), name: "", role: family.length === 0 ? "self" : "child", dob: "", retireAge: 67, retireTarget: 0, eduTarget: 0, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4 }])}>
+      <Pressable style={styles.addButton} onPress={() => setFamily([...family, { id: newId(), name: "", role: family.length === 0 ? "self" : "child", dob: "", retireAge: 67, retireTarget: 0, eduTarget: 0, studentNow: false, collegeStartYear: 0, yearsLeftInCollege: 0, eduBalance: 0, eduMonthly: 0, eduAnnualCost: 0, eduInState: true, eduRoomBoard: true, eduScholarshipYear: 0, eduDurationYears: 4, ssAnnual: 0, ssClaimAge: 67, retireFlex: "fixed" as const, pensionAnnual: 0 }])}>
         <Text style={styles.addText}>+ Add a family member</Text>
       </Pressable>
+
+      <Text style={styles.section}>Retirement - household</Text>
+      <Text style={styles.intro}>The retirement goal on Home is a household figure: what you plan to spend each year in retirement, minus the income that is already dependable (Social Security and pension per person above, net rent and other income here). What is left is what your savings must fund. HomeTower presents it in today's dollars and labels every assumption.</Text>
+      <View style={styles.card}>
+        <Text style={styles.label}>How is the spending target set?</Text>
+        <View style={styles.chipWrap}>
+          {([["estimate", "Use an estimate"], ["custom", "I know my number"], ["budget", "Build a budget"]] as const).map(([v, label]) => (
+            <Pressable key={v} onPress={() => updateGoals({ spendingMode: v })} style={[styles.chip, state.goals.spendingMode === v && styles.chipOn]}>
+              <Text style={[styles.chipText, state.goals.spendingMode === v && styles.chipTextOn]}>{label}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {state.goals.spendingMode === "estimate" && (
+          <Text style={styles.intro}>HomeTower estimates 70% of projected household income. Treat it as a starting assumption, not a need - set your own number when you can.</Text>
+        )}
+        {state.goals.spendingMode === "custom" && (
+          <>
+            <Text style={styles.label}>Retirement spending target ($ per year, in today's dollars)</Text>
+            <TextInput style={styles.input} value={state.goals.retirementSpendingAnnual ? String(state.goals.retirementSpendingAnnual) : ""} keyboardType="numeric" onChangeText={(v) => updateGoals({ retirementSpendingAnnual: num(v) })} placeholder="How much would the household like to spend each year?" />
+          </>
+        )}
+        {state.goals.spendingMode === "budget" && (
+          <>
+            {(["housing", "food", "healthcare", "travel", "other"] as const).map((k) => (
+              <View key={k}>
+                <Text style={styles.label}>{k === "housing" ? "Housing" : k === "food" ? "Food and daily living" : k === "healthcare" ? "Healthcare" : k === "travel" ? "Travel" : "Everything else"} ($ per year)</Text>
+                <TextInput style={styles.input} value={state.goals.retirementBudget[k] ? String(state.goals.retirementBudget[k]) : ""} keyboardType="numeric" onChangeText={(v) => updateGoals({ retirementBudget: { ...state.goals.retirementBudget, [k]: num(v) } })} placeholder="0" />
+              </View>
+            ))}
+            <Text style={styles.intro}>Budget total: ${budgetTotal.toLocaleString("en-US")}/year - this becomes the spending target.</Text>
+          </>
+        )}
+        <Text style={styles.label}>Other dependable income ($ per year - net rent, annuities, optional)</Text>
+        <TextInput style={styles.input} value={state.goals.otherRetirementIncomeAnnual ? String(state.goals.otherRetirementIncomeAnnual) : ""} keyboardType="numeric" onChangeText={(v) => updateGoals({ otherRetirementIncomeAnnual: num(v) })} placeholder="You can set this later" />
+        <View style={styles.toggleRow}>
+          <Text style={styles.label}>This household has no pension</Text>
+          <Switch value={state.goals.noPension} onValueChange={(v) => updateGoals({ noPension: v })} />
+        </View>
+        <Text style={styles.label}>Inflation assumption (%)</Text>
+        <TextInput style={styles.input} value={state.goals.inflationPct ? String(state.goals.inflationPct) : ""} keyboardType="numeric" onChangeText={(v) => updateGoals({ inflationPct: num(v) })} placeholder="2.5" />
+      </View>
 
       <Text style={styles.section}>Jobs</Text>
       <Text style={styles.intro}>One row per job. Changed employer mid-year? End the old row with its last date and add the new job as current - expect two W-2s that year, and HomeTower will ask for both.</Text>

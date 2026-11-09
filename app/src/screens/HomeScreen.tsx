@@ -8,7 +8,7 @@ import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { computeFederalTax } from "../../engine/federal.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
-import { ageOn, deflateToToday, educationFunding, educationLine, householdRetirement, inflateToFuture, lifestyleBreakdown, projectToCommonDate, projectValue, requiredMonthly, retirementAccuracy, WITHDRAWAL_RATES } from "../goals.ts";
+import { ageOn, chooseSpending, deflateToToday, educationFunding, educationLine, householdRetirement, inflateToFuture, projectToCommonDate, projectValue, requiredMonthly, retirementAccuracy, ssForMember, WITHDRAWAL_RATES } from "../goals.ts";
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
@@ -156,15 +156,23 @@ export default function HomeScreen() {
   // worksheet, then the 70%-of-income fallback. The fallback is a
   // placeholder and is labelled as one - never as the household's
   // own target.
-  const lifestyleBd = lifestyleBreakdown(g.lifestyle);
+  // Round 49: the confirmed figure is the EFFECTIVE lifestyle figure
+  // (category model + exception overlays), and the quick estimate
+  // joins the precedence between the budget worksheet and the
+  // fallback - chooseSpending in goals.ts owns the order and tiers.
   const budgetTotalR = (g.retirementBudget.housing || 0) + (g.retirementBudget.food || 0) + (g.retirementBudget.healthcare || 0) + (g.retirementBudget.travel || 0) + (g.retirementBudget.other || 0);
-  const lifestyleConfirmed = g.lifestyle.confirmed && lifestyleBd.lifestyleAnnual > 0;
-  const spendingFromBudget = !lifestyleConfirmed && !(g.retirementSpendingAnnual > 0) && budgetTotalR > 0;
-  const spendingSet = lifestyleConfirmed || g.retirementSpendingAnnual > 0 || budgetTotalR > 0;
+  const spendingChoice = chooseSpending({ lifestyle: g.lifestyle, exceptions: g.exceptions, customAnnual: g.retirementSpendingAnnual || 0, budgetTotal: budgetTotalR, quick: g.quickEstimate, fallback: Math.round(incomeBasis * 0.7) });
+  const spendingTier = spendingChoice.tier;
+  const lifestyleConfirmed = spendingTier === "confirmed";
+  const spendingFromBudget = spendingTier === "set" && !(g.retirementSpendingAnnual > 0) && budgetTotalR > 0;
+  const spendingSet = spendingTier !== "none"; // a quick estimate counts as supplied (round 49)
   const spendingFromDefault = !spendingSet;
-  const spendingAnnual = lifestyleConfirmed ? lifestyleBd.lifestyleAnnual : g.retirementSpendingAnnual > 0 ? g.retirementSpendingAnnual : budgetTotalR > 0 ? budgetTotalR : Math.round(incomeBasis * 0.7);
-  const ssAnnualTotal = adults.reduce((sum, m) => sum + (m.ssAnnual || 0), 0);
-  const ssEnteredAdults = adults.filter((m) => (m.ssAnnual || 0) > 0).length;
+  const spendingAnnual = spendingChoice.spendingAnnual;
+  // Social Security per adult (round 49): a typed figure wins, else
+  // the adult's own Social Security statement (monthly benefit x 12).
+  const ssPerAdult = adults.map((m) => ssForMember(m, state.intake.documents));
+  const ssAnnualTotal = ssPerAdult.reduce((sum, r) => sum + r.annual, 0);
+  const ssEnteredAdults = ssPerAdult.filter((r) => r.annual > 0).length;
   const pensionStmtMonthly = state.intake.documents.reduce((best, d) => {
     if (d.docType !== "pension_statement" || !d.fields) return best;
     const v = Number(String(d.fields["monthly_benefit"] ?? "").replace(/[^0-9.]/g, ""));
@@ -212,7 +220,7 @@ export default function HomeScreen() {
   const accuracyLine = accuracy.level === "X" ? "Retirement estimate - early estimate, personalization needed." : accuracy.level === "X+" ? "Planning forecast." : "High-confidence planning forecast.";
   const coveredByDependable = spendingAnnual > 0 && hhRet.portfolioGapAnnual <= 0;
   const retHeadline = coveredByDependable || (hhRet.needBase > 0 && projectedToday >= hhRet.needBase) ? "On track" : accuracy.level === "X++" ? "Projected shortfall" : "Needs attention";
-  const spendingKnown = spendingSet;
+  const spendingKnown = spendingTier === "confirmed"; // round 49: only a confirmed lifestyle figure earns "Your household target"
   const personalizeParts = accuracy.missing.map((mm) => (mm.includes("spending") ? "retirement spending" : mm.includes("Social Security") ? "Social Security" : "pension or other reliable income"));
   const personalizeSentence = personalizeParts.length > 0 ? `Add ${personalizeParts.length > 1 ? `${personalizeParts.slice(0, -1).join(", ")} and ${personalizeParts[personalizeParts.length - 1]}` : personalizeParts[0]} to personalize it.` : "";
   const phases = (() => {
@@ -280,7 +288,7 @@ export default function HomeScreen() {
   const labelOf = (docType: string) => requests.find((r) => r.docType === docType)?.label ?? docType;
   // Confidence reasons arrive with raw docType tokens - say them
   // the way the Documents page does.
-  const DOC_LABEL: Record<string, string> = { payslip: "Payslip", prior_return: "Last year's filed return", w2: "W-2", "401k_statement": "401(k) statement", hsa_statement: "HSA statement", "529_statement": "529 statement", brokerage_statement: "Brokerage statement", pension_statement: "Pension statement", other: "Document" };
+  const DOC_LABEL: Record<string, string> = { payslip: "Payslip", prior_return: "Last year's filed return", w2: "W-2", "401k_statement": "401(k) statement", hsa_statement: "HSA statement", "529_statement": "529 statement", brokerage_statement: "Brokerage statement", pension_statement: "Pension statement", bank_statement: "Bank statement", card_statement: "Card statement", ssa_statement: "Social Security statement", other: "Document" };
   const prettyReason = (r: string) => {
     const [first, ...rest] = r.split(" ");
     return DOC_LABEL[first] ? [DOC_LABEL[first], ...rest].join(" ") : r;
@@ -637,6 +645,9 @@ export default function HomeScreen() {
               {accuracy.level === "X" && spendingAnnual > 0 && (
                 <Text style={styles.line}>Rough placeholder: {moneyShort(hhRet.needBase)}* - Based on 70% of current income and assuming $0 Social Security or pension. Do not use for retirement decisions.</Text>
               )}
+              {spendingTier === "quick" && (
+                <Text style={styles.line}>Spending basis: your quick estimate.</Text>
+              )}
               <Pressable onPress={() => setShowAssumptions(!showAssumptions)}>
                 <Text style={styles.manualLink}>Forecast assumptions {showAssumptions ? "(hide)" : "(show)"}</Text>
               </Pressable>
@@ -646,8 +657,8 @@ export default function HomeScreen() {
                   <Text style={styles.line}>Annual spending: {money(spendingAnnual)} - today's dollars{spendingFromDefault ? " (70% estimate)" : lifestyleConfirmed ? " (from your Retirement Lifestyle page)" : spendingFromBudget ? " (from your budget)" : ""}</Text>
                   <Text style={styles.line}>Investment return: {g.assumedReturnPct}% - Inflation: {g.inflationPct}%</Text>
                   <Text style={styles.line}>Withdrawal rate: 4.0% (Balanced)</Text>
-                  {adults.map((m) => (
-                    <Text key={m.id} style={styles.line}>Social Security - {m.name || (m.role === "self" ? "You" : "Spouse")}: {(m.ssAnnual || 0) > 0 ? `${money(m.ssAnnual)}/year, claim at ${m.ssClaimAge || 67}` : "not entered"}</Text>
+                  {adults.map((m, i) => (
+                    <Text key={m.id} style={styles.line}>Social Security - {m.name || (m.role === "self" ? "You" : "Spouse")}: {ssPerAdult[i].annual > 0 ? (ssPerAdult[i].source === "statement" ? `${money(ssPerAdult[i].annual)}/year (from your Social Security statement)` : `${money(ssPerAdult[i].annual)}/year, claim at ${m.ssClaimAge || 67}`) : "not entered"}</Text>
                   ))}
                   <Text style={styles.line}>Pension: {money(pensionAnnualEff)}/year{pensionFromStatement ? " (from your pension statement)" : ""}</Text>
                   <Text style={styles.line}>Net rental / other dependable: {money(g.otherRetirementIncomeAnnual || 0)}/year</Text>
