@@ -33,6 +33,7 @@ import { GREEN, RED } from "../components/Gauge.tsx";
 import {
   ageOn,
   chooseSpending,
+  docEvidenceStatus,
   householdRetirement,
   lifestyleBreakdown,
   lifestyleDisplayState,
@@ -41,12 +42,13 @@ import {
   pensionOnFile,
   quickBreakdown,
   ssForMember,
+  valueStatusLabel,
   LIFESTYLE_GROUP1,
   LIFESTYLE_GROUP2,
   type LifestyleCategory,
   type LifestyleCategoryState,
 } from "../goals.ts";
-import { payslip401kTotals } from "../payslips.ts";
+import { payslip401kTotals, payslipDeductionTotals } from "../payslips.ts";
 import { consumeWizardIntent, todayIso, useHousehold, type LifestyleExceptionsState, type LifestyleState, type QuickEstimateState } from "../store.tsx";
 import { money, moneyShort, NAVY, TEAL } from "./HomeScreen.tsx";
 
@@ -99,6 +101,49 @@ export default function LifestyleScreen() {
     [state.intake.documents, today, state.jobs],
   );
   const pace401kAnnual = k401Totals ? Math.round(k401Totals.perEarner.reduce((s, e) => s + (e.monthlyPace ?? 0), 0) * 12) : 0;
+  // ROUND 52 - ESPP and HSA join the 401(k) as document-derived
+  // group-2 rows (payslipDeductionTotals), and 529 contributions
+  // read off the household's 529 statements. These power both the
+  // prefill below and the provenance badges on the rows: a figure
+  // the documents supplied is labelled with its source, and a row
+  // no document carries reads Unknown / Not detected - never a
+  // silent $0 (spec section F, GT7).
+  const dedTotals = useMemo(
+    () => payslipDeductionTotals(state.intake.documents, today, state.jobs),
+    [state.intake.documents, today, state.jobs],
+  );
+  const paceEsppAnnual = dedTotals?.esppMonthlyPace ? Math.round(dedTotals.esppMonthlyPace * 12) : 0;
+  const paceHsaAnnual = dedTotals?.hsaMonthlyPace ? Math.round(dedTotals.hsaMonthlyPace * 12) : 0;
+  const stmt529Monthly = (() => {
+    let monthly: number | null = null;
+    let bestOn = "";
+    for (const d of state.intake.documents) {
+      if (d.docType !== "529_statement" || !d.fields) continue;
+      const v = Number(String(d.fields["monthly_contribution"] ?? "").replace(/[^0-9.]/g, ""));
+      if (Number.isFinite(v) && v > 0 && (d.capturedOn ?? "") >= bestOn) { monthly = v; bestOn = d.capturedOn ?? ""; }
+    }
+    return monthly;
+  })();
+  const docDerivedAnnual: Record<string, number> = { k401: pace401kAnnual, hsa_contrib: paceHsaAnnual, espp: paceEsppAnnual, contrib529: stmt529Monthly ? Math.round(stmt529Monthly * 12) : 0 };
+  const docItemFor: Record<string, "espp" | "hsa" | "529"> = { hsa_contrib: "hsa", espp: "espp", contrib529: "529" };
+  const group2Badge = (key: string): string | null => {
+    const amount = life.amounts[key] || 0;
+    const derived = docDerivedAnnual[key] ?? 0;
+    if (amount > 0 && derived > 0 && amount === derived) {
+      if (key === "k401") return "From payslips";
+      const item = docItemFor[key];
+      return item ? valueStatusLabel(docEvidenceStatus(state.intake.documents, item)) : null;
+    }
+    if (amount === 0) {
+      const item = docItemFor[key];
+      if (!item) return null;
+      const st = docEvidenceStatus(state.intake.documents, item);
+      if (st === "not_detected") return "Not detected in your documents";
+      if (st === "unknown") return "Unknown - no document shows this yet";
+      return valueStatusLabel(st);
+    }
+    return null;
+  };
 
   // --- Spending evidence from statement documents -----------------
   const stmtDocs = state.intake.documents.filter((d) => d.docType === "bank_statement" || d.docType === "card_statement");
@@ -142,6 +187,12 @@ export default function LifestyleScreen() {
       }
     }
     if (pace401kAnnual > 0 && !(amounts["k401"] > 0)) { amounts["k401"] = pace401kAnnual; changed = true; }
+    // ROUND 52: the same fill-if-empty discipline for the other
+    // document-derived rows - ESPP and HSA pace from the payslips,
+    // 529 contributions from the household's 529 statements.
+    if (paceEsppAnnual > 0 && !(amounts["espp"] > 0)) { amounts["espp"] = paceEsppAnnual; changed = true; }
+    if (paceHsaAnnual > 0 && !(amounts["hsa_contrib"] > 0)) { amounts["hsa_contrib"] = paceHsaAnnual; changed = true; }
+    if (stmt529Monthly && stmt529Monthly > 0 && !(amounts["contrib529"] > 0)) { amounts["contrib529"] = Math.round(stmt529Monthly * 12); changed = true; }
     if (changed) updateGoals({ lifestyle: { ...life, amounts, confirmed: false } });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
@@ -426,17 +477,21 @@ export default function LifestyleScreen() {
             {pace401kAnnual > 0 && (
               <Text style={styles.note}>401(k) contributions are prefilled from your payslips (about {money(pace401kAnnual)}/yr across earners) - edit any figure that differs.</Text>
             )}
-            {LIFESTYLE_GROUP2.map((c) => (
-              <View key={c.key} style={styles.catRow}>
-                <View style={styles.catHead}>
-                  <Text style={[styles.catName, styles.muted]}>{c.label}</Text>
-                  <View style={styles.endsBadge}><Text style={styles.endsBadgeText}>Ends</Text></View>
-                  <View style={styles.catInput}>
-                    <AmountInput value={life.amounts[c.key] || 0} onChange={(v) => setAmount(c.key, v)} />
+            {LIFESTYLE_GROUP2.map((c) => {
+              const badge = group2Badge(c.key);
+              return (
+                <View key={c.key} style={styles.catRow}>
+                  <View style={styles.catHead}>
+                    <Text style={[styles.catName, styles.muted]}>{c.label}</Text>
+                    <View style={styles.endsBadge}><Text style={styles.endsBadgeText}>Ends</Text></View>
+                    <View style={styles.catInput}>
+                      <AmountInput value={life.amounts[c.key] || 0} onChange={(v) => setAmount(c.key, v)} />
+                    </View>
                   </View>
+                  {badge && <Text style={styles.note}>{badge}</Text>}
                 </View>
-              </View>
-            ))}
+              );
+            })}
           </View>
     </>
   );

@@ -14,7 +14,8 @@ import type { RawField } from "../../engine/extract.ts";
 import { parseHoldings, parsePlanAccount, positionValue, type HoldingsParse, type PlanAccount } from "../holdings.ts";
 import { parseSpendingCsv, type CsvSpending } from "../spendingCsv.ts";
 import { parsePayslipRows } from "../payslipRows.ts";
-import { mergePayslipFields, payslip401kTotals, payslipKey } from "../payslips.ts";
+import { docEvidenceStatus, employerMatchFor, k401StatementMatchFor, monthYearLabel } from "../goals.ts";
+import { mergePayslipFields, payslip401kTotals, payslipDeductionTotals, payslipKey } from "../payslips.ts";
 import { pickFile, pickImageFiles } from "../filePick";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
@@ -652,6 +653,55 @@ export default function DocumentsScreen() {
     : s === "aging" ? { t: "AGING", bg: "#FDF0DA", fg: "#8A5A00" }
     : s === "missing" ? { t: "MISSING", bg: "#E5EBF1", fg: "#44566B" }
     : { t: "UP TO DATE", bg: "#DDF3E8", fg: "#0C6B4A" };
+  // ROUND 52 - provenance lines on the document-derived cards: an
+  // item no document carries is "Unknown" (no document) or "Not
+  // detected" (documents exist, item absent) - never a $0. The
+  // employer match resolves household-wide here (payslip pace
+  // first, then any member's owned statement); ESPP and HSA read
+  // off the payslips via payslipDeductionTotals.
+  const dedTotals = useMemo(() => payslipDeductionTotals(docs, today, state.jobs), [docs, today, state.jobs]);
+  const matchHouseholdLine = (() => {
+    const k = payslip401kTotals(docs, today);
+    const slipMatch = k ? k.perEarner.reduce<number | null>((acc, e) => (e.matchMonthlyPace === null ? acc : (acc ?? 0) + e.matchMonthlyPace), null) : null;
+    let stmt: ReturnType<typeof k401StatementMatchFor> = null;
+    for (const m of state.family) {
+      const s = k401StatementMatchFor(docs, m.id);
+      if (s && (!stmt || (s.capturedOn ?? "") >= (stmt.capturedOn ?? ""))) stmt = s;
+    }
+    const res = employerMatchFor({ payslipMonthly: slipMatch, statement: stmt, relevantDocsExist: docs.some((d) => d.docType === "payslip" || d.docType === "401k_statement") });
+    if (res.monthly > 0 && res.status === "from_statement") return `Employer match: $${Math.round(res.monthly).toLocaleString("en-US")}/mo · Source: 401(k) statement, ${monthYearLabel(res.statementOn)}`;
+    if (res.monthly > 0) return `Employer match: $${Math.round(res.monthly).toLocaleString("en-US")}/mo (from your payslips)`;
+    if (res.detectedNotPaced && stmt) return `Employer match: $${Math.round(stmt.periodTotal).toLocaleString("en-US")} on a 401(k) statement (${monthYearLabel(res.statementOn)}) - its period is not stated, so no monthly pace is counted yet`;
+    if (res.status === "not_detected") return "Employer match: Not detected on your payslips - a 401(k) statement would show it";
+    return "Employer match: Unknown - no payslip or 401(k) statement yet";
+  })();
+  const hsaLine = (() => {
+    const st = docEvidenceStatus(docs, "hsa");
+    if (st === "from_payslip" && dedTotals) return `HSA contributions: $${Math.round(dedTotals.hsaYtd).toLocaleString("en-US")} so far this year (from your payslips)${dedTotals.hsaMonthlyPace ? ` · running at $${Math.round(dedTotals.hsaMonthlyPace).toLocaleString("en-US")}/mo` : ""}`;
+    if (st === "from_statement") return "HSA contributions: on your HSA statement";
+    if (st === "not_detected") return "HSA contributions: Not detected on your payslips";
+    return "HSA contributions: Unknown - no payslip or HSA statement yet";
+  })();
+  const edu529Line = (() => {
+    const stmts = docs.filter((d) => d.docType === "529_statement" && d.fields);
+    let monthly: number | null = null;
+    for (const d of stmts) {
+      const v = Number(String(d.fields?.["monthly_contribution"] ?? "").replace(/[^0-9.]/g, ""));
+      if (Number.isFinite(v) && v > 0) monthly = v;
+    }
+    if (monthly !== null) return `529 contributions: $${Math.round(monthly).toLocaleString("en-US")}/mo (from your 529 statement)`;
+    const st = docEvidenceStatus(docs, "529");
+    if (st === "not_detected") return "529 contributions: Not detected on your statements";
+    return "529 contributions: Unknown - no 529 statement yet";
+  })();
+  const esppLine = (() => {
+    const hasEvent = state.events.some((e) => e.kind === "espp_purchase");
+    const st = docEvidenceStatus(docs, "espp");
+    if (st === "from_payslip" && dedTotals && dedTotals.esppYtd > 0) return `ESPP: $${Math.round(dedTotals.esppYtd).toLocaleString("en-US")} contributed so far this year (from your payslips)${dedTotals.esppMonthlyPace ? ` · running at $${Math.round(dedTotals.esppMonthlyPace).toLocaleString("en-US")}/mo` : ""}`;
+    if (hasEvent) return "ESPP: purchases recorded as events below";
+    if (st === "not_detected") return "ESPP: Not detected on your payslips";
+    return "ESPP: Unknown - no payslip shows an employee stock purchase plan yet";
+  })();
   // Needs list = profile requests BEYOND the Ongoing center (owner,
   // 2026-11-08): a document type the Ongoing center already tracks
   // never appears in the needs list too - no asking twice.
@@ -933,6 +983,9 @@ export default function DocumentsScreen() {
                   : k401Line ?? `No document yet · Expected ${c.cadence}`}
                 {c.extra ? `\n${c.extra}` : ""}
               </Text>
+              {c.key === "401k" && <Text style={styles.line}>{matchHouseholdLine}</Text>}
+              {c.key === "hsa" && <Text style={styles.line}>{hsaLine}</Text>}
+              {c.key === "529" && <Text style={styles.line}>{edu529Line}</Text>}
               <View style={styles.catActions}>
                 <Pressable style={[styles.button, { flex: 1 }]} onPress={() => setChooserFor(chooserFor === c.key ? null : c.key)}>
                   <Text style={styles.buttonText}>Upload {c.key === "payslip" ? "a payslip" : "a statement"}</Text>
@@ -1012,6 +1065,7 @@ export default function DocumentsScreen() {
             ? `Last event: ${EVENT_LABEL[lastEvent.kind]} - ${isoToUs(lastEvent.date)}${lastEvent.amount > 0 ? ` - $${lastEvent.amount.toLocaleString()}` : ""}${lastEvent.note ? ` - ${lastEvent.note}` : ""} · ${state.events.length} event${state.events.length === 1 ? "" : "s"} recorded`
             : "No events recorded yet. Bonuses also appear inside payslips - events keep their own timeline."}
         </Text>
+        <Text style={styles.line}>{esppLine}</Text>
         <View style={styles.catActions}>
           <Pressable style={[styles.button, { flex: 1 }]} onPress={() => setShowEventForm((s) => !s)}>
             <Text style={styles.buttonText}>Add an event</Text>

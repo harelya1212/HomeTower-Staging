@@ -8,13 +8,15 @@ import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { computeFederalTax } from "../../engine/federal.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
-import { adultStartingBalance, ageOn, chooseSpending, deflateToToday, educationFunding, educationLine, householdRetirement, inflateToFuture, k401StatementFor, monthYearLabel, projectToCommonDate, projectValue, requiredMonthly, retirementAccuracy, ssForMember, WITHDRAWAL_RATES } from "../goals.ts";
+import { ageOn, educationFunding, educationLine } from "../goals.ts";
+import RetirementDetails from "../components/RetirementDetails.tsx";
+import { computeRetirementModel } from "../retirementModel.ts";
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
 import { payslip401kTotals, payslipForecast, payslipGaps } from "../payslips.ts";
 import { fetchQuotes, type QuotesOutcome } from "../quotes";
-import { buildProfileExtras, setWizardIntent, todayIso, useHousehold } from "../store.tsx";
+import { buildProfileExtras, setRetirementIntent, setWizardIntent, todayIso, useHousehold } from "../store.tsx";
 
 export const NAVY = "#0B2A4A";
 export const TEAL = "#0E7C86";
@@ -117,137 +119,22 @@ export default function HomeScreen() {
   const children = state.family.filter((m) => m.role === "child");
   const hasIncome = effIncome > 0;
 
-  // Retirement outlook per adult (owner QA round 18): not a ring - an
-  // answer. Can this person retire at the age they chose, at today's
-  // pace? If not, at what age does the money work, or what monthly
-  // contribution makes the chosen age work?
-  const adults = state.family.filter((m) => m.role === "self" || m.role === "spouse");
-  const adultOutlook = adults.map((m) => {
-    const age = ageOn(m.dob, today);
-    const owned = state.assets.filter((a) => (a.kind === "401k" || a.kind === "ira" || a.kind === "hsa") && m.name.trim() !== "" && a.ownerName.trim().toLowerCase() === m.name.trim().toLowerCase());
-    // Statement precedence (round 51, Copilot's source doctrine:
-    // statements say what the household HAS): an owned 401(k)
-    // statement's ending balance is this adult's 401(k) starting
-    // balance - it replaces their own 401(k) asset rows inside the
-    // composition, so the same account never counts twice.
-    // adultStartingBalance owns the rule; with no owned statement
-    // it reproduces the pre-round-51 composition exactly.
-    const stmt401kDoc = k401StatementFor(state.intake.documents, m.id);
-    const start = adultStartingBalance({ owned, fallback: m.role === "self" ? retBalance : 0, statement401k: stmt401kDoc?.balance ?? 0 });
-    const bal = start.balance;
-    const stmt401k = start.statementApplied && stmt401kDoc ? { balance: stmt401kDoc.balance, capturedOn: stmt401kDoc.capturedOn } : null;
-    const assetMo = owned.length ? owned.reduce((s, a) => s + a.monthly, 0) : m.role === "self" ? retMonthly : 0;
-    // Payslip evidence (owner QA, 2026-11-08): when no asset row
-    // carries a monthly figure, the payroll pace the payslips prove
-    // is the pace - the outlook must not claim $0/mo for a household
-    // whose slips show thousands a month going into the 401(k).
-    // Entered assets still win when they exist.
-    const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
-    const slipEarner = k401Totals?.perEarner.find((e) => norm(e.name) === norm(m.name))
-      ?? k401Totals?.perEarner.find((e) => { const a = norm(e.name).split(" "); const b = norm(m.name).split(" "); return a.length > 1 && b.length > 1 && a[0] === b[0] && a[a.length - 1] === b[b.length - 1]; });
-    const paceFromSlips = !(assetMo > 0) && slipEarner?.monthlyPace != null && slipEarner.monthlyPace > 0;
-    const mo = assetMo > 0 ? assetMo : paceFromSlips ? slipEarner!.monthlyPace! : assetMo;
-    // Employer match (round 51): when the payslip pace is the pace,
-    // the employer's match proven by the same slips joins the
-    // contribution stream as its own component - it accumulates in
-    // the projection, is displayed on its own line in the
-    // assumptions, and is never folded into the employee figure.
-    const matchMo = paceFromSlips ? (slipEarner?.matchMonthlyPace ?? 0) : 0;
-    if (age === null) return { m, age, bal, mo, matchMo, years: 0, projected: 0, paceFromSlips, stmt401k };
-    const years = Math.max(0, (m.retireAge || 67) - age);
-    const projected = projectValue(bal, mo + matchMo, years, g.assumedReturnPct);
-    return { m, age, bal, mo, matchMo, years, projected, paceFromSlips, stmt401k };
-  });
-
-  // Retirement is a HOUSEHOLD goal (round 46, Copilot's pension
-  // review): the spending target minus dependable income (Social
-  // Security + pension + other), divided by a starting withdrawal
-  // rate - never a per-person figure doubled, because a couple
-  // shares housing, utilities, insurance and food. Per-person rows
-  // below stay as attribution: balances and accounts ARE personal.
-  const incomeBasis = slipFc ? slipFc.projectedGross : effIncome;
-  // Round 48: the spending target's source, in order - the
-  // Retirement Lifestyle page once the household confirms it (built
-  // from actual spending), then a custom figure, then the budget
-  // worksheet, then the 70%-of-income fallback. The fallback is a
-  // placeholder and is labelled as one - never as the household's
-  // own target.
-  // Round 49: the confirmed figure is the EFFECTIVE lifestyle figure
-  // (category model + exception overlays), and the quick estimate
-  // joins the precedence between the budget worksheet and the
-  // fallback - chooseSpending in goals.ts owns the order and tiers.
-  const budgetTotalR = (g.retirementBudget.housing || 0) + (g.retirementBudget.food || 0) + (g.retirementBudget.healthcare || 0) + (g.retirementBudget.travel || 0) + (g.retirementBudget.other || 0);
-  const spendingChoice = chooseSpending({ lifestyle: g.lifestyle, exceptions: g.exceptions, customAnnual: g.retirementSpendingAnnual || 0, budgetTotal: budgetTotalR, quick: g.quickEstimate, fallback: Math.round(incomeBasis * 0.7) });
-  const spendingTier = spendingChoice.tier;
-  const lifestyleConfirmed = spendingTier === "confirmed";
-  const spendingFromBudget = spendingTier === "set" && !(g.retirementSpendingAnnual > 0) && budgetTotalR > 0;
-  const spendingSet = spendingTier !== "none"; // a quick estimate counts as supplied (round 49)
-  const spendingFromDefault = !spendingSet;
-  const spendingAnnual = spendingChoice.spendingAnnual;
-  // Social Security per adult (round 49): a typed figure wins, else
-  // the adult's own Social Security statement (monthly benefit x 12).
-  const ssPerAdult = adults.map((m) => ssForMember(m, state.intake.documents));
-  const ssAnnualTotal = ssPerAdult.reduce((sum, r) => sum + r.annual, 0);
-  const ssEnteredAdults = ssPerAdult.filter((r) => r.annual > 0).length;
-  const pensionStmtMonthly = state.intake.documents.reduce((best, d) => {
-    if (d.docType !== "pension_statement" || !d.fields) return best;
-    const v = Number(String(d.fields["monthly_benefit"] ?? "").replace(/[^0-9.]/g, ""));
-    return Number.isFinite(v) && v > best ? v : best;
-  }, 0);
-  const memberPension = adults.reduce((sum, m) => sum + (m.pensionAnnual || 0), 0);
-  const pensionFromStatement = memberPension <= 0 && !(g.pensionAnnual > 0) && pensionStmtMonthly > 0;
-  const pensionAnnualEff = memberPension > 0 ? memberPension : g.pensionAnnual > 0 ? g.pensionAnnual : Math.round(pensionStmtMonthly * 12);
-  const pensionKnown = memberPension > 0 || g.pensionAnnual > 0 || pensionStmtMonthly > 0 || g.noPension;
-  const currentRetBalance = adultOutlook.reduce((sum, a) => sum + a.bal, 0);
-  // Timeline (round 47): every adult is valued at the LATER
-  // retirement date - contributions stop at their own date, the
-  // balance keeps growing, no bridge draws (the working spouse's
-  // income covers the bridge years; the assumptions drawer says so).
-  // All household figures are then deflated to today's dollars,
-  // because the spending target is in today's dollars.
-  const flexYearsOf = (m: (typeof adults)[number]) => (m.retireFlex === "plus1" ? 1 : m.retireFlex === "plus3" || m.retireFlex === "flexible" ? 3 : 0);
-  const projectHousehold = (delay: boolean) => {
-    const yearsOwn = adultOutlook.map((a) => a.years + (delay ? flexYearsOf(a.m) : 0));
-    const laterYears = yearsOwn.reduce((mx, y) => Math.max(mx, y), 0);
-    const perAtLater = adultOutlook.map((a, i) => projectToCommonDate(a.bal, a.mo + a.matchMo, yearsOwn[i], laterYears, g.assumedReturnPct));
-    const nominal = perAtLater.reduce((sum, v) => sum + v, 0);
-    return { yearsOwn, laterYears, perAtLater, nominal, todays: deflateToToday(nominal, laterYears, g.inflationPct) };
-  };
-  const projNow = projectHousehold(false);
-  const projectedToday = projNow.todays;
-  const thisYearR = Number(today.slice(0, 4));
-  const laterYear = thisYearR + Math.round(projNow.laterYears);
-  const hhRet = householdRetirement({ spendingAnnual, socialSecurityAnnual: ssAnnualTotal, pensionAnnual: pensionAnnualEff, otherAnnual: g.otherRetirementIncomeAnnual || 0, projectedPortfolio: projectedToday });
-  const readinessPct = hhRet.needBase > 0 ? Math.round((projectedToday / hhRet.needBase) * 100) : null;
-  const realReturnPct = Math.max(0, ((1 + g.assumedReturnPct / 100) / (1 + (g.inflationPct || 0) / 100) - 1) * 100);
-  const hhShort = Math.max(0, hhRet.needBase - projectedToday);
-  const hhReqMo = hhRet.needBase > 0 && projNow.laterYears > 0 ? Math.round(requiredMonthly(currentRetBalance, hhRet.needBase, projNow.laterYears, realReturnPct)) : 0;
-  const accuracy = retirementAccuracy({ spendingSet, ssEnteredAdults, adultCount: adults.length, pensionKnown, hasBalances: currentRetBalance > 0, hasPace: adultOutlook.some((a) => a.mo > 0) });
-  const projDelay = projectHousehold(true);
-  const delayReadiness = hhRet.needBase > 0 ? Math.round((projDelay.todays / hhRet.needBase) * 100) : null;
-  const showSensitivity = projDelay.laterYears > projNow.laterYears && readinessPct !== null && readinessPct < 100 && delayReadiness !== null && delayReadiness > readinessPct;
-  const futureNeed = Math.round(inflateToFuture(hhRet.needBase, projNow.laterYears, g.inflationPct));
-  const supportAnnual = Math.round(projectedToday * WITHDRAWAL_RATES.base);
-  // Round 48 card-face model (Copilot's UX verdict on round 47):
-  // five seconds to understand - one status headline, three tiles,
-  // the accuracy line, one next action. At accuracy X the fallback
-  // target is product-invalid as a displayed target, so the face
-  // shows no target figure and no readiness % at all.
-  const accuracyLine = accuracy.level === "X" ? "Retirement estimate - early estimate, personalization needed." : accuracy.level === "X+" ? "Planning forecast." : "High-confidence planning forecast.";
-  const coveredByDependable = spendingAnnual > 0 && hhRet.portfolioGapAnnual <= 0;
-  const retHeadline = coveredByDependable || (hhRet.needBase > 0 && projectedToday >= hhRet.needBase) ? "On track" : accuracy.level === "X++" ? "Projected shortfall" : "Needs attention";
-  const spendingKnown = spendingTier === "confirmed"; // round 49: only a confirmed lifestyle figure earns "Your household target"
-  const personalizeParts = accuracy.missing.map((mm) => (mm.includes("spending") ? "retirement spending" : mm.includes("Social Security") ? "Social Security" : "pension or other reliable income"));
-  const personalizeSentence = personalizeParts.length > 0 ? `Add ${personalizeParts.length > 1 ? `${personalizeParts.slice(0, -1).join(", ")} and ${personalizeParts[personalizeParts.length - 1]}` : personalizeParts[0]} to personalize it.` : "";
-  const phases = (() => {
-    if (adultOutlook.length < 2) return null;
-    const order = projNow.yearsOwn.map((y, i) => ({ y, i })).sort((x, z) => x.y - z.y);
-    if (order.length < 2 || Math.abs(order[0].y - order[1].y) < 0.5) return null;
-    const early = adultOutlook[order[0].i];
-    const late = adultOutlook[order[1].i];
-    return { earlyName: early.m.name || "One spouse", lateName: late.m.name || "the other", y1: thisYearR + Math.round(order[0].y), y2: thisYearR + Math.round(order[1].y) };
-  })();
-  const updatedLabel = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][Number(today.slice(5, 7)) - 1] + " " + today.slice(0, 4);
+  // Retirement outlook per adult (owner QA round 18) and the whole
+  // household retirement model: computed by retirementModel.ts
+  // (round 52 extraction) so the Home card and the Retirement
+  // screen render ONE model - the numbers can never drift.
+  const retModel = computeRetirementModel({ state, today, slipFc, k401Totals, retBalance, retMonthly, effIncome, moneyFmt: money });
+  const {
+    adults, adultOutlook, spendingAnnual, spendingTier, spendingKnown, spendingSet,
+    ssAnnualTotal, pensionAnnualEff, projectedToday, laterYear, hhRet, readinessPct,
+    hhShort, hhReqMo, accuracy, accuracyLine, coveredByDependable, retHeadline,
+    personalizeSentence, directional,
+  } = retModel;
+  // Round 52: at accuracy X with enough evidence for a path, the
+  // card face is the directional outlook (spec section 8) - still
+  // no target figure and no readiness % at X (round 48 law holds);
+  // at X with no path to draw, the round-48 face stays.
+  const useDirectionalFace = accuracy.level === "X" && directional !== null && directional.sufficient;
 
   // Education funding per child (owner QA round 18, SPEC45 sec. 32):
   // saved vs the real cost path - per child, with their own dates.
@@ -536,8 +423,11 @@ export default function HomeScreen() {
       )}
 
       {adults.length > 0 && (
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>Retirement Readiness **</Text>
+        <Pressable
+          style={styles.card}
+          onPress={() => { setRetirementIntent("readiness"); navigation.navigate("Plan"); }}
+        >
+          <Text style={styles.cardLabel}>{useDirectionalFace ? "Retirement outlook" : "Retirement Readiness **"}</Text>
           {adultOutlook.every((a) => a.age === null) ? (
             <>
               <Text style={styles.statusLine}>Not ready to score</Text>
@@ -570,6 +460,25 @@ export default function HomeScreen() {
               <Text style={styles.line}>Dependable income covers the target on its own - {money(hhRet.dependableAnnual)}/year.</Text>
               <Text style={styles.line}>{accuracyLine}</Text>
               <Text style={styles.line}>No action needed - review once a year.</Text>
+            </>
+          ) : useDirectionalFace && directional ? (
+            <>
+              <Text style={styles.statusLine}>{directional.rating === "on_track" ? "\u{1F7E2}" : directional.rating === "close" ? "\u{1F7E1}" : directional.rating === "needs_improvement" ? "\u{1F7E0}" : "\u{1F534}"} {directional.ratingLabel}</Text>
+              <Text style={styles.line}>Early estimate - Low confidence</Text>
+              <Text style={styles.line}>Desired retirement: Age {directional.desiredAge}</Text>
+              <Text style={styles.line}>Current path: {directional.rangeLabel === "80+" ? "80+" : `~${directional.rangeLabel}`}</Text>
+              {directional.action.kind !== "none" ? (
+                <>
+                  <Text style={styles.line}>Recommended: {directional.action.text}</Text>
+                  {directional.action.impactText !== "" && <Text style={styles.line}>{directional.action.impactText}</Text>}
+                </>
+              ) : (
+                <Text style={styles.line}>{directional.action.text}</Text>
+              )}
+              {personalizeSentence !== "" && <Text style={styles.line}>{personalizeSentence}</Text>}
+              <Pressable style={styles.button} onPress={() => { setWizardIntent(); navigation.navigate("Lifestyle"); }}>
+                <Text style={styles.buttonText}>Complete {accuracy.missing.length} retirement inputs</Text>
+              </Pressable>
             </>
           ) : accuracy.level === "X" ? (
             <>
@@ -620,92 +529,9 @@ export default function HomeScreen() {
             <Text style={styles.manualLink}>View details {showRetDetails ? "(hide)" : "(show)"}</Text>
           </Pressable>
           {showRetDetails && (
-            <>
-              <Text style={styles.line}>Can this household support the life it wants after work ends?</Text>
-              {!adultOutlook.every((a) => a.age === null) && spendingAnnual > 0 && (coveredByDependable ? (
-                <>
-                  <Text style={styles.line}>{"\u{1F7E2}"} Your dependable income covers the spending target on its own - {money(hhRet.dependableAnnual)}/year of Social Security, pension and other income against a target of {money(spendingAnnual)}/year. Your savings sit on top of that.</Text>
-                  <Text style={styles.line}>Projected portfolio at retirement: {money(projectedToday)} in today's dollars.</Text>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.line}>Target retirement: {laterYear}</Text>
-                  <Text style={styles.line}>Desired lifestyle: {money(spendingAnnual)}/year</Text>
-                  <Text style={styles.line}>Social Security: {ssAnnualTotal > 0 ? `${money(ssAnnualTotal)}/year` : "not entered yet"}</Text>
-                  <Text style={styles.line}>Pension and other dependable income: {money(pensionAnnualEff + (g.otherRetirementIncomeAnnual || 0))}/year</Text>
-                  <Text style={styles.line}>Portfolio needs to fund: {money(hhRet.portfolioGapAnnual)}/year</Text>
-                  <Text style={styles.line}>Projected portfolio support: {money(supportAnnual)}/year</Text>
-                  <Text style={styles.line}>{supportAnnual - hhRet.portfolioGapAnnual >= 0 ? `Projected surplus: ${money(supportAnnual - hhRet.portfolioGapAnnual)}/year` : `Projected shortfall: ${money(hhRet.portfolioGapAnnual - supportAnnual)}/year`}</Text>
-                  {accuracy.level === "X" ? (
-                    <>
-                      <Text style={styles.line}>This is a fallback estimate, not a verdict. With no spending target of your own and no Social Security or pension entered, HomeTower assumes spending of 70% of income and dependable income of $0 - a very conservative placeholder that makes the target look far larger than it will once the real inputs are in.</Text>
-                      <Text style={styles.line}>To personalize it, add: {accuracy.missing.join("; ")} - on the Retirement Lifestyle page (in Plan) and in the {state.intake.name || "My House"} tab.</Text>
-                    </>
-                  ) : (
-                    <>
-                      <Text style={styles.line}>{projectedToday >= hhRet.needBase ? "\u{1F7E2} On track as a household at the Balanced 4.0% withdrawal rate." : `\u{1F534} Short by ${money(hhShort)} as a household${hhReqMo > 0 ? ` - saving about ${money(hhReqMo)}/mo more across the household closes it` : ""}.`}</Text>
-                      {showSensitivity && <Text style={styles.line}>Working longer, where you marked flexibility, lifts readiness from {readinessPct}% to {delayReadiness}% (the target year moves to {thisYearR + Math.round(projDelay.laterYears)}).</Text>}
-                      {accuracy.level === "X+" && accuracy.missing.length > 0 && (
-                        <Text style={styles.line}>Still missing: {accuracy.missing.join("; ")} - adding them sharpens this forecast.</Text>
-                      )}
-                    </>
-                  )}
-                  <Text style={styles.line}>In future dollars, the {laterYear} target is about {money(futureNeed)}; every figure above is in today's purchasing power.</Text>
-                  <Text style={styles.line}>More Safety (3.5%): {money(hhRet.needConservative)} - Balanced (4.0%): {money(hhRet.needBase)} - More Flexible Spending (4.5%): {money(hhRet.needFlexible)}</Text>
-                  {phases && (
-                    <Text style={styles.line}>Timeline: both working until {phases.y1}; then {phases.earlyName} is retired while {phases.lateName} works, until {phases.y2}; both retired from {phases.y2}.</Text>
-                  )}
-                  <Text style={styles.line}>Based on a 4.0% starting withdrawal rate (Balanced) and today's purchasing power.</Text>
-                </>
-              ))}
-              {accuracy.level === "X" && spendingAnnual > 0 && (
-                <Text style={styles.line}>Rough placeholder: {moneyShort(hhRet.needBase)}* - Based on 70% of current income and assuming $0 Social Security or pension. Do not use for retirement decisions.</Text>
-              )}
-              {spendingTier === "quick" && (
-                <Text style={styles.line}>Spending basis: your quick estimate.</Text>
-              )}
-              <Pressable onPress={() => setShowAssumptions(!showAssumptions)}>
-                <Text style={styles.manualLink}>Forecast assumptions {showAssumptions ? "(hide)" : "(show)"}</Text>
-              </Pressable>
-              {showAssumptions && (
-                <>
-                  <Text style={styles.line}>Retirement ages: {adults.map((m) => `${m.name || (m.role === "self" ? "You" : "Spouse")} - ${m.retireAge || 67}`).join(", ")}</Text>
-                  <Text style={styles.line}>Annual spending: {money(spendingAnnual)} - today's dollars{spendingFromDefault ? " (70% estimate)" : lifestyleConfirmed ? " (from your Retirement Lifestyle page)" : spendingFromBudget ? " (from your budget)" : ""}</Text>
-                  <Text style={styles.line}>Investment return: {g.assumedReturnPct}% - Inflation: {g.inflationPct}%</Text>
-                  <Text style={styles.line}>Withdrawal rate: 4.0% (Balanced)</Text>
-                  {adults.map((m, i) => (
-                    <Text key={m.id} style={styles.line}>Social Security - {m.name || (m.role === "self" ? "You" : "Spouse")}: {ssPerAdult[i].annual > 0 ? (ssPerAdult[i].source === "statement" ? `${money(ssPerAdult[i].annual)}/year (from your Social Security statement)` : `${money(ssPerAdult[i].annual)}/year, claim at ${m.ssClaimAge || 67}`) : "not entered"}</Text>
-                  ))}
-                  <Text style={styles.line}>Pension: {money(pensionAnnualEff)}/year{pensionFromStatement ? " (from your pension statement)" : ""}</Text>
-                  {adultOutlook.map((a) => (a.matchMo > 0 ? (
-                    <Text key={`match-${a.m.id}`} style={styles.line}>Employer match ({a.m.name || (a.m.role === "self" ? "You" : "Spouse")}): {money(a.matchMo)}/mo (from your payslips)</Text>
-                  ) : null))}
-                  {adultOutlook.map((a) => (a.stmt401k ? (
-                    <Text key={`stmt401k-${a.m.id}`} style={styles.line}>{a.m.name || (a.m.role === "self" ? "You" : "Spouse")} - 401(k) balance from your statement ({monthYearLabel(a.stmt401k.capturedOn)}): {money(a.stmt401k.balance)}</Text>
-                  ) : null))}
-                  <Text style={styles.line}>Net rental / other dependable: {money(g.otherRetirementIncomeAnnual || 0)}/year</Text>
-                  <Text style={styles.line}>Home equity: excluded from the investable portfolio</Text>
-                  {phases && <Text style={styles.line}>Bridge years ({phases.y1}-{phases.y2}): the retired spouse's portfolio keeps growing and is not drawn - the working spouse's income covers those years</Text>}
-                  <Text style={styles.line}>Healthcare: not included yet</Text>
-                  <Text style={styles.line}>Last updated: {updatedLabel}</Text>
-                </>
-              )}
-              {adultOutlook.map((a, i) => (
-                <View key={a.m.id} style={styles.personBlock}>
-                  <Text style={styles.personName}>{a.m.name || (a.m.role === "self" ? "You" : "Spouse")} - retire at {a.m.retireAge || 67}</Text>
-                  {a.age === null ? (
-                    <Text style={styles.line}>Add a date of birth in the {state.intake.name || "My House"} tab and HomeTower can time this.</Text>
-                  ) : (
-                    <Text style={styles.line}>Projected contribution to household retirement: {moneyShort(deflateToToday(projNow.perAtLater[i], projNow.laterYears, g.inflationPct))} by {laterYear} - saving {money(a.mo)}/mo{a.paceFromSlips ? " (pace from payslips)" : ""}.{a.m.retireTarget > 0 ? ` Personal target: ${money(a.m.retireTarget)}.` : ""}</Text>
-                  )}
-                </View>
-              ))}
-              {adultOutlook.some((a) => a.paceFromSlips) && k401Totals && !adultOutlook.some((a) => a.stmt401k) && (
-                <Text style={styles.footnote}>Pace from payslips: {money(k401Totals.total)} contributed in {k401Totals.year} across {k401Totals.earners} earner{k401Totals.earners === 1 ? "" : "s"}. Balances still count as $0 until a 401(k) statement is added - the funded % can only rise from here.</Text>
-              )}
-            </>
+            <RetirementDetails model={retModel} g={g} householdName={state.intake.name} k401Totals={k401Totals} today={today} />
           )}
-        </View>
+        </Pressable>
       )}
 
       {children.length > 0 && (

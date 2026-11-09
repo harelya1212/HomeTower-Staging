@@ -1,4 +1,4 @@
-import { useNavigation } from "@react-navigation/native";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import React, { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { esppDisposition, rsuVest } from "../../engine/equity.ts";
@@ -9,7 +9,7 @@ import { treatyPosition, withholdingCap } from "../../engine/treaty.ts";
 import { DateField, usToIso } from "../components/Fields.tsx";
 import { positionValue } from "../holdings.ts";
 import type { Holding } from "../../engine/intake.ts";
-import { useHousehold } from "../store.tsx";
+import { consumeRetirementIntent, useHousehold } from "../store.tsx";
 import { money, NAVY, TEAL } from "./HomeScreen.tsx";
 
 type Tool = "sale" | "equity" | "foreign";
@@ -305,11 +305,51 @@ function ForeignTool() {
 export default function PlanScreen() {
   const [tool, setTool] = useState<Tool>("sale");
   const navigation = useNavigation<any>();
+  const scrollRef = React.useRef<ScrollView>(null);
+  // ROUND 52 - the Home retirement card's tap target is Plan ->
+  // Retirement -> Readiness: the card sets a one-shot intent before
+  // navigating here; on focus, Plan scrolls its Retirement section
+  // into view and routes on to the Retirement screen at Readiness.
+  // A plain Plan visit (no intent) just shows the hub.
+  useFocusEffect(
+    React.useCallback(() => {
+      const section = consumeRetirementIntent();
+      if (section) {
+        scrollRef.current?.scrollTo({ y: 0, animated: false });
+        navigation.navigate("Retirement", { section });
+      }
+    }, [navigation]),
+  );
+  // The Retirement hub (spec section G): every row is a real,
+  // working destination that exists today - Readiness, Scenarios
+  // and Social Security live on the Retirement screen; Lifestyle is
+  // its own tab; Accounts are the Documents tab. Nothing is listed
+  // before it exists.
+  const hubRows: { icon: string; label: string; hint: string; go: () => void }[] = [
+    { icon: "🎯", label: "Readiness", hint: "The full forecast, with every source", go: () => navigation.navigate("Retirement", { section: "readiness" }) },
+    { icon: "🏠", label: "Lifestyle", hint: "Build your target from your real spending - what continues, what ends, what changes", go: () => navigation.navigate("Lifestyle") },
+    { icon: "🪙", label: "Accounts", hint: "Statements and documents, in Documents", go: () => navigation.navigate("Documents") },
+    { icon: "🏛️", label: "Social Security", hint: "Benefits per person, and where each figure came from", go: () => navigation.navigate("Retirement", { section: "social" }) },
+    { icon: "🔀", label: "Scenarios", hint: "Returns, withdrawal rates, and the one recommended action", go: () => navigation.navigate("Retirement", { section: "scenarios" }) },
+  ];
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Pressable style={styles.lifeCard} onPress={() => navigation.navigate("Lifestyle")}>
-        <Text style={styles.lifeTitle}>Retirement Lifestyle</Text>
-        <Text style={styles.lifeText}>Build your target from your real spending - what continues, what ends, what changes. ›</Text>
+    <ScrollView ref={scrollRef} style={styles.screen} contentContainerStyle={styles.content}>
+      <Text style={styles.title}>🎯 Retirement</Text>
+      <View style={styles.hubCard}>
+        {hubRows.map((r) => (
+          <Pressable key={r.label} style={styles.hubRow} onPress={r.go}>
+            <Text style={styles.hubIcon}>{r.icon}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.hubLabel}>{r.label}</Text>
+              <Text style={styles.hubHint}>{r.hint}</Text>
+            </View>
+            <Text style={styles.hubChevron}>›</Text>
+          </Pressable>
+        ))}
+      </View>
+      <Pressable style={styles.lifeCard} onPress={() => navigation.navigate("Home")}>
+        <Text style={styles.lifeTitle}>🎓 Education</Text>
+        <Text style={styles.lifeText}>Funding per child - saved against the real cost path - is on the Home page. ›</Text>
       </Pressable>
       <Text style={styles.title}>Plan a move</Text>
       <Text style={styles.note}>Every tool runs on your household numbers from the Intake tab. Nothing here is a filing - it is the projected consequence, before you act.</Text>
@@ -331,6 +371,12 @@ const styles = StyleSheet.create({
   lifeCard: { backgroundColor: "#FFFFFF", borderRadius: 12, padding: 14, gap: 4, borderWidth: 1, borderColor: TEAL },
   lifeTitle: { fontSize: 17, fontWeight: "800", color: NAVY },
   lifeText: { fontSize: 14, color: "#22303C", lineHeight: 20 },
+  hubCard: { backgroundColor: "#FFFFFF", borderRadius: 12, paddingHorizontal: 14, borderWidth: 1, borderColor: TEAL },
+  hubRow: { flexDirection: "row", alignItems: "center", paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#E3EAF2" },
+  hubIcon: { fontSize: 22, marginRight: 12 },
+  hubLabel: { fontSize: 17, fontWeight: "700", color: NAVY },
+  hubHint: { fontSize: 13, color: "#5A6B7D", marginTop: 2 },
+  hubChevron: { fontSize: 22, color: TEAL, fontWeight: "700" },
   title: { fontSize: 22, fontWeight: "700", color: NAVY },
   note: { fontSize: 13, color: "#5A6B7C" },
   section: { fontSize: 16, fontWeight: "700", color: NAVY, marginTop: 12 },
