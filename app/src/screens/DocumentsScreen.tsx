@@ -23,7 +23,8 @@ import {
 } from "../statementSections.ts";
 import { boundRawText, dateLabel, eduResolutionFor, hsaReconciliation, hsaResolution, sourceLabelFor } from "../reconcile.ts";
 import { ocrMapsPack } from "../../engine/packs.ts";
-import { pickFile, pickImageFiles } from "../filePick";
+import { pickFiles, pickImageFiles } from "../filePick";
+import { isEmptyRead } from "../textFields.ts";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
@@ -36,6 +37,15 @@ const BADGE: Record<string, string> = { fresh: "#1E8E3E", aging: "#E37400", stal
 // rows (device finding, round 35: Yamit's YTD 401k appeared as her
 // current contribution). Drop every line whose normalized text the
 // row parser already consumed, not just the consumed indices.
+// Round 56: an image is routed to OCR by MIME type OR by file
+// extension - an image whose picker delivered an empty/generic
+// MIME type (iOS Files does this for some sources) must never fall
+// through to the "not a PDF or a photo" refusal, and must never
+// reach the PDF branch (which would fail on its bytes anyway).
+function isImageFile(f: File): boolean {
+  return f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif|bmp)$/i.test(f.name);
+}
+
 function dropConsumedLines(text: string, consumedIdx: number[]): string {
   const lines = text.split(/\r?\n/);
   const norm = (x: string) => x.trim().replace(/\s+/g, " ").toLowerCase();
@@ -49,6 +59,7 @@ export default function DocumentsScreen() {
   const navigation = useNavigation<any>();
   const scrollRef = useRef<ScrollView>(null);
   const confirmY = useRef(0);
+  const failureY = useRef(0);
   // Within one multi-photo batch: the payslip saved from the previous
   // screenshot (identity key + its index in intake.documents), so the
   // next page of the SAME slip merges into it instead of duplicating.
@@ -128,11 +139,17 @@ export default function DocumentsScreen() {
   // document as its spendingSummary (evidence for the Retirement
   // Lifestyle page).
   const [pendingSpending, setPendingSpending] = useState<CsvSpending | null>(null);
-  // Multi-photo batch: the user picks several screenshots at once;
+  // Multi-item intake queue (owner QA round 25 for photos; round 56
+  // generalizes it to FILES): the user picks several items at once;
   // each is still read and confirmed one at a time, the queue just
-  // walks itself after every confirm/discard.
-  type PhotoItem = { uri: string } | { file: File };
-  const [photoBatch, setPhotoBatch] = useState<{ queue: PhotoItem[]; namedType?: string; total: number; done: number } | null>(null);
+  // walks itself after every confirm/discard. One item produces at
+  // most one confirm card - a combined statement that fans out to
+  // several account readings is ONE item with ONE card.
+  type IntakeItem = { file: File } | { uri: string; name: string };
+  const [intakeBatch, setIntakeBatch] = useState<{ queue: IntakeItem[]; namedType?: string; total: number; done: number; noun: "File" | "Screenshot" } | null>(null);
+  // Round 56 (defect 3): a hard read failure is a CARD, not a small
+  // note - it names what failed and why, in plain words.
+  const [intakeFailure, setIntakeFailure] = useState<{ heading: string; body: string } | null>(null);
   const [autoPaste, setAutoPaste] = useState("");
   const [expandedReq, setExpandedReq] = useState<string | null>(null);
   const requests = useMemo(
@@ -216,6 +233,30 @@ export default function DocumentsScreen() {
   const runExtraction = (text: string, namedType?: string, pages?: string[], columnByPage?: RawField[][]) => {
     try {
       const textRaw = textToRawFields(text);
+      if (!textRaw.length && isEmptyRead(text)) {
+        // Round 56 (device QA defect 3): an empty read is an
+        // extraction failure, not a classification outcome. The
+        // confirm card still opens - in its empty-read form, which
+        // leads with what happened (the card checks isEmptyRead
+        // again at render time) and only then offers the register
+        // save. Before this, the same state presented as "could not
+        // identify - Confidence: 0 - save as other", which reads as
+        // a classification choice and hides the failure.
+        const empty = extractFields([], "other");
+        setDetection(classifyDocument([], text));
+        setPendingText(text);
+        setPendingColumns(null);
+        setPendingHoldings(null);
+        setPendingPlan(null);
+        setFanOut(null);
+        setPending401kDetail(null);
+        setPendingSaForm(null);
+        setPendingSpending(null);
+        setExtraction(empty);
+        setExtractionType("other");
+        setOcrNote(null);
+        return { result: empty, docType: "other" };
+      }
       if (!textRaw.length) {
         setOcrNote("No label-value pairs found in that text. Check the text and try again.");
         setExtraction(null);
@@ -365,6 +406,23 @@ export default function DocumentsScreen() {
     setOcrNote(`${label}the first read missed part of this document - re-reading the photo in sections...`);
     const bands = await recognizeImageBands(file, (pct) => setOcrNote(`${label}re-reading in sections - ${pct}%`));
     if (bands.error || !bands.texts.length) { setOcrNote(null); return; }
+    if (isEmptyRead(text) && r.docType === "other") {
+      // Round 56: the first pass found NOTHING (the empty-read
+      // card is on screen). A band may still hold the document -
+      // the tall-screenshot failure mode is exactly a first pass
+      // that drops everything. Re-run the full pipeline per band;
+      // the first band that reads replaces the empty card. If no
+      // band reads, the empty-read card is restored as it was.
+      let accepted = false;
+      for (const bt of bands.texts) {
+        if (isEmptyRead(bt)) continue;
+        const rescued = runExtraction(bt, namedType);
+        if (rescued && (Object.keys(rescued.result.fields).length > 0 || rescued.docType !== "other")) { accepted = true; break; }
+      }
+      if (!accepted) runExtraction(text, namedType);
+      setOcrNote(null);
+      return;
+    }
     const merged: Record<string, number | string> = { ...f };
     const mergedConf: Record<string, number> = { ...r.result.fieldConfidence };
     let added = 0;
@@ -418,49 +476,176 @@ export default function DocumentsScreen() {
     }
   };
 
-  const processPhotoItem = async (item: PhotoItem, namedType?: string, batchActive = false, batchLabel?: string) => {
-    const outcome = "file" in item
-      ? await recognizeImageFile(item.file, batchLabel ? (pct) => setOcrNote(`${batchLabel} - reading ${pct}%`) : undefined)
-      : await recognizeOnDevice(item.uri);
-    if (outcome.error) {
-      setOcrNote(`OCR stage ${outcome.stage}: ${outcome.error}${batchActive ? " The rest of the batch was not read - pick the remaining screenshots again." : ""}`);
-      setPhotoBatch(null);
-      return;
-    }
-    if ("file" in item) {
-      await runImageExtraction(outcome.text, namedType, item.file, batchLabel);
-    } else {
-      runExtraction(outcome.text, namedType);
-    }
+  // --- Round 56 intake queue -------------------------------------
+  // Every image, from EVERY picker, goes through the same OCR
+  // pipeline for its platform (web: webOcr via recognizeImageFile;
+  // native: ML Kit via recognizeOnDevice) - the picker that
+  // delivered the image no longer decides how it is read. The one
+  // divergence found in this round's trace: the web CAMERA path
+  // handed its photo to recognizeOnDevice, which refuses to run on
+  // web at all; scanPhoto now converts the camera result to a File
+  // so it takes the web pipeline like any other image.
+  // A read failure stops the queue and shows the failure CARD
+  // (intakeFailure) with the cause in plain words; the three OCR
+  // causes are worded differently on purpose (defect 3).
+  const failIntake = (heading: string, body: string, remainingAfter: number): false => {
+    setFlowNote(null);
+    setIntakeBatch(null);
+    setIntakeFailure({
+      heading,
+      body: remainingAfter > 0 ? `${body} The rest of the batch was not read - pick the remaining items again.` : body,
+    });
+    return false;
   };
 
-  const advanceBatch = () => {
-    if (!photoBatch || photoBatch.queue.length === 0) { setPhotoBatch(null); return; }
-    const [next, ...rest] = photoBatch.queue;
-    const nb = { queue: rest, namedType: photoBatch.namedType, total: photoBatch.total, done: photoBatch.done + 1 };
-    setPhotoBatch(nb);
-    void processPhotoItem(next, nb.namedType, true, `Screenshot ${nb.done} of ${nb.total}`);
+  const ocrFailureCard = (outcome: { stage: string; error: string | null; failure?: string | null }, remainingAfter: number): false => {
+    if (outcome.failure === "decode") {
+      return failIntake(
+        "This image could not be processed",
+        "HomeTower could not open this image at all, so nothing could be read from it. The file may be damaged, or in a format the browser cannot decode. Try a different copy of the image, or a fresh screenshot.",
+        remainingAfter,
+      );
+    }
+    return failIntake(
+      "Text recognition failed",
+      `HomeTower's reading engine stopped before it could read this image (stage: ${outcome.stage}${outcome.error ? ` - ${outcome.error}` : ""}). Nothing was saved. Try again; if it keeps failing, send the document as a PDF instead.`,
+      remainingAfter,
+    );
   };
 
-  const startPhotoBatch = async (items: PhotoItem[], namedType?: string) => {
+  // One picked FILE (web path). Returns true when a reading - or
+  // the empty-read confirm card - is on screen; false when the read
+  // failed loudly and any queue must stop.
+  const processOneFile = async (f: File, namedType?: string, batchLabel?: string, remainingAfter = 0): Promise<boolean> => {
+    if (/\.csv$/i.test(f.name) || f.type.includes("csv")) {
+      const text = await f.text();
+      setFlowNote(null);
+      if (!startCsvReading(text, f.name, namedType)) {
+        return failIntake(
+          "That CSV could not be read as a statement",
+          `HomeTower needs Date, Description and Amount (or Debit/Credit) columns in ${f.name}. Nothing was saved; the statement can be registered manually below.`,
+          remainingAfter,
+        );
+      }
+      return true;
+    }
+    if (f.type.includes("pdf") || /\.pdf$/i.test(f.name)) {
+      const outcome = await extractPdfTextFromBuffer(await f.arrayBuffer());
+      if (outcome.error) {
+        return failIntake("HomeTower could not read this PDF", `${f.name}: ${outcome.error}`, remainingAfter);
+      }
+      setFlowNote(null);
+      runExtraction(outcome.text, namedType, outcome.pages, outcome.columnByPage);
+      return true;
+    }
+    if (isImageFile(f)) {
+      const outcome = await recognizeImageFile(f, batchLabel ? (pct) => setOcrNote(`${batchLabel} - reading ${pct}%`) : undefined);
+      if (outcome.failure === "decode" || outcome.failure === "engine") return ocrFailureCard(outcome, remainingAfter);
+      if (outcome.error && outcome.failure !== "no_text") return ocrFailureCard(outcome, remainingAfter);
+      // A successful read - and a completed read that found no text
+      // - both go through the normal pipeline. Empty text lands on
+      // the empty-read confirm card, which says what happened.
+      setFlowNote(null);
+      await runImageExtraction(outcome.text, namedType, f, batchLabel);
+      return true;
+    }
+    return failIntake(
+      "That file type cannot be read",
+      `${f.name} is not a PDF, a CSV or a photo - HomeTower reads PDFs, statement CSVs and photos. Nothing was saved; the file can be registered manually below.`,
+      remainingAfter,
+    );
+  };
+
+  // One picked item identified by URI (native path).
+  const processOneUri = async (uri: string, name: string, namedType?: string, remainingAfter = 0): Promise<boolean> => {
+    if (/\.csv$/i.test(name)) {
+      try {
+        const text = await (await fetch(uri)).text();
+        setFlowNote(null);
+        if (!startCsvReading(text, name, namedType)) {
+          return failIntake(
+            "That CSV could not be read as a statement",
+            "HomeTower needs Date, Description and Amount (or Debit/Credit) columns. Nothing was saved; the statement can be registered manually below.",
+            remainingAfter,
+          );
+        }
+        return true;
+      } catch {
+        return failIntake(
+          "CSV reading is not available here",
+          "CSV statement reading runs in the web app for now - in the phone app, register the statement manually below; it still counts toward your spending evidence.",
+          remainingAfter,
+        );
+      }
+    }
+    if (/\.pdf$/i.test(name)) {
+      const outcome = await extractPdfText(uri);
+      if (outcome.error) {
+        return failIntake("HomeTower could not read this PDF", `PDF stage: ${outcome.error}`, remainingAfter);
+      }
+      setFlowNote(null);
+      runExtraction(outcome.text, namedType, outcome.pages, outcome.columnByPage);
+      return true;
+    }
+    const outcome = await recognizeOnDevice(uri);
+    if (outcome.failure === "decode" || outcome.failure === "engine") return ocrFailureCard(outcome, remainingAfter);
+    if (outcome.error && outcome.failure !== "no_text") return ocrFailureCard(outcome, remainingAfter);
+    setFlowNote(null);
+    runExtraction(outcome.text, namedType);
+    return true;
+  };
+
+  const processIntakeItem = async (item: IntakeItem, namedType?: string, batchLabel?: string, remainingAfter = 0): Promise<boolean> => {
+    if ("file" in item) return processOneFile(item.file, namedType, batchLabel, remainingAfter);
+    return processOneUri(item.uri, item.name, namedType, remainingAfter);
+  };
+
+  const startIntakeBatch = async (items: IntakeItem[], namedType: string | undefined, noun: "File" | "Screenshot") => {
     batchSaveRef.current = null;
+    setIntakeFailure(null);
     if (items.length === 1) {
-      setPhotoBatch(null);
-      await processPhotoItem(items[0], namedType);
+      setIntakeBatch(null);
+      await processIntakeItem(items[0], namedType);
       return;
     }
-    setPhotoBatch({ queue: items.slice(1), namedType, total: items.length, done: 1 });
-    setOcrNote(`Reading screenshot 1 of ${items.length} - confirm or discard each reading; the next screenshot follows automatically.`);
-    await processPhotoItem(items[0], namedType, true, `Screenshot 1 of ${items.length}`);
+    setIntakeBatch({ queue: items.slice(1), namedType, total: items.length, done: 1, noun });
+    setOcrNote(`Reading ${noun.toLowerCase()} 1 of ${items.length} - confirm or discard each reading; the next one follows automatically.`);
+    await processIntakeItem(items[0], namedType, `${noun} 1 of ${items.length}`, items.length - 1);
+  };
+
+  const advanceIntakeBatch = () => {
+    if (!intakeBatch || intakeBatch.queue.length === 0) { setIntakeBatch(null); return; }
+    const [next, ...rest] = intakeBatch.queue;
+    const nb = { queue: rest, namedType: intakeBatch.namedType, total: intakeBatch.total, done: intakeBatch.done + 1, noun: intakeBatch.noun };
+    setIntakeBatch(nb);
+    void processIntakeItem(next, nb.namedType, `${nb.noun} ${nb.done} of ${nb.total}`, rest.length);
   };
 
   const scanPhoto = async (source: "upload" | "camera", namedType?: string) => {
     setOcrNote(null);
+    setIntakeFailure(null);
     if (source === "camera") {
       const { uri, error } = await takePhotoUri();
       if (error) { setOcrNote(error); return; }
       if (!uri) return;
-      await processPhotoItem({ uri }, namedType);
+      if (Platform.OS === "web") {
+        // Round 56: on web the camera shim hands back a blob/data
+        // URL, and recognizeOnDevice refuses to run on web - the
+        // photo used to die at that stage. Convert it to a File so
+        // it takes the SAME web OCR pipeline as every other image.
+        try {
+          const blob = await (await fetch(uri)).blob();
+          const file = new File([blob], "camera-photo.jpg", { type: blob.type || "image/jpeg" });
+          await processIntakeItem({ file }, namedType);
+        } catch {
+          setIntakeFailure({
+            heading: "This image could not be processed",
+            body: "The camera photo did not arrive in a form HomeTower could open. Try again, or pick the photo from the library instead.",
+          });
+        }
+        return;
+      }
+      await processIntakeItem({ uri, name: "camera-photo" }, namedType);
       return;
     }
     // Web (owner QA round 25): the photo-library shim resolves empty
@@ -475,7 +660,7 @@ export default function DocumentsScreen() {
         setOcrNote("No photo reached HomeTower - the picker closed without a selection arriving. Please try again.");
         return;
       }
-      await startPhotoBatch(picked.files.map((file) => ({ file })), namedType);
+      await startIntakeBatch(picked.files.map((file) => ({ file })), namedType, "Screenshot");
       return;
     }
     const { uris, error } = await pickImageUris();
@@ -484,80 +669,41 @@ export default function DocumentsScreen() {
       setOcrNote("No photo reached HomeTower - the picker closed without a selection arriving. Please try again.");
       return;
     }
-    await startPhotoBatch(uris.map((uri) => ({ uri })), namedType);
+    await startIntakeBatch(uris.map((uri) => ({ uri, name: "photo" })), namedType, "Screenshot");
   };
 
   // Owner QA round 6: a real FILE upload. The image picker greys PDFs
   // out; tax documents are PDFs. PDFs are read through their text layer
   // (web), images through the OCR path, anything else gets a plain
   // explanation plus the manual-register option below.
-  // Owner QA round 9: the picker is now the platform file input (see
+  // Owner QA round 9: the picker is the platform file input (see
   // filePick.web.ts - the library shim returned nothing on iOS), and
-  // EVERY step reports into flowNote, rendered right under the buttons:
-  // picker opened -> file received (by name) -> reading -> result or
-  // the exact error. No silent path remains.
-  const uploadFile = async (namedType?: string) => {
+  // EVERY step reports into flowNote: picker opened -> files received
+  // (by name) -> reading -> result or the exact failure card.
+  // Round 56 (defect 1): SEVERAL files can be picked together; they
+  // enter the intake queue and are confirmed one at a time, in pick
+  // order - the same discipline the photo batch has had since
+  // round 25.
+  const uploadFiles = async (namedType?: string) => {
     setFlowNote("Opening the file picker...");
-    const picked = await pickFile();
-    if (picked.error) { setFlowNote(picked.error); return; }
-    if (picked.cancelled || (!picked.uri && !picked.file)) {
-      setFlowNote("No file reached HomeTower - the picker closed without a selection arriving. Please try again.");
-      return;
-    }
-    setFlowNote(`Received ${picked.name} - reading it now...`);
+    setIntakeFailure(null);
     try {
-      if (picked.file) {
-        const f = picked.file;
-        if (/\.csv$/i.test(f.name) || f.type.includes("csv")) {
-          const text = await f.text();
-          setFlowNote(null);
-          if (!startCsvReading(text, f.name, namedType)) {
-            setFlowNote(`Could not read ${f.name} as a statement CSV - HomeTower needs Date, Description and Amount (or Debit/Credit) columns. Nothing was saved; the file can be registered manually below.`);
-          }
-          return;
-        }
-        if (f.type.includes("pdf") || /\.pdf$/i.test(f.name)) {
-          const outcome = await extractPdfTextFromBuffer(await f.arrayBuffer());
-          if (outcome.error) { setFlowNote(`Could not read ${f.name}: ${outcome.error}`); return; }
-          setFlowNote(null);
-          runExtraction(outcome.text, namedType, outcome.pages, outcome.columnByPage);
-          return;
-        }
-        if (f.type.startsWith("image/")) {
-          const outcome = await recognizeImageFile(f);
-          if (outcome.error) { setFlowNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
-          setFlowNote(null);
-          await runImageExtraction(outcome.text, namedType, f);
-          return;
-        }
-        setFlowNote(`${f.name} is not a PDF or a photo - HomeTower reads PDFs and photos. Nothing was saved; the file can be registered manually below.`);
+      const picked = await pickFiles();
+      if (picked.error) { setFlowNote(picked.error); return; }
+      if (picked.cancelled || !picked.files.length) {
+        setFlowNote("No file reached HomeTower - the picker closed without a selection arriving. Please try again.");
         return;
       }
-      const uri = picked.uri as string;
-      if (/\.csv$/i.test(picked.name ?? "")) {
-        try {
-          const text = await (await fetch(uri)).text();
-          setFlowNote(null);
-          if (!startCsvReading(text, picked.name ?? "", namedType)) {
-            setFlowNote("Could not read that file as a statement CSV - HomeTower needs Date, Description and Amount (or Debit/Credit) columns. Nothing was saved; the statement can be registered manually below.");
-          }
-        } catch {
-          setFlowNote("CSV statement reading runs in the web app for now - in the phone app, register the statement manually below; it still counts toward your spending evidence.");
-        }
-        return;
-      }
-      const isPdf = /\.pdf$/i.test(picked.name ?? "");
-      if (isPdf) {
-        const outcome = await extractPdfText(uri);
-        if (outcome.error) { setFlowNote(`PDF stage: ${outcome.error}`); return; }
-        setFlowNote(null);
-        runExtraction(outcome.text, namedType, outcome.pages, outcome.columnByPage);
-        return;
-      }
-      const outcome = await recognizeOnDevice(uri);
-      if (outcome.error) { setFlowNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
-      setFlowNote(null);
-      runExtraction(outcome.text, namedType);
+      const names = picked.files.map((p) => p.name).join(", ");
+      setFlowNote(
+        picked.files.length === 1
+          ? `Received ${names} - reading it now...`
+          : `Received ${picked.files.length} files (${names}) - reading them one at a time; each reading is confirmed before the next begins.`,
+      );
+      const items: IntakeItem[] = picked.files.map((p) =>
+        p.file ? { file: p.file } : { uri: p.uri as string, name: p.name },
+      );
+      await startIntakeBatch(items, namedType, "File");
     } catch (e) {
       setFlowNote(e instanceof Error ? e.message : String(e));
     }
@@ -573,6 +719,15 @@ export default function DocumentsScreen() {
       return () => clearTimeout(t);
     }
   }, [extraction]);
+
+  // Same scroll courtesy for the round-56 failure card: a loud
+  // failure the user never sees is not loud.
+  useEffect(() => {
+    if (intakeFailure) {
+      const t = setTimeout(() => scrollRef.current?.scrollTo({ y: Math.max(0, failureY.current - 8), animated: true }), 120);
+      return () => clearTimeout(t);
+    }
+  }, [intakeFailure]);
 
   const confirmExtraction = () => {
     if (!extraction) return;
@@ -652,7 +807,7 @@ export default function DocumentsScreen() {
     // withholding totals, would poison the forecast's anchor pick).
     let mergedNote = "";
     let handled = false;
-    if (extractionType === "payslip" && photoBatch) {
+    if (extractionType === "payslip" && intakeBatch) {
       const key = payslipKey(savedFields);
       const prev = batchSaveRef.current;
       if (key !== "" && prev && prev.key === key && docs[prev.index]?.docType === "payslip") {
@@ -682,7 +837,7 @@ export default function DocumentsScreen() {
           updateIntake({ documents: docs.map((d, i) => (i === idx ? record : d)) });
           mergedNote = ` Replaced the earlier reading of this payslip (${savedFields["employee_name"] ?? "same earner"}, period ending ${savedFields["pay_period_end"] ?? ""}) - the new reading takes its place; there is still ONE document for this slip.`;
           handled = true;
-          if (photoBatch) batchSaveRef.current = { key, index: idx };
+          if (intakeBatch) batchSaveRef.current = { key, index: idx };
         }
       }
     }
@@ -701,7 +856,7 @@ export default function DocumentsScreen() {
     }
     if (!handled) {
       updateIntake({ documents: [...docs, record] });
-      if (extractionType === "payslip" && photoBatch) {
+      if (extractionType === "payslip" && intakeBatch) {
         const key = payslipKey(savedFields);
         if (key !== "") batchSaveRef.current = { key, index: docs.length };
       }
@@ -756,9 +911,9 @@ export default function DocumentsScreen() {
     setPendingSaForm(null);
     setPasteText("");
     setAutoPaste("");
-    const moreComing = photoBatch && photoBatch.queue.length > 0 ? ` Screenshot ${photoBatch.done + 1} of ${photoBatch.total} is being read now.` : "";
+    const moreComing = intakeBatch && intakeBatch.queue.length > 0 ? ` ${intakeBatch.noun} ${intakeBatch.done + 1} of ${intakeBatch.total} is being read now.` : "";
     setOcrNote(`Saved ${extractionType} (${extraction.status}, confidence ${extraction.confidence}).${assignNote}${mergedNote}${moreComing}`);
-    advanceBatch();
+    advanceIntakeBatch();
   };
 
   // Round 55 (workstreams A + C): save every detected account as
@@ -813,7 +968,9 @@ export default function DocumentsScreen() {
     const n = fanOut.sections.length;
     setFanOut(null);
     setPendingText(null);
-    setOcrNote(`Saved ${n} account reading${n === 1 ? "" : "s"} from one document (${savedNames.join("; ")}). Each account keeps its own balance, contributions and distributions - the document's combined total was not saved as any account's balance. Check the Tasks page: distributions start their reconciliation there.`);
+    const moreComing = intakeBatch && intakeBatch.queue.length > 0 ? ` ${intakeBatch.noun} ${intakeBatch.done + 1} of ${intakeBatch.total} is being read now.` : "";
+    setOcrNote(`Saved ${n} account reading${n === 1 ? "" : "s"} from one document (${savedNames.join("; ")}). Each account keeps its own balance, contributions and distributions - the document's combined total was not saved as any account's balance. Check the Tasks page: distributions start their reconciliation there.${moreComing}`);
+    advanceIntakeBatch();
   };
 
   const addManual = () => {
@@ -908,6 +1065,13 @@ export default function DocumentsScreen() {
   const saForms = useMemo(() => docs.filter((d) => d.docType === "hsa_1099_sa" || d.docType === "hsa_5498_sa"), [docs]);
   const k401Facts = useMemo(() => k401StatementFacts(docs), [docs]);
   const money2 = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // Round 56 (defect 3): the confirm card's empty-read form. A
+  // reading is in this state when the text that produced it was
+  // empty (isEmptyRead) and no field filled - derived at render
+  // time so a band re-read that rescues fields leaves the state
+  // on its own. A merely UNCLASSIFIED read (real text, no type
+  // matched) does not enter it and keeps the normal card.
+  const extractionEmptyRead = !!(extraction && pendingText !== null && Object.keys(extraction.fields).length === 0 && isEmptyRead(pendingText));
   // Needs list = profile requests BEYOND the Ongoing center (owner,
   // 2026-11-08): a document type the Ongoing center already tracks
   // never appears in the needs list too - no asking twice.
@@ -927,11 +1091,34 @@ export default function DocumentsScreen() {
   // (file / photo / camera buttons side by side) was duplication.
   // The single Upload button opens this source chooser - the user
   // can bring any kind of file or take a photo, from the one button.
+  //
+  // ROUND 56 (device QA defect 2): the chooser is NATIVE-ONLY now.
+  // Diagnosis from the owner's iPhone: on web, every entry behind
+  // these buttons ends at the same DOM <input type="file"> click,
+  // and iOS in a standalone web app answers ANY file input with the
+  // one system sheet (Photo Library / Take Photo / Choose Files).
+  // It ignores the capture attribute there (expo-image-picker's web
+  // camera sets capture="camera" and still got the sheet), and the
+  // accept attribute only filters inside a source - so no web
+  // button could honestly promise "library" or "camera". On web
+  // the single block button therefore starts the generic multi-file
+  // pick directly: the system sheet IS the source choice, and each
+  // picked item is routed by its content. On native the three
+  // pickers are genuinely different controls (document picker,
+  // photo library, camera), so the chooser stays - and says only
+  // what each one does.
   const [chooserFor, setChooserFor] = useState<string | null>(null);
+  const openUpload = (key: string, docType?: string) => {
+    if (Platform.OS === "web") {
+      void uploadFiles(docType);
+    } else {
+      setChooserFor(chooserFor === key ? null : key);
+    }
+  };
   const sourceChooser = (key: string, docType?: string) =>
-    chooserFor !== key ? null : (
+    Platform.OS === "web" || chooserFor !== key ? null : (
       <View style={styles.reqActions}>
-        <Pressable style={styles.button} onPress={() => { setChooserFor(null); uploadFile(docType); }}>
+        <Pressable style={styles.button} onPress={() => { setChooserFor(null); uploadFiles(docType); }}>
           <Text style={styles.buttonText}>PDF or file</Text>
         </Pressable>
         <Pressable style={styles.buttonAlt} onPress={() => { setChooserFor(null); scanPhoto("upload", docType); }}>
@@ -972,7 +1159,7 @@ export default function DocumentsScreen() {
         No need to say what it is: HomeTower reads it, identifies the type, and shows you its reading for approval
         before anything is saved. If you do pick a type below, HomeTower still verifies it against the content.
       </Text>
-      <Pressable style={styles.button} onPress={() => setChooserFor(chooserFor === "any" ? null : "any")}>
+      <Pressable style={styles.button} onPress={() => openUpload("any")}>
         <Text style={styles.buttonText}>Upload - file, photo, or camera</Text>
       </Pressable>
       {sourceChooser("any")}
@@ -988,24 +1175,44 @@ export default function DocumentsScreen() {
         <Text style={styles.buttonText}>Read and identify pasted text</Text>
       </Pressable>
 
+      {intakeFailure && (
+        <View style={styles.confirmCard} onLayout={(e) => { failureY.current = e.nativeEvent.layout.y; }}>
+          <Text style={styles.section}>{intakeFailure.heading}</Text>
+          <Text style={styles.line}>{intakeFailure.body}</Text>
+          <Pressable onPress={() => setIntakeFailure(null)}>
+            <Text style={styles.remove}>Dismiss</Text>
+          </Pressable>
+        </View>
+      )}
       {extraction && (
         <View style={styles.confirmCard} onLayout={(e) => { confirmY.current = e.nativeEvent.layout.y; }}>
           <Text style={styles.section}>Confirm HomeTower's reading</Text>
-          {photoBatch && (
-            <Text style={styles.batchLine}>Screenshot {photoBatch.done} of {photoBatch.total} - confirm this one and the next follows.</Text>
+          {intakeBatch && (
+            <Text style={styles.batchLine}>{intakeBatch.noun} {intakeBatch.done} of {intakeBatch.total} - confirm this one and the next follows.</Text>
           )}
-          {photoBatch && extractionType === "payslip" && batchSaveRef.current && payslipKey(Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]))) !== "" && payslipKey(Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]))) === batchSaveRef.current.key && (
+          {intakeBatch && extractionType === "payslip" && batchSaveRef.current && payslipKey(Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]))) !== "" && payslipKey(Object.fromEntries(Object.entries(extraction.fields).map(([k, v]) => [k, String(v)]))) === batchSaveRef.current.key && (
             <Text style={styles.line}>Same payslip as the previous screenshot ({String(extraction.fields["employee_name"] ?? "")}, period ending {String(extraction.fields["pay_period_end"] ?? "")}) - confirming merges its pages into ONE document.</Text>
           )}
-          {detection && detection.level !== "unknown" && (
+          {extractionEmptyRead && (
+            <View style={styles.mismatch}>
+              <Text style={styles.line}>HomeTower could not read any text from this file.</Text>
+              <Text style={styles.line}>
+                Most likely it is a scanned document with no text layer, or an image HomeTower could not process - either way there was nothing in it to identify or fill in. This is a failed reading, not a document type.
+              </Text>
+              <Text style={styles.line}>
+                What to do instead: upload a photo or screenshot of the document (HomeTower reads those with its image reader), or a PDF that has a text layer. You can also save this file as a register entry below - it records that the document arrived, and fills in no figures.
+              </Text>
+            </View>
+          )}
+          {detection && !extractionEmptyRead && detection.level !== "unknown" && (
             <Text style={styles.line}>
               This looks like a {detection.docType} ({detection.level} match) - signals: {detection.signals.join(", ")}.
             </Text>
           )}
-          {detection && detection.level === "unknown" && (
+          {detection && !extractionEmptyRead && detection.level === "unknown" && (
             <Text style={styles.line}>The app could not identify this document from its content - pick the type below.</Text>
           )}
-          {detection && detection.level !== "unknown" && detection.docType !== extractionType && (
+          {detection && !extractionEmptyRead && detection.level !== "unknown" && detection.docType !== extractionType && (
             <View style={styles.mismatch}>
               <Text style={styles.line}>
                 Heads up: it will be saved as {extractionType}, but the content looks like a {detection.docType}.
@@ -1015,7 +1222,9 @@ export default function DocumentsScreen() {
               </Pressable>
             </View>
           )}
-          <Text style={styles.line}>Saving as: {extractionType} - Confidence: {extraction.confidence} - status if saved: {extraction.status}</Text>
+          {!extractionEmptyRead && (
+            <Text style={styles.line}>Saving as: {extractionType} - Confidence: {extraction.confidence} - status if saved: {extraction.status}</Text>
+          )}
           {pendingSpending && (extractionType === "bank_statement" || extractionType === "card_statement") && (
             <Text style={styles.line}>
               Spending read from this statement: {pendingSpending.months} month{pendingSpending.months === 1 ? "" : "s"}, {pendingSpending.transactions} outflows counted, about ${Math.round(pendingSpending.totalOutflowAnnual).toLocaleString("en-US")} a year. It becomes spending evidence on the Retirement Lifestyle page (in Plan) - it fills only categories you have not filled yourself.
@@ -1034,14 +1243,18 @@ export default function DocumentsScreen() {
               </Text>
             );
           })()}
-          <Text style={styles.line}>Wrong type? Tap the right one - the fields are re-read:</Text>
-          <View style={styles.chips}>
-            {[...DOCUMENT_TYPES].map((t) => (
-              <Pressable key={t} style={[styles.chip, extractionType === t && styles.chipSelected]} onPress={() => reextractAs(t)}>
-                <Text style={extractionType === t ? styles.chipTextSelected : styles.chipText}>{t}</Text>
-              </Pressable>
-            ))}
-          </View>
+          {!extractionEmptyRead && (
+            <>
+              <Text style={styles.line}>Wrong type? Tap the right one - the fields are re-read:</Text>
+              <View style={styles.chips}>
+                {[...DOCUMENT_TYPES].map((t) => (
+                  <Pressable key={t} style={[styles.chip, extractionType === t && styles.chipSelected]} onPress={() => reextractAs(t)}>
+                    <Text style={extractionType === t ? styles.chipTextSelected : styles.chipText}>{t}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          )}
           {Object.entries(extraction.fields).map(([k, v]) => (
             <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
           ))}
@@ -1141,26 +1354,29 @@ export default function DocumentsScreen() {
               </View>
             </>
           )}
-          {Object.keys(extraction.fields).length === 0 && (
+          {Object.keys(extraction.fields).length === 0 && !extractionEmptyRead && (
             <Text style={styles.line}>No known fields matched this document type. You can still save it as a register entry.</Text>
           )}
           <Pressable style={styles.button} onPress={confirmExtraction}>
             <Text style={styles.buttonText}>
-              {photoBatch
-                ? photoBatch.queue.length > 0
-                  ? `Confirm and save (${photoBatch.done} of ${photoBatch.total}) - next follows`
-                  : `Confirm and save (${photoBatch.total} of ${photoBatch.total}) - last one`
+              {intakeBatch
+                ? intakeBatch.queue.length > 0
+                  ? `Confirm and save (${intakeBatch.done} of ${intakeBatch.total}) - next follows`
+                  : `Confirm and save (${intakeBatch.total} of ${intakeBatch.total}) - last one`
                 : `Confirm and save as ${extractionType}`}
             </Text>
           </Pressable>
-          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); setPendingPlan(null); setPendingSpending(null); setPending401kDetail(null); setPendingSaForm(null); advanceBatch(); }}>
-            <Text style={styles.remove}>{photoBatch ? `Discard (${photoBatch.done} of ${photoBatch.total})` : "Discard"}</Text>
+          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); setPendingPlan(null); setPendingSpending(null); setPending401kDetail(null); setPendingSaForm(null); advanceIntakeBatch(); }}>
+            <Text style={styles.remove}>{intakeBatch ? `Discard (${intakeBatch.done} of ${intakeBatch.total})` : "Discard"}</Text>
           </Pressable>
         </View>
       )}
       {fanOut && !extraction && (
         <View style={styles.confirmCard}>
           <Text style={styles.section}>Confirm HomeTower's reading - {fanOut.sections.length} accounts in one document</Text>
+          {intakeBatch && (
+            <Text style={styles.batchLine}>{intakeBatch.noun} {intakeBatch.done} of {intakeBatch.total} - one document, {fanOut.sections.length} account readings. Confirm and the next follows.</Text>
+          )}
           {fanOut.portfolioTotal !== null && (
             <Text style={styles.line}>The document's combined portfolio total is {money2(fanOut.portfolioTotal)} - that total belongs to all the accounts together and is never saved as one account's balance.</Text>
           )}
@@ -1202,8 +1418,8 @@ export default function DocumentsScreen() {
           <Pressable style={styles.button} onPress={confirmFanOut}>
             <Text style={styles.buttonText}>Confirm and save {fanOut.sections.length} account readings</Text>
           </Pressable>
-          <Pressable onPress={() => { setFanOut(null); setPendingText(null); }}>
-            <Text style={styles.remove}>Discard</Text>
+          <Pressable onPress={() => { setFanOut(null); setPendingText(null); advanceIntakeBatch(); }}>
+            <Text style={styles.remove}>{intakeBatch ? `Discard (${intakeBatch.done} of ${intakeBatch.total})` : "Discard"}</Text>
           </Pressable>
         </View>
       )}
@@ -1334,7 +1550,7 @@ export default function DocumentsScreen() {
                 <Text key={`${child.id}-${cf.field}`} style={styles.line}>Two readings of {child.name || "your child"}'s {cf.field.replace(/_/g, " ")} disagree for the same date - flagged here rather than chosen silently.</Text>
               )))}
               <View style={styles.catActions}>
-                <Pressable style={[styles.button, { flex: 1 }]} onPress={() => setChooserFor(chooserFor === c.key ? null : c.key)}>
+                <Pressable style={[styles.button, { flex: 1 }]} onPress={() => openUpload(c.key, c.docType)}>
                   <Text style={styles.buttonText}>Upload {c.key === "payslip" ? "a payslip" : "a statement"}</Text>
                 </Pressable>
                 {c.key === "payslip" ? (
@@ -1417,7 +1633,7 @@ export default function DocumentsScreen() {
           <Pressable style={[styles.button, { flex: 1 }]} onPress={() => setShowEventForm((s) => !s)}>
             <Text style={styles.buttonText}>Add an event</Text>
           </Pressable>
-          <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => uploadFile()}>
+          <Pressable style={[styles.buttonAlt, { flex: 0.7 }]} onPress={() => uploadFiles()}>
             <Text style={styles.buttonText}>Upload plan doc</Text>
           </Pressable>
         </View>
@@ -1486,7 +1702,7 @@ export default function DocumentsScreen() {
             )}
             {open && r.key !== "calibration_outcome" && (
               <View style={styles.reqActions}>
-                <Pressable style={styles.button} onPress={() => setChooserFor(chooserFor === `req-${r.key}` ? null : `req-${r.key}`)}>
+                <Pressable style={styles.button} onPress={() => openUpload(`req-${r.key}`, r.docType)}>
                   <Text style={styles.buttonText}>Upload this document</Text>
                 </Pressable>
                 {sourceChooser(`req-${r.key}`, r.docType)}
