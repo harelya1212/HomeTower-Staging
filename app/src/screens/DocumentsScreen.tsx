@@ -17,17 +17,60 @@ import { parsePayslipRows } from "../payslipRows.ts";
 import { docEvidenceStatus, employerMatchFor, k401StatementFacts, k401StatementMatchFor, monthYearLabel } from "../goals.ts";
 import { mergePayslipFields, payslip401kTotals, payslipDeductionTotals, payslipKey } from "../payslips.ts";
 import {
-  extractSectionReading, k401DetailFields, parse401kDetail, parseHsaPageFields, parseSaForm,
+  extractSectionReading, hsaDepositFields, k401DetailFields, parse401kDetail, parseHsaPageFields, parseSaForm,
   portfolioTotalOf, segmentStatement, statementPeriodOf,
   type K401Detail, type SaFormParse, type StatementPeriod, type StatementSection,
 } from "../statementSections.ts";
-import { boundRawText, dateLabel, eduResolutionFor, hsaReconciliation, hsaResolution, sourceLabelFor } from "../reconcile.ts";
+import { boundRawText, dateLabel, eduResolutionFor, EXTRACTOR_VERSION, hsaBalanceSnapshots, hsaReconciliation, hsaResolution, monthNameOf, monthYearOf, sourceLabelFor } from "../reconcile.ts";
 import { ocrMapsPack } from "../../engine/packs.ts";
 import { pickFiles, pickImageFiles } from "../filePick";
 import { isEmptyRead } from "../textFields.ts";
 import { extractPdfText, extractPdfTextFromBuffer } from "../pdfText";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 import { NAVY, TEAL } from "./HomeScreen.tsx";
+
+// Round 57: the fanned HSA reading shows its figures under
+// labelled lines, never bare keys. The period figure is a MONTHLY
+// total and is labelled with the month it covers; the per-payroll
+// figure is its own line when the statement's deposit detail
+// proved one; the deposit detail itself renders as dates and
+// amounts, never as raw JSON. Keys this round does not know keep
+// the generic key line, as before.
+function hsaFanLines(fields: Record<string, number | string>, period: StatementPeriod | null): { key: string; text: string }[] {
+  const money = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const num = (k: string): number | null => {
+    if (fields[k] === undefined) return null;
+    const v = Number(fields[k]);
+    return Number.isFinite(v) ? v : null;
+  };
+  const lines: { key: string; text: string }[] = [];
+  const handled = new Set<string>();
+  const add = (key: string, text: string | null) => { if (text !== null) { lines.push({ key, text }); handled.add(key); } };
+  const bal = num("ending_balance");
+  add("ending_balance", bal !== null ? `Ending balance: ${money(bal)}` : null);
+  const per = num("contributions_period");
+  add("contributions_period", per !== null ? `${period ? monthYearOf(period.endIso) : "Statement period"} contributions: ${money(per)}` : null);
+  const pp = num("per_payroll_contribution");
+  add("per_payroll_contribution", pp !== null ? `Per-payroll contribution: ${money(pp)} (from the statement's deposit detail)` : null);
+  const ytd = num("contributions_ytd");
+  add("contributions_ytd", ytd !== null ? `Contributions year to date: ${money(ytd)}` : null);
+  const dist = num("distributions_ytd");
+  add("distributions_ytd", dist !== null ? `Distributions year to date: ${money(dist)}` : null);
+  if (typeof fields["deposit_detail"] === "string") {
+    handled.add("deposit_detail");
+    try {
+      const deps = JSON.parse(fields["deposit_detail"]) as { date: string; amount: number }[];
+      if (Array.isArray(deps) && deps.length) {
+        const short = (d: string) => (/^\d{4}-\d{2}-\d{2}/.test(d) ? `${monthNameOf(d).slice(0, 3)} ${Number(d.slice(8, 10))}` : d);
+        lines.push({ key: "deposit_detail", text: `Deposit detail: ${deps.map((d) => `${short(d.date)} - ${money(Number(d.amount))}`).join(" · ")}` });
+      }
+    } catch { /* an unparseable detail string is never rendered as raw JSON */ }
+  }
+  for (const [k, v] of Object.entries(fields)) {
+    if (!handled.has(k)) lines.push({ key: k, text: `${k}: ${String(v)}` });
+  }
+  return lines;
+}
 
 const BADGE: Record<string, string> = { fresh: "#1E8E3E", aging: "#E37400", stale: "#C5221F", unknown: "#5A6B7C" };
 
@@ -275,7 +318,7 @@ export default function DocumentsScreen() {
             const reading = extractSectionReading(s, period);
             return {
               section: s,
-              fields: reading.fields,
+              fields: { ...reading.fields, ...hsaDepositFields(s) },
               status: reading.status,
               confidence: reading.confidence,
               childId: s.kind === "529" ? matchChildByName(s.personName) : null,
@@ -795,7 +838,7 @@ export default function DocumentsScreen() {
       // Round 55 (workstream G): the extracted text is retained
       // (bounded) with the maps version that read it, so a later
       // reader improvement can re-read this document on load.
-      ...(pendingText ? { rawText: boundRawText(pendingText), mapsVersion: String(ocrMapsPack().version ?? "") } : {}),
+      ...(pendingText ? { rawText: boundRawText(pendingText), mapsVersion: String(ocrMapsPack().version ?? ""), extractorVersion: EXTRACTOR_VERSION } : {}),
       uploadId: `up-${Date.now()}`,
       ...(formBoxes ? { formBoxes } : {}),
     };
@@ -946,6 +989,7 @@ export default function DocumentsScreen() {
         accountId: fs.section.accountId,
         rawText: boundRawText(fs.section.text),
         mapsVersion: version,
+        extractorVersion: EXTRACTOR_VERSION,
       };
       const idx = fs.section.accountId
         ? newDocs.findIndex((d) => d.docType === record.docType && d.accountId === fs.section.accountId
@@ -1061,10 +1105,24 @@ export default function DocumentsScreen() {
   // HSA distribution reconciliation (D), the SA tax forms (E) and
   // the expanded 401(k) fact set (F).
   const hsaRes = useMemo(() => hsaResolution(docs), [docs]);
+  const hsaSnap = useMemo(() => hsaBalanceSnapshots(docs), [docs]);
   const hsaReconYears = useMemo(() => hsaReconciliation(docs, state.hsaReceiptsMatched ?? {}), [docs, state.hsaReceiptsMatched]);
   const saForms = useMemo(() => docs.filter((d) => d.docType === "hsa_1099_sa" || d.docType === "hsa_5498_sa"), [docs]);
   const k401Facts = useMemo(() => k401StatementFacts(docs), [docs]);
   const money2 = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // Round 57: the HSA statement's period contribution is a MONTHLY
+  // figure for the month the statement covers - it is labelled
+  // with that month, never presented as a per-paycheck pace. The
+  // per-payroll figure, when the statement's deposit detail proved
+  // one, is a separate line on the card below.
+  const hsaPeriodLine = (() => {
+    const cp = hsaRes.fields.contributions_period;
+    if (cp.value === null || !cp.source) return null;
+    const asOf = cp.source.fields?.["statement_as_of"];
+    return asOf
+      ? `${monthYearOf(asOf)} contributions: ${money2(cp.value)} (from your HSA statement)`
+      : `Statement period contributions: ${money2(cp.value)} (from your HSA statement)`;
+  })();
   // Round 56 (defect 3): the confirm card's empty-read form. A
   // reading is in this state when the text that produced it was
   // empty (isEmptyRead) and no field filled - derived at render
@@ -1386,9 +1444,13 @@ export default function DocumentsScreen() {
                 {fs.section.kind === "529" ? `529 account ${fs.section.accountId ?? ""} - ${fs.section.personName ?? "beneficiary not printed"}` : `Health Savings Account ${fs.section.accountId ?? ""} - ${fs.section.personName ?? ""}`}
                 {fanOut.period ? ` - statement period ending ${dateLabel(fanOut.period.endIso)}` : ""}
               </Text>
-              {Object.entries(fs.fields).map(([k, v]) => (
-                <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
-              ))}
+              {fs.section.kind === "hsa"
+                ? hsaFanLines(fs.fields, fanOut.period).map((l) => (
+                  <Text key={l.key} style={styles.line}>{l.text}</Text>
+                ))
+                : Object.entries(fs.fields).map(([k, v]) => (
+                  <Text key={k} style={styles.line}>{k}: {String(v)}</Text>
+                ))}
               {fs.section.kind === "529" && eduChildren.length > 0 && (
                 <>
                   <Text style={styles.line}>Whose 529 is this? The balance and monthly pace fill that child's college funding:</Text>
@@ -1500,8 +1562,17 @@ export default function DocumentsScreen() {
                 </>
               )}
               {c.key === "hsa" && <Text style={styles.line}>{hsaLine}</Text>}
-              {c.key === "hsa" && hsaRes.fields.ending_balance.value !== null && hsaRes.fields.ending_balance.source && (
-                <Text style={styles.line}>HSA balance: {money2(hsaRes.fields.ending_balance.value)} - {sourceLabelFor(hsaRes.fields.ending_balance.source)}</Text>
+              {c.key === "hsa" && hsaSnap.current.value !== null && hsaSnap.current.source && (
+                <Text style={styles.line}>Current balance: {money2(hsaSnap.current.value)} - {sourceLabelFor(hsaSnap.current.source)}</Text>
+              )}
+              {c.key === "hsa" && hsaSnap.statementSnapshot && (
+                <Text style={styles.line}>{monthNameOf(hsaSnap.statementSnapshot.asOf)} statement snapshot: {money2(hsaSnap.statementSnapshot.value)} - {dateLabel(hsaSnap.statementSnapshot.asOf)}</Text>
+              )}
+              {c.key === "hsa" && hsaPeriodLine && (
+                <Text style={styles.line}>{hsaPeriodLine}</Text>
+              )}
+              {c.key === "hsa" && hsaRes.fields.per_payroll_contribution.value !== null && (
+                <Text style={styles.line}>Per-payroll contribution: {money2(hsaRes.fields.per_payroll_contribution.value)} (from the statement's deposit detail)</Text>
               )}
               {c.key === "hsa" && hsaRes.conflicts.map((cf) => (
                 <Text key={cf.field} style={styles.line}>Two readings of the HSA {cf.field.replace(/_/g, " ")} disagree for the same date ({cf.entries.map((e) => money2(e.value)).join(" vs ")}) - HomeTower shows the first and flags it here rather than choosing silently.</Text>
