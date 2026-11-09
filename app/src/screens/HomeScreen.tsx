@@ -354,6 +354,7 @@ export default function HomeScreen() {
     state.intake.documents ?? [],
     state.family.filter((m) => m.role === "child").map((m) => ({ id: m.id, name: m.name })),
     state.hsaReceiptsMatched ?? {},
+    state.eduVerifiedExpenses ?? {},
   )) {
     tasks.push({ key: t.key, icon: t.icon, title: t.title, detail: t.detail, target: t.target });
   }

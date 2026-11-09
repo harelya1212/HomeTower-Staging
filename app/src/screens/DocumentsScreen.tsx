@@ -21,7 +21,7 @@ import {
   portfolioTotalOf, segmentStatement, statementPeriodOf,
   type K401Detail, type SaFormParse, type StatementPeriod, type StatementSection,
 } from "../statementSections.ts";
-import { boundRawText, dateLabel, eduResolutionFor, EXTRACTOR_VERSION, hsaBalanceSnapshots, hsaReconciliation, hsaResolution, monthNameOf, monthYearOf, sourceLabelFor } from "../reconcile.ts";
+import { boundRawText, dateLabel, eduReconYearsFor, eduResolutionFor, eduVerifiedKey, EXTRACTOR_VERSION, fingerprintForSave, hsaBalanceSnapshots, hsaReconciliation, hsaResolution, monthNameOf, monthYearOf, sourceLabelFor, upsertDocument } from "../reconcile.ts";
 import { ocrMapsPack } from "../../engine/packs.ts";
 import { pickFiles, pickImageFiles } from "../filePick";
 import { isEmptyRead } from "../textFields.ts";
@@ -158,6 +158,9 @@ export default function DocumentsScreen() {
   const [pending401kDetail, setPending401kDetail] = useState<K401Detail | null>(null);
   const [pendingSaForm, setPendingSaForm] = useState<SaFormParse | null>(null);
   const [receiptInputs, setReceiptInputs] = useState<Record<string, string>>({});
+  // Round 58: the 529 mirror of receiptInputs - verified education
+  // expenses per child per tax year, keyed "childId:year".
+  const [eduInputs, setEduInputs] = useState<Record<string, string>>({});
   const firstNameOf = (s: string) => (s ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
   const matchChildByName = (printed: string | null): string | null => {
     if (!printed) return null;
@@ -838,7 +841,9 @@ export default function DocumentsScreen() {
       // Round 55 (workstream G): the extracted text is retained
       // (bounded) with the maps version that read it, so a later
       // reader improvement can re-read this document on load.
-      ...(pendingText ? { rawText: boundRawText(pendingText), mapsVersion: String(ocrMapsPack().version ?? ""), extractorVersion: EXTRACTOR_VERSION } : {}),
+      // Round 58: the retained text's fingerprint is stamped too -
+      // it is this reading's identity for dedupe on re-upload.
+      ...(pendingText ? { rawText: boundRawText(pendingText), mapsVersion: String(ocrMapsPack().version ?? ""), extractorVersion: EXTRACTOR_VERSION, ...(fingerprintForSave(boundRawText(pendingText)) ? { fingerprint: fingerprintForSave(boundRawText(pendingText)) } : {}) } : {}),
       uploadId: `up-${Date.now()}`,
       ...(formBoxes ? { formBoxes } : {}),
     };
@@ -865,43 +870,30 @@ export default function DocumentsScreen() {
         handled = true;
       }
     }
-    // Repeat payslip rule (owner, 2026-11-08): a NEW reading of a slip
-    // that is already saved (same earner + same pay-period end)
-    // REPLACES the earlier document in its place - it never stacks a
-    // duplicate. The confirm card showed exactly the fields that take
-    // over, so nothing is lost silently. Applies to every route
-    // (photos, file, pasted text); within one photo batch the page
-    // merge above still assembles a multi-page slip first.
-    if (!handled && extractionType === "payslip") {
-      const key = payslipKey(savedFields);
-      if (key !== "") {
-        const idx = docs.findIndex((d) => d.docType === "payslip" && payslipKey(d.fields ?? {}) === key);
-        if (idx >= 0) {
-          updateIntake({ documents: docs.map((d, i) => (i === idx ? record : d)) });
-          mergedNote = ` Replaced the earlier reading of this payslip (${savedFields["employee_name"] ?? "same earner"}, period ending ${savedFields["pay_period_end"] ?? ""}) - the new reading takes its place; there is still ONE document for this slip.`;
-          handled = true;
-          if (intakeBatch) batchSaveRef.current = { key, index: idx };
-        }
-      }
-    }
-    // Round 55: the same discipline for account statements -
-    // re-saving the same owner's statement for the same period
-    // replaces the earlier reading instead of stacking a duplicate.
-    if (!handled && (extractionType === "529_statement" || extractionType === "hsa_statement" || extractionType === "401k_statement") && savedFields["statement_as_of"]) {
-      const idx = docs.findIndex((d) => d.docType === extractionType
-        && (d.fields?.["statement_as_of"] ?? "") === savedFields["statement_as_of"]
-        && (d.ownerMemberId ?? null) === (docOwner ?? null));
-      if (idx >= 0) {
-        updateIntake({ documents: docs.map((d, i) => (i === idx ? record : d)) });
-        mergedNote = ` Replaced the earlier reading of this statement (period ending ${savedFields["statement_as_of"]}) - the new reading takes its place.`;
-        handled = true;
-      }
-    }
+    // Round 58: EVERY save goes through the one dedupe path
+    // (upsertDocument in reconcile.ts). A re-upload of a document
+    // HomeTower already holds - the same file again, or a corrected
+    // reading of the same payslip (earner + period end), statement
+    // (account or owner + period end) or tax form (type + tax year
+    // + account) - refreshes the existing record in its place and
+    // never stacks a duplicate. The confirm card showed exactly the
+    // fields that take over, so nothing is lost silently. (This is
+    // the repeat-payslip rule of 2026-11-08 and the round-55
+    // statement rule, generalized to one path for every kind.)
+    // Within one photo batch the page merge above still assembles
+    // a multi-page slip first.
     if (!handled) {
-      updateIntake({ documents: [...docs, record] });
+      const up = upsertDocument(docs, record);
+      updateIntake({ documents: up.docs });
+      handled = true;
+      if (up.refreshed) {
+        mergedNote = extractionType === "payslip"
+          ? ` Already on file - HomeTower refreshed the existing reading of this payslip (${savedFields["employee_name"] ?? "same earner"}, period ending ${savedFields["pay_period_end"] ?? ""}). No duplicate was created.`
+          : ` Already on file - HomeTower refreshed the existing reading${savedFields["statement_as_of"] ? ` (period ending ${savedFields["statement_as_of"]})` : ""}. No duplicate was created.`;
+      }
       if (extractionType === "payslip" && intakeBatch) {
         const key = payslipKey(savedFields);
-        if (key !== "") batchSaveRef.current = { key, index: docs.length };
+        if (key !== "") batchSaveRef.current = { key, index: up.index };
       }
     }
     if (extractionType === "payslip") update({ payrollCheck: { lastConfirmedOn: null, consecutive: 0 } });
@@ -970,7 +962,8 @@ export default function DocumentsScreen() {
     if (!fanOut) return;
     const uploadId = `up-${Date.now()}`;
     const version = String(ocrMapsPack().version ?? "");
-    const newDocs = [...docs];
+    let newDocs = [...docs];
+    let refreshedCount = 0;
     const eduPatch = new Map<string, { eduBalance: number; eduMonthly?: number }>();
     const savedNames: string[] = [];
     for (const fs of fanOut.sections) {
@@ -978,6 +971,7 @@ export default function DocumentsScreen() {
       if (fanOut.period) fields["statement_as_of"] = fanOut.period.endIso;
       if (fs.section.kind === "529" && fs.section.personName) fields["beneficiary_name"] = fs.section.personName;
       const owner = fs.section.kind === "529" ? fs.childId : fs.memberId;
+      const sectionText = boundRawText(fs.section.text);
       const record: DocumentRecord = {
         docType: fs.section.docType,
         status: fs.status as DocumentRecord["status"],
@@ -987,15 +981,17 @@ export default function DocumentsScreen() {
         ...(owner ? { ownerMemberId: owner } : {}),
         uploadId,
         accountId: fs.section.accountId,
-        rawText: boundRawText(fs.section.text),
+        rawText: sectionText,
         mapsVersion: version,
         extractorVersion: EXTRACTOR_VERSION,
+        ...(fingerprintForSave(sectionText) ? { fingerprint: fingerprintForSave(sectionText) } : {}),
       };
-      const idx = fs.section.accountId
-        ? newDocs.findIndex((d) => d.docType === record.docType && d.accountId === fs.section.accountId
-          && (d.fields?.["statement_as_of"] ?? "") === (fields["statement_as_of"] ?? ""))
-        : -1;
-      if (idx >= 0) newDocs[idx] = record; else newDocs.push(record);
+      // Round 58: the same single dedupe path as every other save -
+      // re-saving the same account's statement for the same period
+      // refreshes that account's reading in place.
+      const up = upsertDocument(newDocs, record);
+      newDocs = up.docs;
+      if (up.refreshed) refreshedCount++;
       savedNames.push(fs.section.kind === "529" ? `529 for ${fs.section.personName ?? "a beneficiary"}` : "the HSA");
       if (fs.section.kind === "529" && fs.childId) {
         const bal = Number(fs.fields["ending_balance"]);
@@ -1013,7 +1009,8 @@ export default function DocumentsScreen() {
     setFanOut(null);
     setPendingText(null);
     const moreComing = intakeBatch && intakeBatch.queue.length > 0 ? ` ${intakeBatch.noun} ${intakeBatch.done + 1} of ${intakeBatch.total} is being read now.` : "";
-    setOcrNote(`Saved ${n} account reading${n === 1 ? "" : "s"} from one document (${savedNames.join("; ")}). Each account keeps its own balance, contributions and distributions - the document's combined total was not saved as any account's balance. Check the Tasks page: distributions start their reconciliation there.${moreComing}`);
+    const refreshNote = refreshedCount > 0 ? ` ${refreshedCount} of these readings were already on file - HomeTower refreshed them in place. No duplicates were created.` : "";
+    setOcrNote(`Saved ${n} account reading${n === 1 ? "" : "s"} from one document (${savedNames.join("; ")}). Each account keeps its own balance, contributions and distributions - the document's combined total was not saved as any account's balance.${refreshNote} Check the Tasks page: distributions start their reconciliation there.${moreComing}`);
     advanceIntakeBatch();
   };
 
@@ -1617,6 +1614,29 @@ export default function DocumentsScreen() {
                   </Text>
                 );
               })}
+              {c.key === "529" && eduChildren.flatMap((child) => eduReconYearsFor(docs, child, state.eduVerifiedExpenses ?? {}).map((y) => {
+                const vKey = eduVerifiedKey(child.id, y.year);
+                return (
+                  <View key={vKey}>
+                    <Text style={styles.line}>{y.year} {child.name || "Child"} 529 distributions: {money2(y.distributions)} (from statements) - education expenses verified {money2(y.verified)} - still unverified {money2(y.unverified)}. Unverified does not mean non-qualified - this is an evidence tracker.</Text>
+                    <View style={styles.reqActions}>
+                      <TextInput
+                        style={[styles.pasteBox, { flex: 1, minHeight: 44 }]}
+                        keyboardType="numeric"
+                        placeholder="Education expenses verified so far ($)"
+                        value={eduInputs[vKey] ?? ""}
+                        onChangeText={(t) => setEduInputs({ ...eduInputs, [vKey]: t })}
+                      />
+                      <Pressable style={styles.buttonAlt} onPress={() => {
+                        const amt = Number((eduInputs[vKey] ?? "").replace(/[^0-9.]/g, ""));
+                        if (Number.isFinite(amt) && amt >= 0) update({ eduVerifiedExpenses: { ...(state.eduVerifiedExpenses ?? {}), [vKey]: amt } });
+                      }}>
+                        <Text style={styles.buttonText}>Save verified</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                );
+              }))}
               {c.key === "529" && eduChildren.flatMap((child) => eduResolutionFor(docs, child.id).conflicts.map((cf) => (
                 <Text key={`${child.id}-${cf.field}`} style={styles.line}>Two readings of {child.name || "your child"}'s {cf.field.replace(/_/g, " ")} disagree for the same date - flagged here rather than chosen silently.</Text>
               )))}
