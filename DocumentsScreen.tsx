@@ -9,7 +9,7 @@ import type { EquityEvent } from "../store.tsx";
 import { DOCUMENT_TYPES, type DocumentRecord } from "../../engine/intake.ts";
 import { documentRequests, payrollShortcut } from "../../engine/guidance.ts";
 import { classifyDocument, type Classification } from "../../engine/classify.ts";
-import { pickImageUri, pickImageUris, recognizeImageFile, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
+import { pickImageUri, pickImageUris, recognizeImageBands, recognizeImageFile, recognizeOnDevice, takePhotoUri, textToRawFields } from "../ocr.ts";
 import type { RawField } from "../../engine/extract.ts";
 import { parseHoldings, parsePlanAccount, positionValue, type HoldingsParse, type PlanAccount } from "../holdings.ts";
 import { parsePayslipRows } from "../payslipRows.ts";
@@ -113,13 +113,28 @@ export default function DocumentsScreen() {
   // the app ALWAYS classifies what it read. With a named type it verifies
   // the name against the content; without one, the detected type is used.
   // Either way the user sees the reading and confirms before saving.
+  // Pure extraction on one text (no state): the same construction
+  // runExtraction uses, exposed so the section re-read can extract
+  // per band and merge.
+  const extractOnly = (text: string, docType: string) => {
+    let raw = textToRawFields(text);
+    if (docType === "payslip") {
+      const slip = parsePayslipRows(text);
+      if (slip.fields.length > 0) {
+        const restText = dropConsumedLines(text, slip.consumedLines);
+        raw = [...slip.fields, ...textToRawFields(restText)];
+      }
+    }
+    return extractFields(raw, docType);
+  };
+
   const runExtraction = (text: string, namedType?: string, pages?: string[], columnByPage?: RawField[][]) => {
     try {
       const textRaw = textToRawFields(text);
       if (!textRaw.length) {
         setOcrNote("No label-value pairs found in that text. Check the text and try again.");
         setExtraction(null);
-        return;
+        return null;
       }
       const detected = classifyDocument(textRaw, text);
       const useType = namedType ?? detected.docType;
@@ -180,9 +195,55 @@ export default function DocumentsScreen() {
       setExtraction(result);
       setExtractionType(useType);
       setOcrNote(null);
+      return { result, docType: useType };
     } catch (e) {
       setOcrNote(e instanceof Error ? e.message : String(e));
       setExtraction(null);
+      return null;
+    }
+  };
+
+  // Image reads get a self-healing second pass (owner demand,
+  // 2026-11-08: fix the app so it reads the files correctly - and
+  // rigorously for EVERY employer's format, not one company's).
+  // The band re-read is layout-agnostic: small, enlarged sections
+  // for any tall screenshot. It triggers when the fast pass loses a
+  // payslip's headline YTD figures - the tables the phone engine
+  // kept dropping - or when any document reads implausibly thin.
+  // Band extractions fill ONLY fields still missing, so a band can
+  // rescue a reading but never override it, and the user still
+  // confirms the full reading before anything is saved.
+  const runImageExtraction = async (text: string, namedType: string | undefined, file: File, batchLabel?: string) => {
+    const r = runExtraction(text, namedType);
+    if (!r) return;
+    const f = r.result.fields;
+    const payslipHole = r.docType === "payslip" &&
+      (typeof f.ytd_federal_withheld !== "number" || typeof f.ytd_taxable_wages !== "number");
+    const thinRead = Object.keys(f).length < 3;
+    if (!payslipHole && !thinRead) return;
+    const label = batchLabel ? `${batchLabel} - ` : "";
+    setOcrNote(`${label}the first read missed part of this document - re-reading the photo in sections...`);
+    const bands = await recognizeImageBands(file, (pct) => setOcrNote(`${label}re-reading in sections - ${pct}%`));
+    if (bands.error || !bands.texts.length) { setOcrNote(null); return; }
+    const merged: Record<string, number | string> = { ...f };
+    const mergedConf: Record<string, number> = { ...r.result.fieldConfidence };
+    let added = 0;
+    for (const bt of bands.texts) {
+      const br = extractOnly(bt, r.docType);
+      for (const [k, v] of Object.entries(br.fields)) {
+        if (merged[k] === undefined && v !== undefined) {
+          merged[k] = v;
+          mergedConf[k] = br.fieldConfidence[k] ?? 0.5;
+          added++;
+        }
+      }
+      if (r.docType === "payslip" && typeof merged.ytd_federal_withheld === "number" && typeof merged.ytd_taxable_wages === "number") break;
+    }
+    if (added > 0) {
+      setExtraction({ ...r.result, fields: merged, fieldConfidence: mergedConf });
+      setOcrNote(`${label}the section re-read found ${added} more figure${added === 1 ? "" : "s"} - please check the full reading below.`);
+    } else {
+      setOcrNote(null);
     }
   };
 
@@ -214,7 +275,11 @@ export default function DocumentsScreen() {
       setPhotoBatch(null);
       return;
     }
-    runExtraction(outcome.text, namedType);
+    if ("file" in item) {
+      await runImageExtraction(outcome.text, namedType, item.file, batchLabel);
+    } else {
+      runExtraction(outcome.text, namedType);
+    }
   };
 
   const advanceBatch = () => {
@@ -302,7 +367,7 @@ export default function DocumentsScreen() {
           const outcome = await recognizeImageFile(f);
           if (outcome.error) { setFlowNote(`OCR stage ${outcome.stage}: ${outcome.error}`); return; }
           setFlowNote(null);
-          runExtraction(outcome.text, namedType);
+          await runImageExtraction(outcome.text, namedType, f);
           return;
         }
         setFlowNote(`${f.name} is not a PDF or a photo - HomeTower reads PDFs and photos. Nothing was saved; the file can be registered manually below.`);
