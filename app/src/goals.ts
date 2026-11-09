@@ -376,6 +376,68 @@ export function chooseSpending(input: {
   return { spendingAnnual: input.fallback, tier: "none", lifestyleAnnual: eff.lifestyleAnnual };
 }
 
+/** ROUND 50 - display gating for the Retirement Lifestyle page.
+ *
+ * The defect this fixes (Copilot, from the owner's device): a
+ * household whose lifestyle model held ONLY Group-2 data - the
+ * payslip 401(k) prefill; zero Group-1 living spending - was shown
+ * the RESULT view with savings contributions presented as household
+ * spending ("You spend about $44,865/yr today") and a "$0/yr"
+ * retirement lifestyle presented as an estimate. Both are forbidden
+ * by the product's honesty rules: Group-2 amounts (savings, payroll
+ * taxes, work costs, college support, an ending mortgage) are NEVER
+ * spending evidence, and a lifestyle that is not estimated is never
+ * shown as a $0 figure. */
+export const LIFESTYLE_NOT_ESTIMATED = "Not estimated yet";
+
+export function lifestyleGroupTotals(l: LifestyleData): { group1Total: number; group2Total: number } {
+  const sum = (cats: LifestyleCategory[]) => cats.reduce((s, c) => s + (l.amounts[c.key] ?? 0), 0);
+  return { group1Total: sum(LIFESTYLE_GROUP1), group2Total: sum(LIFESTYLE_GROUP2) };
+}
+
+export interface LifestyleDisplayState {
+  group1Total: number;
+  group2Total: number;
+  /** Spending evidence exists: Group-1 living-spending amounts, a
+   * confirmed lifestyle, or a completed quick estimate. Group-2
+   * amounts NEVER count. */
+  hasSpendingEvidence: boolean;
+  /** The result view (headline lines, waterfall, output block) may
+   * render only when this is true. */
+  showResult: boolean;
+  /** The effective retirement lifestyle on the active path. */
+  lifestyleAnnual: number;
+  /** "" when the figure may be shown; LIFESTYLE_NOT_ESTIMATED when
+   * the figure must render as "Not estimated yet" - no spending
+   * evidence, or a computed lifestyle of $0. */
+  lifestyleLabel: string;
+}
+
+export function lifestyleDisplayState(l: LifestyleData, q: QuickEstimateData, ex: LifestyleExceptionsData): LifestyleDisplayState {
+  const { group1Total, group2Total } = lifestyleGroupTotals(l);
+  const hasSpendingEvidence = group1Total > 0 || l.confirmed || q.done;
+  const anyAmount = Object.values(l.amounts).some((v) => v > 0) || l.additionsAnnual > 0;
+  const catPath = anyAmount || l.confirmed;
+  const lifestyleAnnual = catPath ? lifestyleEffective(l, ex).lifestyleAnnual : quickBreakdown(q).lifestyleAnnual;
+  return {
+    group1Total,
+    group2Total,
+    hasSpendingEvidence,
+    showResult: hasSpendingEvidence,
+    lifestyleAnnual,
+    lifestyleLabel: !hasSpendingEvidence || lifestyleAnnual <= 0 ? LIFESTYLE_NOT_ESTIMATED : "",
+  };
+}
+
+/** ROUND 50 - wizard step 3: pension information is already on file
+ * when any member carries a pension amount, the household pension
+ * field is set, or a pension statement reading exists. In that case
+ * answering "No" to expected retirement income must NOT set the
+ * noPension flag - the data stays in the forecast. */
+export function pensionOnFile(input: { memberPensionAnnual: number; householdPensionAnnual: number; pensionStatementMonthly: number }): boolean {
+  return input.memberPensionAnnual > 0 || input.householdPensionAnnual > 0 || input.pensionStatementMonthly > 0;
+}
+
 /** Minimal document shape the Social Security helpers read. */
 export interface SsDocLike {
   docType: string;

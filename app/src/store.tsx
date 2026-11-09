@@ -366,6 +366,17 @@ export function HouseholdProvider({ children }: { children: React.ReactNode }) {
   return <Ctx.Provider value={store}>{children}</Ctx.Provider>;
 }
 
+/** ROUND 50 - one-shot wizard intent. Home sets this before
+ * navigating to the Lifestyle screen from the retirement card's
+ * next action or the personalize task; the Lifestyle screen consumes
+ * it on focus and opens its 3-step personalization wizard instead of
+ * the plain page. Module-level and NOT persisted: a stale intent
+ * must never reopen the wizard on a later visit, and direct entry
+ * from Plan or the tab never sets it, so the plain page shows. */
+let wizardIntent = false;
+export function setWizardIntent(): void { wizardIntent = true; }
+export function consumeWizardIntent(): boolean { const v = wizardIntent; wizardIntent = false; return v; }
+
 export function useHousehold(): Store {
   const store = useContext(Ctx);
   if (!store) throw new Error("useHousehold outside provider");
