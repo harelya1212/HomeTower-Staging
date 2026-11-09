@@ -14,7 +14,7 @@ import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } fro
 import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
 import { payslip401kTotals, payslipForecast, payslipGaps } from "../payslips.ts";
 import { fetchQuotes, type QuotesOutcome } from "../quotes";
-import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
+import { buildProfileExtras, setWizardIntent, todayIso, useHousehold } from "../store.tsx";
 
 export const NAVY = "#0B2A4A";
 export const TEAL = "#0E7C86";
@@ -574,7 +574,7 @@ export default function HomeScreen() {
               </View>
               <Text style={styles.line}>{accuracyLine}</Text>
               {personalizeSentence !== "" && <Text style={styles.line}>{personalizeSentence}</Text>}
-              <Pressable style={styles.button} onPress={() => navigation.navigate("Lifestyle")}>
+              <Pressable style={styles.button} onPress={() => { setWizardIntent(); navigation.navigate("Lifestyle"); }}>
                 <Text style={styles.buttonText}>Complete {accuracy.missing.length} retirement inputs</Text>
               </Pressable>
             </>
@@ -870,7 +870,7 @@ export default function HomeScreen() {
           <Pressable
             key={t.key}
             style={styles.taskRow}
-            onPress={() => { if (t.target) { setTasksOpen(false); navigation.navigate(t.target); } }}
+            onPress={() => { if (t.target) { setTasksOpen(false); if (t.key === "ret-personalize" && t.target === "Lifestyle") setWizardIntent(); navigation.navigate(t.target); } }}
           >
             <Text style={styles.taskRowIcon}>{t.icon}</Text>
             <View style={{ flex: 1 }}>

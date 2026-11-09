@@ -15,7 +15,17 @@
 // the few things statements cannot tell us. Bank and card statement
 // CSVs uploaded in Documents arrive here as spending evidence: they
 // prefill empty categories only. Every figure is in today's dollars.
-import { useNavigation } from "@react-navigation/native";
+//
+// ROUND 50 (Copilot device QA): evidence gating - the result view
+// renders only on real spending evidence (lifestyleDisplayState in
+// goals.ts); Group-2 savings/work amounts alone show the entry view
+// plus a "What we know so far" card, and a lifestyle that is not
+// estimated never renders as $0. Plus the 3-step personalization
+// wizard: Home's retirement actions open this screen in wizard mode
+// via the one-shot intent in store.tsx; the wizard reuses the
+// statements / quick / editor sections inline and writes into the
+// same store fields.
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { TextField } from "../components/Fields.tsx";
@@ -25,8 +35,10 @@ import {
   chooseSpending,
   householdRetirement,
   lifestyleBreakdown,
+  lifestyleDisplayState,
   lifestyleEffective,
   monthYearLabel,
+  pensionOnFile,
   quickBreakdown,
   ssForMember,
   LIFESTYLE_GROUP1,
@@ -35,7 +47,7 @@ import {
   type LifestyleCategoryState,
 } from "../goals.ts";
 import { payslip401kTotals } from "../payslips.ts";
-import { todayIso, useHousehold, type LifestyleExceptionsState, type LifestyleState, type QuickEstimateState } from "../store.tsx";
+import { consumeWizardIntent, todayIso, useHousehold, type LifestyleExceptionsState, type LifestyleState, type QuickEstimateState } from "../store.tsx";
 import { money, moneyShort, NAVY, TEAL } from "./HomeScreen.tsx";
 
 const num = (v: string) => Number(v.replace(/[^0-9.]/g, "")) || 0;
@@ -154,10 +166,17 @@ export default function LifestyleScreen() {
   const qb = quickBreakdown(quick);
   const anyAmount = Object.values(life.amounts).some((v) => v > 0) || life.additionsAnnual > 0;
   const catPath = anyAmount || life.confirmed;
-  const hasBaseline = catPath || quick.done;
   const active = catPath
     ? { current: bd.currentSpending, ending: eff.endingTotal, lifestyle: eff.lifestyleAnnual }
     : { current: qb.currentSpending, ending: qb.endingTotal, lifestyle: qb.lifestyleAnnual };
+  // ROUND 50 - evidence gating (the device-proven defect): the
+  // result view renders ONLY on real spending evidence. Group-2
+  // amounts (the payslip 401(k) prefill included) never count, so a
+  // savings-only household sees the entry view plus the "What we
+  // know so far" card - never savings dressed as spending, and never
+  // a $0 lifestyle dressed as an estimate.
+  const display = lifestyleDisplayState(life, quick, ex);
+  const showResult = display.showResult;
 
   const budgetTotal = (g.retirementBudget.housing || 0) + (g.retirementBudget.food || 0) + (g.retirementBudget.healthcare || 0) + (g.retirementBudget.travel || 0) + (g.retirementBudget.other || 0);
   const choice = chooseSpending({ lifestyle: life, exceptions: ex, customAnnual: g.retirementSpendingAnnual || 0, budgetTotal, quick, fallback: 0 });
@@ -208,6 +227,32 @@ export default function LifestyleScreen() {
   const [quickMortgage, setQuickMortgage] = useState<"" | "ends" | "keeps">(quick.mortgageEndsMonthly > 0 ? "ends" : "");
   const [quickCollege, setQuickCollege] = useState<"" | "yes" | "no">(quick.collegeEndsAnnual > 0 ? "yes" : "");
   const [collegePick, setCollegePick] = useState<"finished" | "still" | "">("");
+
+  // --- Round 50 wizard state ---------------------------------------
+  // The 3-step personalization wizard is a MODE of this screen,
+  // opened only when Home set the one-shot wizard intent (retirement
+  // card next action / personalize task). Progress is component-
+  // local; answers write straight into the store fields above. The
+  // tab screen stays mounted, so a detour to Documents and back
+  // lands in the wizard at the same step; the open-ref keeps a
+  // re-fired intent (the Home action pressed again on the way back)
+  // from resetting the step.
+  const [wizard, setWizard] = useState(false);
+  const [wizStep, setWizStep] = useState(1);
+  const [wizPath, setWizPath] = useState<"" | "statements" | "quick" | "manual">("");
+  const [wizIncome, setWizIncome] = useState<"" | "no" | "yes" | "unsure">("");
+  const wizardOpenRef = useRef(false);
+  const wizNoPensionRef = useRef(false);
+  useFocusEffect(
+    React.useCallback(() => {
+      if (consumeWizardIntent() && !wizardOpenRef.current) {
+        setWizStep(1);
+        setWizard(true);
+        wizardOpenRef.current = true;
+      }
+    }, []),
+  );
+  const closeWizard = () => { setWizard(false); wizardOpenRef.current = false; };
 
   // College default for the exceptions card: each child's college end
   // (start + duration, the same data the Education card uses) against
@@ -350,16 +395,10 @@ export default function LifestyleScreen() {
     </>
   );
 
-  // Review details: the full round-48 editor, collapsed by default in
-  // every view. The evidence card rides at its top so statement
-  // amounts can be applied or refreshed from here too.
-  const reviewDetails = (
+  // The editor cards themselves, shared by Review details below and
+  // the round-50 wizard's "Enter manually" path - one implementation.
+  const editorCards = (
     <>
-      <Pressable style={styles.detailsToggle} onPress={() => setShowDetails((v) => !v)}>
-        <Text style={styles.detailsToggleText}>{showDetails ? "Hide details" : "Review details"}</Text>
-      </Pressable>
-      {showDetails && (
-        <>
           <View style={styles.card}>
             <Text style={styles.section}>Spending evidence</Text>
             {evidenceMeter}
@@ -399,8 +438,18 @@ export default function LifestyleScreen() {
               </View>
             ))}
           </View>
-        </>
-      )}
+    </>
+  );
+
+  // Review details: the full round-48 editor, collapsed by default in
+  // every view. The evidence card rides at its top so statement
+  // amounts can be applied or refreshed from here too.
+  const reviewDetails = (
+    <>
+      <Pressable style={styles.detailsToggle} onPress={() => setShowDetails((v) => !v)}>
+        <Text style={styles.detailsToggleText}>{showDetails ? "Hide details" : "Review details"}</Text>
+      </Pressable>
+      {showDetails && editorCards}
     </>
   );
 
@@ -477,7 +526,7 @@ export default function LifestyleScreen() {
         </>
       )}
       {(quick.done || quick.monthlySpend > 0) && (
-        <Text style={styles.bigLine}>Estimated retirement lifestyle: {money(qb.lifestyleAnnual)}/yr</Text>
+        <Text style={styles.bigLine}>Estimated retirement lifestyle: {qb.lifestyleAnnual > 0 ? `${money(qb.lifestyleAnnual)}/yr` : "Not estimated yet"}</Text>
       )}
     </View>
   );
@@ -558,22 +607,200 @@ export default function LifestyleScreen() {
     </View>
   );
 
+  // --- Round 50 wizard ----------------------------------------------
+  // Step 3's "No" answer: the noPension flag is set ONLY when no
+  // pension data exists anywhere; with pension data on file the note
+  // shows instead and the flag stays unset. Picking Yes or Not sure
+  // after a No in the same session undoes a flag this wizard set.
+  const pensionExists = pensionOnFile({ memberPensionAnnual: memberPension, householdPensionAnnual: g.pensionAnnual, pensionStatementMonthly: pensionStmtMonthly });
+  const chooseIncome = (v: "no" | "yes" | "unsure") => {
+    setWizIncome(v);
+    if (v === "no") {
+      if (!pensionExists) { updateGoals({ noPension: true }); wizNoPensionRef.current = true; }
+    } else if (wizNoPensionRef.current) {
+      updateGoals({ noPension: false });
+      wizNoPensionRef.current = false;
+    }
+  };
+  const step2Answered = adults.length > 0 && ssPerAdult.every((s) => s.annual > 0);
+
+  if (wizard) {
+    return (
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        <View style={styles.wizHead}>
+          <Text style={[styles.title, { flex: 1 }]}>Personalize your retirement forecast</Text>
+          <Pressable onPress={closeWizard} hitSlop={10}>
+            <Text style={styles.wizClose}>✕</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.sourceLine}>Step {wizStep} of 3</Text>
+        <View style={styles.meterTrack}>
+          <View style={[styles.meterFill, { width: `${(wizStep / 3) * 100}%` }]} />
+        </View>
+        <Text style={styles.note}>Every step can be skipped - anything still missing is handled by the forecast's accuracy note on Home.</Text>
+
+        {wizStep === 1 && (
+          <>
+            <View style={styles.card}>
+              <Text style={styles.section}>Spending</Text>
+              <Text style={styles.line}>How should we estimate your retirement lifestyle?</Text>
+              {([
+                { v: "statements" as const, t: "Use my statements", s: "Best evidence: HomeTower reads a year of bank or card spending and builds the baseline from it." },
+                { v: "quick" as const, t: "Quick estimate", s: "One monthly figure plus a few questions - about a minute." },
+                { v: "manual" as const, t: "Enter manually", s: "Type the spending category by category instead." },
+              ]).map((o) => (
+                <Pressable key={o.v} style={[styles.choiceCard, wizPath === o.v && styles.choiceCardOn]} onPress={() => setWizPath(o.v)}>
+                  <Text style={styles.choiceTitle}>{wizPath === o.v ? "✓ " : ""}{o.t}</Text>
+                  <Text style={styles.note}>{o.s}</Text>
+                </Pressable>
+              ))}
+              {display.hasSpendingEvidence
+                ? <Text style={styles.confirmedLine}>✓ Answered - spending evidence is on file.</Text>
+                : wizPath !== "" && <Text style={styles.note}>No spending value yet - Continue counts this step as skipped.</Text>}
+            </View>
+            {wizPath === "statements" && (
+              <View style={styles.card}>
+                <Text style={styles.section}>Spending evidence</Text>
+                {evidenceMeter}
+                {statementsSection}
+              </View>
+            )}
+            {wizPath === "quick" && (
+              <View style={styles.card}>
+                <Text style={styles.section}>Quick estimate</Text>
+                {quickSection}
+              </View>
+            )}
+            {wizPath === "manual" && editorCards}
+          </>
+        )}
+
+        {wizStep === 2 && (
+          <View style={styles.card}>
+            <Text style={styles.section}>Social Security</Text>
+            <Text style={styles.note}>One row per adult. Uploading the statement is the primary way in; typing the yearly estimate from it is the fallback.</Text>
+            {adults.map((m, i) => {
+              const ss = ssPerAdult[i];
+              const stmtLabel = ss.source === "statement" ? monthYearLabel(ss.statementOn) : "";
+              return (
+                <View key={m.id} style={styles.personBlock}>
+                  <Text style={styles.personName}>{m.name || (m.role === "self" ? "You" : "Spouse")}</Text>
+                  <Pressable style={styles.button} onPress={() => navigation.navigate("Documents")}>
+                    <Text style={styles.buttonText}>Upload statement</Text>
+                  </Pressable>
+                  {ss.source === "statement" && (
+                    <Text style={styles.note}>From your Social Security statement{stmtLabel ? ` (${stmtLabel})` : ""}: about {money(ss.annual)}/yr.</Text>
+                  )}
+                  {ss.source === "manual" && ssStatementNote(state.intake.documents, m.id)}
+                  <Text style={styles.label}>or enter manually ($ per year)</Text>
+                  <AmountInput value={m.ssAnnual || 0} onChange={(v) => patchMember(m.id, { ssAnnual: v })} placeholder="From your Social Security statement" />
+                </View>
+              );
+            })}
+            {adults.length === 0 && <Text style={styles.line}>No adults on file yet - add them in My House first.</Text>}
+            {step2Answered && <Text style={styles.confirmedLine}>✓ Answered - Social Security is on file for every adult.</Text>}
+          </View>
+        )}
+
+        {wizStep === 3 && (
+          <View style={styles.card}>
+            <Text style={styles.section}>Other retirement income</Text>
+            <Text style={styles.line}>Do you expect pension, rental or other dependable retirement income?</Text>
+            {chipRow(
+              [
+                { v: "no" as const, label: "No" },
+                { v: "yes" as const, label: "Yes" },
+                { v: "unsure" as const, label: "Not sure" },
+              ],
+              wizIncome,
+              chooseIncome,
+            )}
+            {wizIncome === "no" && pensionExists && (
+              <Text style={styles.line}>You already have pension information on file - it stays in your forecast.</Text>
+            )}
+            {wizIncome === "no" && !pensionExists && (
+              <Text style={styles.note}>Saved: this household has no pension. You can change this any time on this page.</Text>
+            )}
+            {wizIncome === "unsure" && (
+              <Text style={styles.note}>Nothing is set - the forecast simply notes pension as an open input until you know.</Text>
+            )}
+            {wizIncome === "yes" && (
+              <>
+                {adults.map((m) => (
+                  <View key={m.id} style={styles.personBlock}>
+                    <Text style={styles.personName}>{m.name || (m.role === "self" ? "You" : "Spouse")}</Text>
+                    <Text style={styles.label}>Pension</Text>
+                    <Pressable style={styles.buttonAlt} onPress={() => navigation.navigate("Documents")}>
+                      <Text style={styles.buttonText}>Upload statement</Text>
+                    </Pressable>
+                    <Text style={styles.label}>or enter manually ($ per year, this person)</Text>
+                    <AmountInput value={m.pensionAnnual || 0} onChange={(v) => patchMember(m.id, { pensionAnnual: v })} placeholder="Or let a pension statement in Documents speak" />
+                  </View>
+                ))}
+                {memberPension <= 0 && pensionAnnualEff > 0 && (
+                  <Text style={styles.note}>Pension of {money(pensionAnnualEff)}/yr is already on file from your pension statement - it counts in the forecast.</Text>
+                )}
+                <Text style={styles.label}>Other dependable income ($ per year - net rent, annuities)</Text>
+                <AmountInput value={g.otherRetirementIncomeAnnual || 0} onChange={(v) => updateGoals({ otherRetirementIncomeAnnual: v })} placeholder="You can set this later" />
+              </>
+            )}
+            {wizIncome !== "" && <Text style={styles.confirmedLine}>✓ Answered.</Text>}
+          </View>
+        )}
+
+        <View style={styles.wizControls}>
+          {wizStep > 1 && (
+            <Pressable style={styles.buttonAlt} onPress={() => setWizStep((s) => Math.max(1, s - 1))}>
+              <Text style={styles.buttonText}>Back</Text>
+            </Pressable>
+          )}
+          {wizStep < 3 ? (
+            <>
+              <Pressable style={styles.button} onPress={() => setWizStep((s) => Math.min(3, s + 1))}>
+                <Text style={styles.buttonText}>Continue</Text>
+              </Pressable>
+              <Pressable onPress={() => setWizStep((s) => Math.min(3, s + 1))}>
+                <Text style={styles.textButton}>Skip for now</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Pressable style={styles.button} onPress={closeWizard}>
+                <Text style={styles.buttonText}>Show my retirement forecast</Text>
+              </Pressable>
+              <Pressable onPress={closeWizard}>
+                <Text style={styles.textButton}>Skip for now</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+      </ScrollView>
+    );
+  }
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>{hasBaseline ? "Retirement Lifestyle" : "Build your retirement lifestyle"}</Text>
+      <Text style={styles.title}>{showResult ? "Retirement Lifestyle" : "Build your retirement lifestyle"}</Text>
       <Text style={styles.purpose}>
-        {hasBaseline
+        {showResult
           ? "Your retirement target, built from what your household actually spends - not a percentage of income."
           : "HomeTower can estimate this from how your household actually spends."}
       </Text>
       <Text style={styles.sourceLine}>Home is using: {sourceText}.</Text>
 
-      {!hasBaseline && (
+      {!showResult && (
         <>
           <View style={styles.card}>
             <Text style={styles.section}>Spending evidence</Text>
             {evidenceMeter}
           </View>
+
+          {display.group2Total > 0 && (
+            <View style={styles.card}>
+              <Text style={styles.section}>What we know so far</Text>
+              <Text style={styles.line}>From your payslips we can see about {moneyShort(display.group2Total)}/yr of saving and work costs, such as 401(k) contributions. That is not household living spending, so your retirement lifestyle is not estimated yet.</Text>
+            </View>
+          )}
 
           <View style={styles.card}>
             <Text style={styles.section}>Three ways to build it</Text>
@@ -603,13 +830,13 @@ export default function LifestyleScreen() {
         </>
       )}
 
-      {hasBaseline && (
+      {showResult && (
         <>
           <View style={styles.card}>
             <Text style={styles.headline}>You spend about {money(active.current)}/yr today</Text>
             <Text style={styles.headline}>About {money(active.ending)}/yr ends before retirement</Text>
             <Text style={styles.headline}>
-              {choice.tier === "confirmed" ? "Your retirement lifestyle" : "Estimated retirement lifestyle"}: {money(active.lifestyle)}/yr
+              {choice.tier === "confirmed" ? "Your retirement lifestyle" : "Estimated retirement lifestyle"}: {active.lifestyle > 0 ? `${money(active.lifestyle)}/yr` : "Not estimated yet"}
             </Text>
             {evidenceMeter}
             {!catPath && (
@@ -642,9 +869,9 @@ export default function LifestyleScreen() {
                 {catPath && eff.majorChange !== 0 && wfBar("Major change", signed(eff.majorChange), eff.majorChange, wfMax, eff.majorChange > 0 ? GREEN : RED)}
                 {!catPath && qb.travelDelta !== 0 && wfBar("Travel change", signed(qb.travelDelta), qb.travelDelta, wfMax, qb.travelDelta > 0 ? GREEN : RED)}
                 {!catPath && quick.healthcareBridgeAnnual > 0 && wfBar("Healthcare bridge", `+ ${money(quick.healthcareBridgeAnnual)}`, quick.healthcareBridgeAnnual, wfMax, GREEN)}
-                {wfBar(catPath && choice.tier === "confirmed" ? "Your retirement lifestyle" : "Retirement lifestyle target", money(active.lifestyle), active.lifestyle, wfMax, NAVY, true)}
-                {wfBar("Covered by Social Security & reliable income", money(hh.dependableAnnual), hh.dependableAnnual, covMax, TEAL)}
-                {wfBar("Portfolio needs to provide", `${money(hh.portfolioGapAnnual)}/yr`, hh.portfolioGapAnnual, covMax, NAVY, true)}
+                {wfBar(catPath && choice.tier === "confirmed" ? "Your retirement lifestyle" : "Retirement lifestyle target", active.lifestyle > 0 ? money(active.lifestyle) : "Not estimated yet", active.lifestyle, wfMax, NAVY, true)}
+                {active.lifestyle > 0 && wfBar("Covered by Social Security & reliable income", money(hh.dependableAnnual), hh.dependableAnnual, covMax, TEAL)}
+                {active.lifestyle > 0 && wfBar("Portfolio needs to provide", `${money(hh.portfolioGapAnnual)}/yr`, hh.portfolioGapAnnual, covMax, NAVY, true)}
               </>
             ) : (
               <Text style={styles.line}>Add what the household spends today and HomeTower builds the target here, step by step.</Text>
@@ -806,6 +1033,12 @@ const styles = StyleSheet.create({
   personBlock: { gap: 2, borderTopWidth: 1, borderTopColor: "#E3EAF0", paddingTop: 10 },
   personName: { fontSize: 16, fontWeight: "800", color: NAVY },
   toggleRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 },
+  wizHead: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  wizClose: { fontSize: 22, fontWeight: "800", color: NAVY, paddingHorizontal: 6 },
+  wizControls: { gap: 10 },
+  choiceCard: { borderWidth: 1.5, borderColor: "#C9D6E0", borderRadius: 10, padding: 12, gap: 4, backgroundColor: "#FFFFFF" },
+  choiceCardOn: { borderColor: TEAL, backgroundColor: "#EAF4F4" },
+  choiceTitle: { fontSize: 16.5, fontWeight: "800", color: NAVY },
   confirmedLine: { fontSize: 15.5, fontWeight: "700", color: GREEN, lineHeight: 22 },
   footnote: { fontSize: 12.5, color: "#5A6B7C", lineHeight: 18 },
 });
