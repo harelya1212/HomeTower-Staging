@@ -112,6 +112,42 @@ export function mergePayslipFields(prev: Record<string, string>, next: Record<st
   return merged;
 }
 
+// Diagnosis for the silent case (owner device test, 2026-11-08):
+// payslips are saved, the cards even say UP TO DATE, yet the
+// forecast is null because each earner's readings are missing a
+// gate component and NOTHING in the app said so. This reports, per
+// earner, exactly which components no saved slip provided - the
+// Home screen shows it instead of a silent blank.
+export interface PayslipGap { name: string; missing: string[] }
+
+export function payslipGaps(documents: DocumentRecord[], todayIso: string): PayslipGap[] {
+  const slips = documents.filter((d) => d.docType === "payslip" && d.fields && (d.fields["employee_name"] ?? "").trim() !== "");
+  if (slips.length === 0) return [];
+  const thisYear = todayIso.slice(0, 4);
+  const byEarner = new Map<string, DocumentRecord[]>();
+  for (const s of slips) {
+    const key = normName(s.fields!["employee_name"]);
+    const arr = byEarner.get(key) ?? [];
+    arr.push(s);
+    byEarner.set(key, arr);
+  }
+  const gaps: PayslipGap[] = [];
+  for (const [key, docs] of byEarner) {
+    const withEnd = docs.map((d) => ({ d, end: slipEnd(d) })).filter((x) => x.end !== null && x.end.slice(0, 4) === thisYear) as Array<{ d: DocumentRecord; end: string }>;
+    const name = docs[0].fields!["employee_name"] || key;
+    if (withEnd.length === 0) {
+      gaps.push({ name, missing: ["a pay-period date in 2026 on any reading"] });
+      continue;
+    }
+    const has = (get: (f: Record<string, string>) => number | null) => withEnd.some((x) => get(x.d.fields ?? {}) !== null);
+    const missing: string[] = [];
+    if (!has((f) => num(f["ytd_taxable_wages"]) ?? num(f["ytd_gross"]))) missing.push("taxable wages YTD (or gross pay YTD)");
+    if (!has((f) => num(f["ytd_federal_withheld"]))) missing.push("federal withholding YTD");
+    if (missing.length > 0) gaps.push({ name, missing });
+  }
+  return gaps;
+}
+
 export function payslipForecast(
   documents: DocumentRecord[],
   family: MemberLike[],
