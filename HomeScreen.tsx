@@ -313,9 +313,6 @@ export default function HomeScreen() {
       {adults.length > 0 && (
         <View style={styles.card}>
           <Text style={styles.cardLabel}>Retirement outlook - per person</Text>
-          {adultOutlook.some((a) => a.m.retireTarget <= 0 && a.need > 0) && householdNeed > 0 && (
-            <Text style={styles.line}>“Enough” is estimated for the household: about {money(householdNeed)} in total (rule of thumb: 70% of income x 25 years), split between the adults. Set a personal target in the {state.intake.name || "My House"} tab to make it individual.</Text>
-          )}
           {adultOutlook.map(({ m, age, need, years, projected, onTrack, realisticAge, reqMo, mo }) => {
             const pct = need > 0 ? Math.max(0, Math.min(100, Math.round((projected / need) * 100))) : null;
             return (
@@ -327,38 +324,61 @@ export default function HomeScreen() {
                   <Text style={styles.line}>Age {age}, {years} years to go. Add household income (or a personal target in the {state.intake.name || "My House"} tab) so HomeTower can estimate how much is enough.</Text>
                 ) : (
                   <>
-                    <View style={styles.barTrack}>
-                      <View style={[styles.barFill, { width: `${pct ?? 0}%`, backgroundColor: onTrack ? GREEN : (pct ?? 0) >= 50 ? YELLOW : RED }]} />
+                    <View style={styles.tilesRow}>
+                      <View style={styles.tile}>
+                        <Text adjustsFontSizeToFit numberOfLines={1} style={[styles.tileValue, { color: onTrack ? GREEN : (pct ?? 0) >= 50 ? YELLOW : RED }]}>{pct}%</Text>
+                        <Text style={styles.tileLabel}>Funded</Text>
+                      </View>
+                      <View style={styles.tile}>
+                        <Text adjustsFontSizeToFit numberOfLines={1} style={styles.tileValue}>{money(projected)}</Text>
+                        <Text style={styles.tileLabel}>Projected by {m.retireAge || 67}</Text>
+                      </View>
+                      <View style={styles.tile}>
+                        <Text adjustsFontSizeToFit numberOfLines={1} style={styles.tileValue}>{money(need)}</Text>
+                        <Text style={styles.tileLabel}>Need</Text>
+                      </View>
                     </View>
-                    <Text style={styles.line}>{onTrack ? "🟢" : "🔴"} {onTrack ? "On track" : "Not yet"} - {money(projected)} projected by age {m.retireAge || 67}, about {money(need)} needed ({pct}% funded).</Text>
-                    {!onTrack && (
-                      <Text style={styles.line}>{realisticAge !== null ? `At today's pace (${money(mo)}/mo) the money is ready at ${realisticAge}.` : `At today's pace (${money(mo)}/mo) it is not ready even by 80.`}{years > 0 ? ` To retire at ${m.retireAge || 67}: save ${money(reqMo)}/mo.` : ""}</Text>
-                    )}
+                    <Text style={styles.line}>{onTrack ? `🟢 On track for age ${m.retireAge || 67}.` : realisticAge !== null ? `🔴 Ready at ${realisticAge} at today's pace (${money(mo)}/mo) - or save ${money(reqMo)}/mo to retire at ${m.retireAge || 67}.` : `🔴 Not ready by 80 at today's pace (${money(mo)}/mo) - save ${money(reqMo)}/mo to retire at ${m.retireAge || 67}.`}</Text>
                   </>
                 )}
               </View>
             );
           })}
+          {adultOutlook.some((a) => a.m.retireTarget <= 0 && a.need > 0) && householdNeed > 0 && (
+            <Text style={styles.footnote}>Need = the household estimate, {money(householdNeed)} in total (70% of income x 25 years), split per adult. Set a personal target in the {state.intake.name || "My House"} tab to make it individual.</Text>
+          )}
         </View>
       )}
 
       {children.length > 0 && (
         <View style={styles.card}>
           <Text style={styles.cardLabel}>Education - timing and funding, per child</Text>
-          {eduOutlook.map(({ c, yearsToStart, duration, funding, usingDefaultCost, effCost }) => {
-            const pct = funding.pctFunded;
+          {eduOutlook.map(({ c, yearsToStart, duration, funding, usingDefaultCost }) => {
+            const pct = funding.pctFunded ?? 0;
             return (
               <View key={c.id} style={styles.personBlock}>
-                <Text style={styles.line}>🎓 {educationLine(c.name || "Child", c.dob, c.studentNow, c.collegeStartYear, c.yearsLeftInCollege, today)}</Text>
-                <View style={styles.barTrack}>
-                  <View style={[styles.barFill, { width: `${Math.max(0, Math.min(100, pct ?? 0))}%`, backgroundColor: funding.gap <= 0 ? GREEN : (pct ?? 0) >= 70 ? YELLOW : RED }]} />
+                <Text style={styles.personName}>🎓 {educationLine(c.name || "Child", c.dob, c.studentNow, c.collegeStartYear, c.yearsLeftInCollege, today)}</Text>
+                <View style={styles.tilesRow}>
+                  <View style={styles.tile}>
+                    <Text adjustsFontSizeToFit numberOfLines={1} style={[styles.tileValue, { color: funding.gap <= 0 ? GREEN : pct >= 70 ? YELLOW : RED }]}>{pct}%</Text>
+                    <Text style={styles.tileLabel}>Funded</Text>
+                  </View>
+                  <View style={styles.tile}>
+                    <Text adjustsFontSizeToFit numberOfLines={1} style={styles.tileValue}>{money(funding.projectedAtStart)}</Text>
+                    <Text style={styles.tileLabel}>Saved, projected to start</Text>
+                  </View>
+                  <View style={styles.tile}>
+                    <Text adjustsFontSizeToFit numberOfLines={1} style={styles.tileValue}>{money(funding.needAtStart)}</Text>
+                    <Text style={styles.tileLabel}>Need ({duration} yrs)</Text>
+                  </View>
                 </View>
-                <Text style={styles.line}>{funding.gap <= 0 ? "🟢" : (pct ?? 0) >= 70 ? "🟡" : "🔴"} {pct}% funded - {duration} years at {money(effCost)}/yr{usingDefaultCost ? " (HomeTower default cost - set the real one in the " + (state.intake.name || "My House") + " tab)" : ""}{c.eduScholarshipYear ? ` minus ${money(c.eduScholarshipYear)}/yr scholarship` : ""}: needs about {money(funding.needAtStart)} by the start{yearsToStart > 0 ? ` (${yearsToStart} yrs away)` : ""}. Saved {money(c.eduBalance || 0)} + {money(c.eduMonthly || 0)}/mo projects to {money(funding.projectedAtStart)}.</Text>
-                {funding.gap > 0 && yearsToStart > 0 && <Text style={styles.line}>Gap {money(funding.gap)} - to close it: save {money(funding.requiredMonthly)}/mo instead of {money(c.eduMonthly || 0)}/mo.</Text>}
-                {funding.gap > 0 && yearsToStart === 0 && <Text style={styles.line}>Gap {money(funding.gap)} - college is here, so the gap has to come from cash flow, loans, or a cheaper plan.</Text>}
+                <Text style={styles.line}>{funding.gap <= 0 ? "🟢 Covered." : yearsToStart > 0 ? `🔴 Gap ${money(funding.gap)} - save ${money(funding.requiredMonthly)}/mo (now ${money(c.eduMonthly || 0)}/mo) to close it.` : `🔴 Gap ${money(funding.gap)} - college is here: cash flow, loans, or a cheaper plan.`}{c.eduScholarshipYear ? ` After a ${money(c.eduScholarshipYear)}/yr scholarship.` : ""}</Text>
               </View>
             );
           })}
+          {eduOutlook.some((e) => e.usingDefaultCost) && (
+            <Text style={styles.footnote}>Default costs apply until real ones are set in the {state.intake.name || "My House"} tab.</Text>
+          )}
         </View>
       )}
 
@@ -536,6 +556,11 @@ const styles = StyleSheet.create({
   buttonText: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" },
   barTrack: { height: 10, borderRadius: 999, backgroundColor: "#EDF2F6", overflow: "hidden", marginTop: 6 },
   barFill: { height: 10, borderRadius: 999 },
+  tilesRow: { flexDirection: "row", gap: 8, marginTop: 6 },
+  tile: { flex: 1, backgroundColor: "#F4F7FA", borderRadius: 12, paddingVertical: 10, paddingHorizontal: 6, alignItems: "center" },
+  tileValue: { fontSize: 19, fontWeight: "800", color: NAVY },
+  tileLabel: { fontSize: 11, color: "#5A6B7C", textAlign: "center", marginTop: 2 },
+  footnote: { fontSize: 12, color: "#5A6B7C", marginTop: 8 },
   taxRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8 },
   taxValue: { fontSize: 21, fontWeight: "800", color: NAVY, minWidth: 108 },
   taxName: { fontSize: 15, fontWeight: "700", color: "#22303C" },
