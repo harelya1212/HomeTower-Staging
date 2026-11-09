@@ -9,6 +9,7 @@
 import React, { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { deflateToToday, monthYearLabel, ratingColorKey } from "../goals.ts";
+import { dateLabel } from "../reconcile.ts";
 import RetirementTimeline from "./RetirementTimeline.tsx";
 import type { Payslip401k } from "../payslips.ts";
 import type { RetirementModel } from "../retirementModel.ts";
@@ -138,6 +139,29 @@ export default function RetirementDetails({ model, g, householdName, k401Totals,
           {adultOutlook.map((a) => (a.stmt401k ? (
             <Text key={`stmt401k-${a.m.id}`} style={styles.line}>{a.m.name || (a.m.role === "self" ? "You" : "Spouse")} - 401(k) balance from your statement ({monthYearLabel(a.stmt401k.capturedOn)}): {money(a.stmt401k.balance)}</Text>
           ) : null))}
+          {adultOutlook.map((a) => {
+            const f = a.facts;
+            if (!f) return null;
+            const who = a.m.name || (a.m.role === "self" ? "You" : "Spouse");
+            const prov = `401(k) statement, period ending ${dateLabel(f.statementAsOf ?? f.capturedOn ?? "")}`;
+            return (
+              <View key={`facts-${a.m.id}`}>
+                {(f.pretaxRothYtd !== null || f.afterTaxYtd !== null || f.matchYtd !== null || f.total415Ytd !== null) && (
+                  <Text style={styles.line}>{who} - contributions this year ({prov}):{f.pretaxRothYtd !== null ? ` pre-tax/Roth ${money(f.pretaxRothYtd)}` : ""}{f.afterTaxYtd !== null ? ` - after-tax ${money(f.afterTaxYtd)}` : ""}{f.matchYtd !== null ? ` - employer match ${money(f.matchYtd)}` : ""}{f.total415Ytd !== null ? ` - total ${money(f.total415Ytd)}` : ""}. The statement confirms the year's totals; the monthly pace comes from the freshest regular payslip.</Text>
+                )}
+                {(f.pretaxBalance !== null || f.matchBalance !== null || f.rothConversionBalance !== null || f.afterTaxBalance !== null) && (
+                  <Text style={styles.line}>{who} - 401(k) balance mix ({prov}):{f.pretaxBalance !== null ? ` pre-tax ${money(f.pretaxBalance)}` : ""}{f.matchBalance !== null ? ` - employer match ${money(f.matchBalance)}` : ""}{f.rothConversionBalance !== null ? ` - Roth conversions ${money(f.rothConversionBalance)}` : ""}{f.afterTaxBalance !== null ? ` - after-tax ${money(f.afterTaxBalance)}` : ""}</Text>
+                )}
+                {(f.afterTaxYtd !== null || f.rothConversionBalance !== null || f.afterTaxBalance !== null) && (
+                  <Text style={styles.line}>{who} - Mega Backdoor Roth ({prov}):{f.afterTaxYtd !== null ? ` after-tax contributions ${money(f.afterTaxYtd)} this year` : ""}{f.rothConversionBalance !== null ? ` - Roth in-plan conversion balance ${money(f.rothConversionBalance)}` : ""}{f.afterTaxBalance !== null ? ` - after-tax balance still unconverted ${money(f.afterTaxBalance)}${f.afterTaxBalance === 0 ? " (the statement prints $0.00 - a confirmed zero)" : ""}` : ""}</Text>
+                )}
+                {f.holdings.map((h) => (
+                  <Text key={h.label} style={styles.line}>{who} - invested in: {h.label} - {money(h.value)} ({prov})</Text>
+                ))}
+                {f.election && <Text style={styles.line}>{who} - future contributions: {f.election} (current election, per the statement)</Text>}
+              </View>
+            );
+          })}
           <Text style={styles.line}>Net rental / other dependable: {money(g.otherRetirementIncomeAnnual || 0)}/year</Text>
           <Text style={styles.line}>Home equity: excluded from the investable portfolio</Text>
           {phases && <Text style={styles.line}>Bridge years ({phases.y1}-{phases.y2}): the retired spouse's portfolio keeps growing and is not drawn - the working spouse's income covers those years</Text>}
