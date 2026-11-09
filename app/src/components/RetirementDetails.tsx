@@ -8,7 +8,8 @@
 // provenance - payslip, statement, or an honest Not detected.
 import React, { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { deflateToToday, monthYearLabel } from "../goals.ts";
+import { deflateToToday, monthYearLabel, ratingColorKey } from "../goals.ts";
+import RetirementTimeline from "./RetirementTimeline.tsx";
 import type { Payslip401k } from "../payslips.ts";
 import type { RetirementModel } from "../retirementModel.ts";
 import type { GoalInputs } from "../store.tsx";
@@ -88,6 +89,12 @@ export default function RetirementDetails({ model, g, householdName, k401Totals,
       {accuracy.level === "X" && spendingAnnual > 0 && (
         <Text style={styles.line}>Rough placeholder: {moneyShort(hhRet.needBase)}* - Based on 70% of current income and assuming $0 Social Security or pension. Do not use for retirement decisions.</Text>
       )}
+      {directional && directional.sufficient && model.timeline && (
+        <>
+          <Text style={styles.subhead}>Retirement timeline</Text>
+          <RetirementTimeline timeline={model.timeline} colorKey={ratingColorKey(directional.rating)} />
+        </>
+      )}
       {spendingTier === "quick" && (
         <Text style={styles.line}>Spending basis: your quick estimate.</Text>
       )}
@@ -157,6 +164,7 @@ export default function RetirementDetails({ model, g, householdName, k401Totals,
 
 const styles = StyleSheet.create({
   line: { fontSize: 15, color: NAVY, marginTop: 6, lineHeight: 21 },
+  subhead: { fontSize: 16, fontWeight: "800", color: NAVY, marginTop: 12 },
   manualLink: { fontSize: 15, color: TEAL, fontWeight: "700", marginTop: 10 },
   personBlock: { marginTop: 12, borderTopWidth: 1, borderTopColor: "#E3EAF2", paddingTop: 10 },
   personName: { fontSize: 16, fontWeight: "700", color: NAVY },
