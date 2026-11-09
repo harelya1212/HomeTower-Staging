@@ -8,8 +8,9 @@ import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { computeFederalTax } from "../../engine/federal.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
-import { ageOn, educationFunding, educationLine } from "../goals.ts";
+import { ageOn, educationFunding, educationLine, faceStatusFor } from "../goals.ts";
 import RetirementDetails from "../components/RetirementDetails.tsx";
+import RetirementTimeline from "../components/RetirementTimeline.tsx";
 import { computeRetirementModel } from "../retirementModel.ts";
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
@@ -135,6 +136,13 @@ export default function HomeScreen() {
   // no target figure and no readiness % at X (round 48 law holds);
   // at X with no path to draw, the round-48 face stays.
   const useDirectionalFace = accuracy.level === "X" && directional !== null && directional.sufficient;
+  // Round 53: the X face is a visual status card - one status line,
+  // two big numbers, the timeline, one opportunity line, one action.
+  // The face status softens an off-track rating to "Too early to
+  // confirm" at X only (faceStatusFor); precise prescriptions never
+  // appear at X (round 53 item 4) - the levers live in the details.
+  const retDisplay = useDirectionalFace && directional ? faceStatusFor(accuracy.level, directional.rating, directional.desiredAge) : null;
+  const STATUS_DOT: Record<string, string> = { green: "\u{1F7E2}", yellow: "\u{1F7E1}", orange: "\u{1F7E0}", red: "\u{1F534}" };
 
   // Education funding per child (owner QA round 18, SPEC45 sec. 32):
   // saved vs the real cost path - per child, with their own dates.
@@ -461,23 +469,25 @@ export default function HomeScreen() {
               <Text style={styles.line}>{accuracyLine}</Text>
               <Text style={styles.line}>No action needed - review once a year.</Text>
             </>
-          ) : useDirectionalFace && directional ? (
+          ) : useDirectionalFace && directional && retDisplay ? (
             <>
-              <Text style={styles.statusLine}>{directional.rating === "on_track" ? "\u{1F7E2}" : directional.rating === "close" ? "\u{1F7E1}" : directional.rating === "needs_improvement" ? "\u{1F7E0}" : "\u{1F534}"} {directional.ratingLabel}</Text>
-              <Text style={styles.line}>Early estimate - Low confidence</Text>
-              <Text style={styles.line}>Desired retirement: Age {directional.desiredAge}</Text>
-              <Text style={styles.line}>Current path: {directional.rangeLabel === "80+" ? "80+" : `~${directional.rangeLabel}`}</Text>
-              {directional.action.kind !== "none" ? (
-                <>
-                  <Text style={styles.line}>Recommended: {directional.action.text}</Text>
-                  {directional.action.impactText !== "" && <Text style={styles.line}>{directional.action.impactText}</Text>}
-                </>
-              ) : (
-                <Text style={styles.line}>{directional.action.text}</Text>
-              )}
-              {personalizeSentence !== "" && <Text style={styles.line}>{personalizeSentence}</Text>}
+              <Text style={styles.statusLine}>{STATUS_DOT[retDisplay.colorKey]} {retDisplay.label}</Text>
+              {retDisplay.support && <Text style={styles.line}>{retDisplay.support}</Text>}
+              <Text style={styles.confLine}>Early estimate - Low confidence</Text>
+              <View style={styles.bigRow}>
+                <View style={styles.bigTile}>
+                  <Text style={styles.bigValue2}>{directional.desiredAge}</Text>
+                  <Text style={styles.bigLabel}>Desired</Text>
+                </View>
+                <View style={styles.bigTile}>
+                  <Text style={styles.bigValue2}>{directional.rangeLabel}</Text>
+                  <Text style={styles.bigLabel}>Current path</Text>
+                </View>
+              </View>
+              {retModel.timeline && <RetirementTimeline timeline={retModel.timeline} colorKey={retDisplay.colorKey} compact />}
+              {retModel.opportunityLine && <Text style={styles.line}>{retModel.opportunityLine}</Text>}
               <Pressable style={styles.button} onPress={() => { setWizardIntent(); navigation.navigate("Lifestyle"); }}>
-                <Text style={styles.buttonText}>Complete {accuracy.missing.length} retirement inputs</Text>
+                <Text style={styles.buttonText}>Improve estimate</Text>
               </Pressable>
             </>
           ) : accuracy.level === "X" ? (
@@ -789,6 +799,12 @@ const styles = StyleSheet.create({
   tileValue: { fontSize: 19, fontWeight: "800", color: NAVY },
   tileNote: { fontSize: 14, fontWeight: "800", color: NAVY, textAlign: "center", lineHeight: 18 },
   statusLine: { fontSize: 21, fontWeight: "800", color: NAVY },
+  // Round 53 X-face pieces: the confidence tag, the two big numbers.
+  confLine: { fontSize: 13, color: "#5A6B7C", fontWeight: "700", marginTop: 2 },
+  bigRow: { flexDirection: "row", gap: 10, marginTop: 10 },
+  bigTile: { flex: 1, backgroundColor: "#F4F7FA", borderRadius: 12, paddingVertical: 12, alignItems: "center" },
+  bigValue2: { fontSize: 32, fontWeight: "800", color: NAVY },
+  bigLabel: { fontSize: 13, color: "#5A6B7C", fontWeight: "700", marginTop: 2 },
   tileLabel: { fontSize: 11, color: "#5A6B7C", textAlign: "center", marginTop: 2 },
   footnote: { fontSize: 12, color: "#5A6B7C", marginTop: 8 },
   notesBlock: { gap: 2, marginTop: 2 },

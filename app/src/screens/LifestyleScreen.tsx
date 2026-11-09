@@ -33,7 +33,8 @@ import { GREEN, RED } from "../components/Gauge.tsx";
 import {
   ageOn,
   chooseSpending,
-  docEvidenceStatus,
+  group2EvidenceStatus,
+  group2RowProvenance,
   householdRetirement,
   lifestyleBreakdown,
   lifestyleDisplayState,
@@ -42,7 +43,6 @@ import {
   pensionOnFile,
   quickBreakdown,
   ssForMember,
-  valueStatusLabel,
   LIFESTYLE_GROUP1,
   LIFESTYLE_GROUP2,
   type LifestyleCategory,
@@ -125,25 +125,19 @@ export default function LifestyleScreen() {
     return monthly;
   })();
   const docDerivedAnnual: Record<string, number> = { k401: pace401kAnnual, hsa_contrib: paceHsaAnnual, espp: paceEsppAnnual, contrib529: stmt529Monthly ? Math.round(stmt529Monthly * 12) : 0 };
-  const docItemFor: Record<string, "espp" | "hsa" | "529"> = { hsa_contrib: "hsa", espp: "espp", contrib529: "529" };
-  const group2Badge = (key: string): string | null => {
-    const amount = life.amounts[key] || 0;
-    const derived = docDerivedAnnual[key] ?? 0;
-    if (amount > 0 && derived > 0 && amount === derived) {
-      if (key === "k401") return "From payslips";
-      const item = docItemFor[key];
-      return item ? valueStatusLabel(docEvidenceStatus(state.intake.documents, item)) : null;
-    }
-    if (amount === 0) {
-      const item = docItemFor[key];
-      if (!item) return null;
-      const st = docEvidenceStatus(state.intake.documents, item);
-      if (st === "not_detected") return "Not detected in your documents";
-      if (st === "unknown") return "Unknown - no document shows this yet";
-      return valueStatusLabel(st);
-    }
-    return null;
-  };
+  // ROUND 53 - provenance is global now (item 6): EVERY group-2 row
+  // carries it, computed by the shared helpers in goals.ts. A row
+  // with a sourced value gets a subtle badge (PAYSLIP / STATEMENT /
+  // USER); an untouched row with no source renders its input EMPTY
+  // with the state (Unknown / Not detected) as the placeholder and
+  // as the small badge line - never a prefilled "0" posing as data.
+  // A user-typed value, including a typed 0, is USER.
+  const provFor = (key: string) =>
+    group2RowProvenance({
+      amount: life.amounts[key] || 0,
+      derivedAnnual: docDerivedAnnual[key] ?? 0,
+      evidence: group2EvidenceStatus(state.intake.documents, key),
+    });
 
   // --- Spending evidence from statement documents -----------------
   const stmtDocs = state.intake.documents.filter((d) => d.docType === "bank_statement" || d.docType === "card_statement");
@@ -423,7 +417,7 @@ export default function LifestyleScreen() {
       {fillable.length === 0 && (
         <Text style={styles.note}>{Object.keys(evidence).length > 0 ? "Your statements are already reflected in the categories below - nothing empty is left to fill." : "No statement spending has been read yet. Upload a bank or card statement and HomeTower reads the spending from it."}</Text>
       )}
-      <Pressable style={styles.buttonAlt} onPress={() => navigation.navigate("Documents")}>
+      <Pressable style={styles.buttonAlt} onPress={() => navigation.navigate("Tabs", { screen: "Documents" })}>
         <Text style={styles.buttonText}>Upload a statement in Documents</Text>
       </Pressable>
       <Text style={styles.note}>Upload bank or card statements in Documents - HomeTower reads the spending from them.</Text>
@@ -478,17 +472,17 @@ export default function LifestyleScreen() {
               <Text style={styles.note}>401(k) contributions are prefilled from your payslips (about {money(pace401kAnnual)}/yr across earners) - edit any figure that differs.</Text>
             )}
             {LIFESTYLE_GROUP2.map((c) => {
-              const badge = group2Badge(c.key);
+              const prov = provFor(c.key);
               return (
                 <View key={c.key} style={styles.catRow}>
                   <View style={styles.catHead}>
                     <Text style={[styles.catName, styles.muted]}>{c.label}</Text>
                     <View style={styles.endsBadge}><Text style={styles.endsBadgeText}>Ends</Text></View>
                     <View style={styles.catInput}>
-                      <AmountInput value={life.amounts[c.key] || 0} onChange={(v) => setAmount(c.key, v)} />
+                      <AmountInput value={life.amounts[c.key] || 0} onChange={(v) => setAmount(c.key, v)} placeholder={prov.stateLabel ?? "0"} />
                     </View>
                   </View>
-                  {badge && <Text style={styles.note}>{badge}</Text>}
+                  {(prov.badge || prov.stateLabel) && <Text style={styles.provBadge}>{prov.badge ?? prov.stateLabel}</Text>}
                 </View>
               );
             })}
@@ -740,7 +734,7 @@ export default function LifestyleScreen() {
               return (
                 <View key={m.id} style={styles.personBlock}>
                   <Text style={styles.personName}>{m.name || (m.role === "self" ? "You" : "Spouse")}</Text>
-                  <Pressable style={styles.button} onPress={() => navigation.navigate("Documents")}>
+                  <Pressable style={styles.button} onPress={() => navigation.navigate("Tabs", { screen: "Documents" })}>
                     <Text style={styles.buttonText}>Upload statement</Text>
                   </Pressable>
                   {ss.source === "statement" && (
@@ -785,7 +779,7 @@ export default function LifestyleScreen() {
                   <View key={m.id} style={styles.personBlock}>
                     <Text style={styles.personName}>{m.name || (m.role === "self" ? "You" : "Spouse")}</Text>
                     <Text style={styles.label}>Pension</Text>
-                    <Pressable style={styles.buttonAlt} onPress={() => navigation.navigate("Documents")}>
+                    <Pressable style={styles.buttonAlt} onPress={() => navigation.navigate("Tabs", { screen: "Documents" })}>
                       <Text style={styles.buttonText}>Upload statement</Text>
                     </Pressable>
                     <Text style={styles.label}>or enter manually ($ per year, this person)</Text>
@@ -945,7 +939,7 @@ export default function LifestyleScreen() {
                 <View key={m.id} style={styles.personBlock}>
                   <Text style={styles.personName}>{m.name || (m.role === "self" ? "You" : "Spouse")}</Text>
                   <Text style={styles.label}>Social Security</Text>
-                  <Pressable style={styles.button} onPress={() => navigation.navigate("Documents")}>
+                  <Pressable style={styles.button} onPress={() => navigation.navigate("Tabs", { screen: "Documents" })}>
                     <Text style={styles.buttonText}>Upload statement</Text>
                   </Pressable>
                   {ss.source === "statement" && (
@@ -955,7 +949,7 @@ export default function LifestyleScreen() {
                   <Text style={styles.label}>or enter manually ($ per year)</Text>
                   <AmountInput value={m.ssAnnual || 0} onChange={(v) => patchMember(m.id, { ssAnnual: v })} placeholder="From your Social Security statement" />
                   <Text style={styles.label}>Pension</Text>
-                  <Pressable style={styles.buttonAlt} onPress={() => navigation.navigate("Documents")}>
+                  <Pressable style={styles.buttonAlt} onPress={() => navigation.navigate("Tabs", { screen: "Documents" })}>
                     <Text style={styles.buttonText}>Upload statement</Text>
                   </Pressable>
                   <Text style={styles.label}>or enter manually ($ per year, this person)</Text>
@@ -1070,6 +1064,8 @@ const styles = StyleSheet.create({
   muted: { color: "#5A6B7C" },
   endsBadge: { backgroundColor: "#E5EBF1", borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 },
   endsBadgeText: { fontSize: 12, fontWeight: "700", color: "#44566B" },
+  // Round 53: the subtle provenance badge line under a group-2 row.
+  provBadge: { fontSize: 11, fontWeight: "700", letterSpacing: 0.8, color: "#7A8CA3", marginTop: 3, textTransform: "uppercase" },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   chip: { borderRadius: 999, borderWidth: 1, borderColor: TEAL, paddingHorizontal: 10, paddingVertical: 5 },
   chipOn: { backgroundColor: TEAL },

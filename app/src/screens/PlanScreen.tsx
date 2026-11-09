@@ -1,6 +1,6 @@
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import React, { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { BackHandler, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { esppDisposition, rsuVest } from "../../engine/equity.ts";
 import { computeFederalTax } from "../../engine/federal.ts";
 import { fbarRequired, foreignTaxCredit, form8938Required } from "../../engine/foreign.ts";
@@ -9,8 +9,9 @@ import { treatyPosition, withholdingCap } from "../../engine/treaty.ts";
 import { DateField, usToIso } from "../components/Fields.tsx";
 import { positionValue } from "../holdings.ts";
 import type { Holding } from "../../engine/intake.ts";
-import { consumeRetirementIntent, useHousehold } from "../store.tsx";
+import { consumeRetirementIntent, useHousehold, type RetirementSection } from "../store.tsx";
 import { money, NAVY, TEAL } from "./HomeScreen.tsx";
+import RetirementScreen from "./RetirementScreen.tsx";
 
 type Tool = "sale" | "equity" | "foreign";
 
@@ -302,35 +303,59 @@ function ForeignTool() {
   );
 }
 
+type PlanView = { kind: "hub" } | { kind: "retirement"; section: RetirementSection };
+
 export default function PlanScreen() {
   const [tool, setTool] = useState<Tool>("sale");
+  const [view, setView] = useState<PlanView>({ kind: "hub" });
   const navigation = useNavigation<any>();
   const scrollRef = React.useRef<ScrollView>(null);
-  // ROUND 52 - the Home retirement card's tap target is Plan ->
-  // Retirement -> Readiness: the card sets a one-shot intent before
-  // navigating here; on focus, Plan scrolls its Retirement section
-  // into view and routes on to the Retirement screen at Readiness.
-  // A plain Plan visit (no intent) just shows the hub.
+  // ROUND 53 - the Retirement sections live INSIDE the Plan flow as
+  // view state, not in a tab route: the round-52 hidden "Retirement"
+  // tab (tabBarButton: null) left an empty slot in the tab bar. The
+  // Home retirement card's tap target is still Plan -> Retirement ->
+  // Readiness: the card sets the same one-shot intent before
+  // navigating here; on focus, Plan opens the Retirement view at
+  // that section directly. A plain Plan visit (no intent) shows the
+  // hub. Tab screens stay mounted, so Home keeps its scroll/state.
   useFocusEffect(
     React.useCallback(() => {
       const section = consumeRetirementIntent();
-      if (section) {
-        scrollRef.current?.scrollTo({ y: 0, animated: false });
-        navigation.navigate("Retirement", { section });
-      }
-    }, [navigation]),
+      if (section) setView({ kind: "retirement", section });
+    }, []),
   );
+  // Hardware Back from a Retirement section returns to the Plan hub
+  // (Android); the "‹ Plan" row inside the view covers every
+  // platform, and Back from the hub itself is the tab bar's job.
+  React.useEffect(() => {
+    if (view.kind !== "retirement") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      setView({ kind: "hub" });
+      return true;
+    });
+    return () => sub.remove();
+  }, [view.kind]);
+
+  if (view.kind === "retirement") {
+    return (
+      <RetirementScreen
+        section={view.section}
+        onSelectSection={(s) => setView({ kind: "retirement", section: s })}
+        onBack={() => setView({ kind: "hub" })}
+      />
+    );
+  }
   // The Retirement hub (spec section G): every row is a real,
   // working destination that exists today - Readiness, Scenarios
-  // and Social Security live on the Retirement screen; Lifestyle is
-  // its own tab; Accounts are the Documents tab. Nothing is listed
-  // before it exists.
+  // and Social Security are sections of the Retirement view above;
+  // Lifestyle is its own screen; Accounts are the Documents tab.
+  // Nothing is listed before it exists.
   const hubRows: { icon: string; label: string; hint: string; go: () => void }[] = [
-    { icon: "🎯", label: "Readiness", hint: "The full forecast, with every source", go: () => navigation.navigate("Retirement", { section: "readiness" }) },
+    { icon: "🎯", label: "Readiness", hint: "The full forecast, with every source", go: () => setView({ kind: "retirement", section: "readiness" }) },
     { icon: "🏠", label: "Lifestyle", hint: "Build your target from your real spending - what continues, what ends, what changes", go: () => navigation.navigate("Lifestyle") },
     { icon: "🪙", label: "Accounts", hint: "Statements and documents, in Documents", go: () => navigation.navigate("Documents") },
-    { icon: "🏛️", label: "Social Security", hint: "Benefits per person, and where each figure came from", go: () => navigation.navigate("Retirement", { section: "social" }) },
-    { icon: "🔀", label: "Scenarios", hint: "Returns, withdrawal rates, and the one recommended action", go: () => navigation.navigate("Retirement", { section: "scenarios" }) },
+    { icon: "🏛️", label: "Social Security", hint: "Benefits per person, and where each figure came from", go: () => setView({ kind: "retirement", section: "social" }) },
+    { icon: "🔀", label: "Scenarios", hint: "Returns, withdrawal rates, and the one recommended action", go: () => setView({ kind: "retirement", section: "scenarios" }) },
   ];
   return (
     <ScrollView ref={scrollRef} style={styles.screen} contentContainerStyle={styles.content}>
