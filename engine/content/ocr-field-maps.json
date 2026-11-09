@@ -25,6 +25,13 @@
   "401k_statement": {
    "employee contributions": "employee_contributions",
    "employer contributions": "employer_contributions",
+   "employer match": "employer_contribution_period",
+   "company match": "employer_contribution_period",
+   "employer matching contributions": "employer_contribution_period",
+   "company contributions": "employer_contribution_period",
+   "employer contribution": "employer_contribution_period",
+   "matching contributions": "employer_contribution_period",
+   "statement period": "statement_period",
    "ending balance": "ending_balance",
    "loan balance": "loan_balance",
    "vested balance": "vested_balance"
@@ -159,5 +166,5 @@
  "pack": "ocr-field-maps",
  "source": "hct prototype textract_service.py",
  "status": "Ported from the hct prototype textract_service.py FIELD_MAPS. Data only - the OCR engine that consumes these maps is chosen separately (local-first per VISION).",
- "version": "1.11"
+ "version": "1.12"
 }
