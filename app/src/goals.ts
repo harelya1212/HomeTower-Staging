@@ -480,6 +480,75 @@ export function monthYearLabel(iso: string | null | undefined): string {
   return `${MONTH_NAMES[m - 1]} ${iso.slice(0, 4)}`;
 }
 
+// ---------------------------------------------------------------------------
+// ROUND 51 - Copilot's source architecture, wired: statements say what
+// the household HAS, payroll says what it ADDS (employee pace AND
+// employer match pace, both from payslips.ts), assumptions say how it
+// GROWS, bank/card evidence says what it NEEDS, SSA/pension documents
+// say what the portfolio does NOT need to fund. The two helpers below
+// close the balance half of that doctrine; the match pace lives in
+// payslips.ts next to the employee pace it parallels.
+// ---------------------------------------------------------------------------
+
+/** The freshest 401(k) statement reading owned by a member (the
+ * round-49 owner pattern, applied to 401k_statement): statements
+ * carry no reliable printed owner name, so only a statement the user
+ * assigned to this member on the confirm card counts. Statements
+ * saved before owners existed stay Documents-card-only. */
+export function k401StatementFor(docs: SsDocLike[], memberId: string): { balance: number; capturedOn: string | null } | null {
+  let best: { balance: number; capturedOn: string | null } | null = null;
+  for (const d of docs) {
+    if (d.docType !== "401k_statement" || d.ownerMemberId !== memberId || !d.fields) continue;
+    const v = Number(String(d.fields["ending_balance"] ?? "").replace(/[^0-9.]/g, ""));
+    if (!Number.isFinite(v) || v <= 0) continue;
+    if (!best || (d.capturedOn ?? "") >= (best.capturedOn ?? "")) best = { balance: v, capturedOn: d.capturedOn ?? null };
+  }
+  return best;
+}
+
+export interface AdultStartingBalance {
+  balance: number;
+  /** True when an owned statement supplied (or replaced) the 401(k)
+   * sleeve of this adult's starting balance. */
+  statementApplied: boolean;
+  /** The value of the adult's own 401(k) asset rows the statement
+   * replaced (0 when it replaced nothing or did not apply). */
+  replaced401k: number;
+}
+
+/** One adult's projection starting balance, with statement
+ * precedence (round 51): when the adult has an owned 401(k)
+ * statement, its ending balance IS the starting balance of their
+ * 401(k) sleeve - it replaces the sum of their own 401(k) asset
+ * rows, so the same account is never counted twice; their other
+ * kinds (IRA, HSA) are untouched, and the payslip pace still sets
+ * future contributions either way. With no owned statement the
+ * composition is exactly what it was before this round: the sum of
+ * the adult's name-matched asset rows, or the caller's fallback
+ * when they have none. The one case precedence does NOT reach: an
+ * adult with no name-matched rows whose fallback is a household
+ * aggregate (it already lumps every 401(k)/IRA row, attributed or
+ * not, so the statement's dollars are in there but cannot be
+ * separated back out without guessing - no guessing). */
+export function adultStartingBalance(input: {
+  owned: Array<{ kind: string; value: number }>;
+  fallback: number;
+  statement401k: number;
+}): AdultStartingBalance {
+  const ownedSum = input.owned.reduce((s, a) => s + a.value, 0);
+  if (!(input.statement401k > 0)) {
+    return { balance: input.owned.length ? ownedSum : input.fallback, statementApplied: false, replaced401k: 0 };
+  }
+  if (input.owned.length > 0) {
+    const own401 = input.owned.filter((a) => a.kind === "401k").reduce((s, a) => s + a.value, 0);
+    return { balance: ownedSum - own401 + input.statement401k, statementApplied: true, replaced401k: own401 };
+  }
+  if (!(input.fallback > 0)) {
+    return { balance: input.statement401k, statementApplied: true, replaced401k: 0 };
+  }
+  return { balance: input.fallback, statementApplied: false, replaced401k: 0 };
+}
+
 /** Monthly contribution needed to reach a target from a balance in a
  * given number of years (the inverse of projectValue). */
 export function requiredMonthly(balance: number, target: number, years: number, annualReturnPct: number): number {

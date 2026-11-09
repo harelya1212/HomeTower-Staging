@@ -33,15 +33,48 @@ function amountsIn(line: string): string[] {
 // [normalized label prefix, current raw key, ytd raw key] - longest
 // labels first so "federal withholding taxable wages" beats
 // "federal withholding" and the 401k bonus row beats nothing else.
+// The state-taxable-wages row maps to its own (unresolved) keys: it
+// exists so that row can never be misread as the state TAX row when
+// the page-1 tax line is the one OCR damaged.
 const ROWS: Array<[string, string, string]> = [
   ["federal withholding taxable wages", "federal taxable wages", "ytd federal taxable wages"],
+  ["state tax taxable wages", "state taxable wages", "ytd state taxable wages"],
   ["401k bonus and commission deduction", "401k bonus and commission deduction", "ytd 401k bonus and commission deduction"],
   ["employee stock purchase plan", "employee stock purchase plan", "ytd employee stock purchase plan"],
   ["health savings account", "health savings account", "ytd health savings account"],
   ["federal withholding", "federal withholding", "ytd federal withholding"],
+  ["medicare tax", "medicare tax", "ytd medicare tax"],
+  // Employer-paid 401(k) match rows (round 51): Workday prints them
+  // in the same Amount | YTD tables (often under an Employer
+  // Contributions heading). They are the EMPLOYER's money, never the
+  // employee's deduction - they feed the projection's contribution
+  // stream alongside the employee pace, under their own field, so
+  // employee totals stay employee totals.
+  ["401k employer match", "401k employer match", "ytd 401k employer match"],
+  ["employer 401k match", "employer 401k match", "ytd employer 401k match"],
+  ["employer 401k contribution", "employer 401k contribution", "ytd employer 401k contribution"],
+  ["401k employer contribution", "401k employer contribution", "ytd 401k employer contribution"],
+  ["401k match", "401k match", "ytd 401k match"],
+  ["employer match", "employer match", "ytd employer match"],
+  ["company match", "company match", "ytd company match"],
   ["401k deduction", "401k deduction", "ytd 401k deduction"],
   ["state tax", "state tax", "ytd state tax"],
 ];
+
+// OCR noise prefix (measured on the owner's real slips, 2026-11-08):
+// the engine sprinkles short junk tokens at line starts - "i|",
+// "H", ":[" - and normalization turns a letter-bearing one into a
+// leading token ("i federal withholding ...", "h federal ...").
+// A strict startsWith(label) then rejects a perfectly legible row:
+// this was the actual mechanism behind the "missing" federal
+// withholding and taxable wages figures - the figures were IN the
+// OCR text all along, behind a one-letter prefix. Accept a label
+// that starts the line or follows ONE short (1-2 char) noise token.
+function labelAt(n: string, label: string): boolean {
+  if (n.startsWith(label)) return true;
+  const m = n.match(/^[a-z0-9]{1,2}\s+(.*)$/);
+  return !!m && m[1].startsWith(label);
+}
 
 export interface PayslipParse {
   fields: RawField[];
@@ -100,14 +133,14 @@ export function parsePayslipRows(text: string): PayslipParse {
     // columns are Hours | Gross | PreTax | Taxes | PostTax | Net.
     // Gated on the table header appearing just above, so stray lines
     // starting with "current" elsewhere never fire this.
-    if ((n.startsWith("current ") || n.startsWith("ytd ")) && i > 0) {
+    if ((labelAt(n, "current ") || labelAt(n, "ytd ")) && i > 0) {
       const above = lines.slice(Math.max(0, i - 4), i).map(norm).join(" ");
       if (above.includes("gross pay") && above.includes("net pay")) {
         const toks = line.trim().split(/\s+/).slice(1)
           .map((t) => t.replace(/[$,()]/g, ""))
           .filter((t) => /^-?\d+(\.\d+)?$/.test(t));
         if (toks.length >= 6) {
-          const isYtd = n.startsWith("ytd ");
+          const isYtd = labelAt(n, "ytd ");
           push(isYtd ? "ytd gross pay" : "gross pay", toks[1]);
           push(isYtd ? "ytd net pay" : "net pay", toks[5]);
           consumed.push(i);
@@ -118,7 +151,7 @@ export function parsePayslipRows(text: string): PayslipParse {
 
     // Additional withholding election (Withholding table: the two
     // figures are Federal | Work State columns, not Amount | YTD).
-    if (n.startsWith("additional withholding")) {
+    if (labelAt(n, "additional withholding")) {
       const m = line.replace(/^.*?additional withholding/i, "").match(/\d[\d,]*/);
       if (m) push("additional withholding", m[0]);
       consumed.push(i);
@@ -130,11 +163,11 @@ export function parsePayslipRows(text: string): PayslipParse {
     // to generic pairing it fuzzy-matches the ESPP label and invents
     // a negative contribution (measured on a real page 2).
     if (n.includes("refund")) {
-      if (ROWS.some(([label]) => n.startsWith(label))) consumed.push(i);
+      if (ROWS.some(([label]) => labelAt(n, label))) consumed.push(i);
       continue;
     }
     for (const [label, curKey, ytdKey] of ROWS) {
-      if (!n.startsWith(label)) continue;
+      if (!labelAt(n, label)) continue;
       const amts = amountsIn(line);
       if (amts.length >= 2) {
         push(curKey, amts[0]);

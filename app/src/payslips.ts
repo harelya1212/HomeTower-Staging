@@ -36,6 +36,17 @@ export interface EarnerProjection {
   projectedTaxable: number;
   projectedFederal: number;
   projectedState: number;
+  // Additional Medicare (engine round 45): Medicare wages are the
+  // earner's projected gross (401(k) does not reduce Medicare wages;
+  // the slips print no separate Medicare-wages row). The withheld
+  // side is what the employer actually took in Medicare tax (1.45%
+  // base + the extra 0.9% over $200K): READ from the slips when a
+  // Medicare line was captured, otherwise ESTIMATED from gross by
+  // the statutory rates - medicareBasis says which.
+  projectedMedicareWages: number;
+  projectedMedicareWithheld: number;
+  projectedAddMedWithheld: number;
+  medicareBasis: "read" | "estimated";
 }
 
 export interface PayslipForecast {
@@ -44,6 +55,10 @@ export interface PayslipForecast {
   projectedTaxable: number;
   projectedFederal: number;
   projectedState: number;
+  projectedMedicareWages: number;
+  projectedMedicareWithheld: number;
+  projectedAddMedWithheld: number;
+  medicareBasis: "read" | "estimated";
 }
 
 const PERIODS_PER_YEAR: Record<string, number> = { weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 };
@@ -148,6 +163,92 @@ export function payslipGaps(documents: DocumentRecord[], todayIso: string): Pays
   return gaps;
 }
 
+export interface Payslip401k {
+  perEarner: Array<{ name: string; total: number; through: string; monthlyPace: number | null; matchMonthlyPace: number | null }>;
+  total: number;
+  earners: number;
+  through: string; // ISO - freshest period end any component came from
+  year: string;
+}
+
+// 401(k) contributions tracked from payslips - the ONLY function
+// that totals this money (owner rule, 2026-11-08: payslip data and
+// statement data describe the same dollars, so the two sources are
+// never added together; a statement is the balance source of record
+// and its contribution figures are never summed with these).
+// YTD figures are CUMULATIVE: per earner and per bucket (regular /
+// bonus are separate deduction rows), the value comes from the
+// freshest slip that has it - fuller reading wins a same-date tie -
+// so re-uploaded slips and partial readings can never multiply the
+// total. Buckets add within an earner; earners add across the
+// household. Nothing else in the app may sum ytd_k401 fields.
+export function payslip401kTotals(documents: DocumentRecord[], todayIso: string, jobs: JobLike[] = []): Payslip401k | null {
+  const slips = documents.filter((d) => d.docType === "payslip" && d.fields && (d.fields["employee_name"] ?? "").trim() !== "");
+  if (slips.length === 0) return null;
+  const thisYear = todayIso.slice(0, 4);
+  const byEarner = new Map<string, DocumentRecord[]>();
+  for (const s of slips) {
+    const key = normName(s.fields!["employee_name"]);
+    const arr = byEarner.get(key) ?? [];
+    arr.push(s);
+    byEarner.set(key, arr);
+  }
+  const fieldCount = (d: DocumentRecord) => Object.values(d.fields ?? {}).filter((v) => v !== "").length;
+  const perEarner: Payslip401k["perEarner"] = [];
+  let through = "";
+  for (const [key, docs] of byEarner) {
+    const withEnd = docs.map((d) => ({ d, end: slipEnd(d) })).filter((x) => x.end !== null && x.end.slice(0, 4) === thisYear) as Array<{ d: DocumentRecord; end: string }>;
+    if (withEnd.length === 0) continue;
+    withEnd.sort((a, b) => (a.end > b.end ? -1 : a.end < b.end ? 1 : fieldCount(b.d) - fieldCount(a.d) || (a.d.capturedOn > b.d.capturedOn ? -1 : 1)));
+    const pick = (field: string) => {
+      for (const x of withEnd) {
+        const v = num((x.d.fields ?? {})[field]);
+        if (v !== null) return { value: v, end: x.end };
+      }
+      return null;
+    };
+    const reg = pick("ytd_k401");
+    const bon = pick("ytd_k401_bonus");
+    if (reg === null && bon === null) continue;
+    const eThrough = [reg?.end ?? "", bon?.end ?? ""].sort().slice(-1)[0];
+    // Monthly pace (owner QA, 2026-11-08: the retirement outlook
+    // showed $0/mo while the payslips prove a real payroll pace):
+    // the freshest REGULAR slip's current-period contribution,
+    // annualized by the pay frequency (job record when known, else
+    // the semimonthly signature). Bonus contributions are events,
+    // not a pace, so they never set it.
+    let monthlyPace: number | null = null;
+    const job = jobs.find((j) => normName(j.memberName) === key);
+    const perYear = ({ weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 } as Record<string, number>)[(job?.payFrequency ?? "semimonthly").toLowerCase()] ?? 24;
+    for (const x of withEnd) {
+      const f = x.d.fields ?? {};
+      if ((f["payslip_kind"] ?? "regular") === "bonus") continue;
+      const cur = num(f["k401_contribution"]);
+      if (cur !== null) { monthlyPace = Math.round(((cur * perYear) / 12) * 100) / 100; break; }
+    }
+    // Employer match pace (round 51, Copilot's source doctrine:
+    // payroll is authoritative for employer match, and the projected
+    // portfolio is current assets + employee contributions +
+    // EMPLOYER contributions + growth). Same rule as the employee
+    // pace, read independently: the freshest REGULAR slip carrying
+    // a match line sets it, annualized the same way; a bonus run's
+    // match is an event, never a pace. Kept in its own field - the
+    // totals above stay employee-only, by the owner's rule.
+    let matchMonthlyPace: number | null = null;
+    for (const x of withEnd) {
+      const f = x.d.fields ?? {};
+      if ((f["payslip_kind"] ?? "regular") === "bonus") continue;
+      const cur = num(f["k401_employer_match"]);
+      if (cur !== null) { matchMonthlyPace = Math.round(((cur * perYear) / 12) * 100) / 100; break; }
+    }
+    perEarner.push({ name: docs[0].fields!["employee_name"] || key, total: (reg?.value ?? 0) + (bon?.value ?? 0), through: eThrough, monthlyPace, matchMonthlyPace });
+    if (eThrough > through) through = eThrough;
+    void key;
+  }
+  if (perEarner.length === 0) return null;
+  return { perEarner, total: perEarner.reduce((s, e) => s + e.total, 0), earners: perEarner.length, through, year: thisYear };
+}
+
 export function payslipForecast(
   documents: DocumentRecord[],
   family: MemberLike[],
@@ -197,6 +298,7 @@ export function payslipForecast(
     const cFederal = pick((f) => num(f["ytd_federal_withheld"]));
     const cState = pick((f) => num(f["ytd_state_withheld"]));
     const cGross = pick((f) => num(f["ytd_gross"]) ?? num(f["ytd_taxable_wages"]));
+    const cMedicare = pick((f) => num(f["ytd_medicare_withheld"]));
     if (cTaxable === null || cFederal === null) continue; // income + federal withholding are the forecast's minimum
 
     const rf = run?.d.fields ?? {};
@@ -204,6 +306,7 @@ export function payslipForecast(
     const rateTaxable = run ? num(rf["taxable_wages"]) ?? num(rf["gross_pay"]) ?? 0 : 0;
     const rateFederal = run ? num(rf["federal_withheld"]) ?? 0 : 0;
     const rateState = run ? num(rf["state_withheld"]) ?? 0 : 0;
+    const rateMedicare = run ? num(rf["medicare_withheld"]) : null;
 
     const member = family.find((m) => normName(m.name) === key)
       ?? family.find((m) => normName(m.name).split(" ")[0] !== "" && normName(m.name).split(" ")[0] === key.split(" ")[0] && normName(m.name).split(" ").slice(-1)[0] === key.split(" ").slice(-1)[0]);
@@ -215,6 +318,20 @@ export function payslipForecast(
       frequencyAssumed = true;
     }
     const anchorEnd = [cTaxable.end, cFederal.end, cState?.end ?? "", cGross?.end ?? ""].sort().slice(-1)[0];
+
+    const projectedGrossE = (cGross?.value ?? cTaxable.value) + rateGross * periodsRemaining(frequency, cGross?.end ?? cTaxable.end);
+    // Medicare withheld, full year (round 45): READ path - the
+    // slips' own YTD Medicare plus the regular slip's per-period
+    // Medicare for the periods left after the Medicare anchor.
+    // ESTIMATED path - no Medicare line captured: the statutory
+    // employer formula on projected gross (1.45% on all wages +
+    // 0.9% over $200K for this earner). The Additional-Medicare
+    // part of what was withheld is the excess over the 1.45% base.
+    const medicareRead = cMedicare !== null && rateMedicare !== null;
+    const projectedMedicareWithheldE = medicareRead
+      ? cMedicare.value + rateMedicare * periodsRemaining(frequency, cMedicare.end)
+      : 0.0145 * projectedGrossE + 0.009 * Math.max(0, projectedGrossE - 200000);
+    const projectedAddMedWithheldE = Math.max(0, projectedMedicareWithheldE - 0.0145 * projectedGrossE);
 
     earners.push({
       name: member?.name ?? withEnd[0].d.fields!["employee_name"],
@@ -229,10 +346,14 @@ export function payslipForecast(
       ytdTaxable: cTaxable.value,
       ytdFederal: cFederal.value,
       ytdState: cState?.value ?? 0,
-      projectedGross: (cGross?.value ?? cTaxable.value) + rateGross * periodsRemaining(frequency, cGross?.end ?? cTaxable.end),
+      projectedGross: projectedGrossE,
       projectedTaxable: cTaxable.value + rateTaxable * periodsRemaining(frequency, cTaxable.end),
       projectedFederal: cFederal.value + rateFederal * periodsRemaining(frequency, cFederal.end),
       projectedState: (cState?.value ?? 0) + rateState * (cState ? periodsRemaining(frequency, cState.end) : 0),
+      projectedMedicareWages: projectedGrossE,
+      projectedMedicareWithheld: projectedMedicareWithheldE,
+      projectedAddMedWithheld: projectedAddMedWithheldE,
+      medicareBasis: medicareRead ? "read" : "estimated",
     });
   }
   if (earners.length === 0) return null;
@@ -243,5 +364,9 @@ export function payslipForecast(
     projectedTaxable: sum("projectedTaxable"),
     projectedFederal: sum("projectedFederal"),
     projectedState: sum("projectedState"),
+    projectedMedicareWages: sum("projectedMedicareWages"),
+    projectedMedicareWithheld: sum("projectedMedicareWithheld"),
+    projectedAddMedWithheld: sum("projectedAddMedWithheld"),
+    medicareBasis: earners.every((e) => e.medicareBasis === "read") ? "read" : "estimated",
   };
 }
