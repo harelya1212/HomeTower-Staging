@@ -11,7 +11,7 @@ import { ageOn, earliestAgeReaching, educationFunding, educationLine, projectVal
 import { isoToUs } from "../components/Fields.tsx";
 import { getPushStatus, isPushEnabled, syncStaleReminders, type PushStatus } from "../push.ts";
 import { composeCloseReport, deriveHoldings, type CloseReport } from "../market.ts";
-import { payslipForecast } from "../payslips.ts";
+import { payslipForecast, payslipGaps } from "../payslips.ts";
 import { fetchQuotes, type QuotesOutcome } from "../quotes";
 import { buildProfileExtras, todayIso, useHousehold } from "../store.tsx";
 
@@ -38,6 +38,10 @@ export default function HomeScreen() {
   const slipFc = useMemo(
     () => payslipForecast(state.intake.documents, state.family, state.jobs, today),
     [state.intake.documents, state.family, state.jobs, today],
+  );
+  const gaps = useMemo(
+    () => (slipFc ? [] : payslipGaps(state.intake.documents, today)),
+    [slipFc, state.intake.documents, today],
   );
   const effIncome = slipFc ? slipFc.projectedTaxable : state.grossIncome;
   const effFederalWh = slipFc ? slipFc.projectedFederal : state.federalWithholdingYtd;
@@ -225,6 +229,22 @@ export default function HomeScreen() {
         <Text style={styles.assumption}>
           Forecast from your payslips: {slipFc.earners.map((e) => `${e.name.split(" ")[0]} through ${isoToUs(e.anchorEnd)}, + ${e.periodsRemaining} pay periods at the current rate`).join(" · ")}. Projected W-2 wages {money(slipFc.projectedTaxable)} for the year; the withholding in the gauges is projected to year-end, not yet paid. Remove the payslips and the typed Intake numbers take over again.
         </Text>
+      )}
+
+      {!slipFc && gaps.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>Your payslips are saved - two readings are incomplete</Text>
+          {gaps.map((gp) => (
+            <Text key={gp.name} style={styles.line}>
+              {gp.name}: missing {gp.missing.join(" and ")}.
+            </Text>
+          ))}
+          <Text style={styles.line}>
+            The forecast starts as soon as each earner has both figures on any saved slip.
+            A Workday PDF of one regular slip per earner always contains them - upload it
+            from the Payslips card in Documents (Upload a statement).
+          </Text>
+        </View>
       )}
 
       <View style={styles.ringsRow}>
