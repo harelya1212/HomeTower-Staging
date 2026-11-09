@@ -54,7 +54,8 @@
    "statement ending balance": "ending_balance",
    "statement contributions ytd": "contributions_ytd",
    "statement distributions ytd": "distributions_ytd",
-   "statement contributions period": "contributions_period"
+   "statement contributions period": "contributions_period",
+   "statement per-payroll contribution": "per_payroll_contribution"
   },
   "payslip": {
    "401(k)": "k401_contribution",
@@ -199,5 +200,5 @@
  "pack": "ocr-field-maps",
  "source": "hct prototype textract_service.py",
  "status": "Ported from the hct prototype textract_service.py FIELD_MAPS. Data only - the OCR engine that consumes these maps is chosen separately (local-first per VISION).",
- "version": "1.13"
+ "version": "1.14"
 }
