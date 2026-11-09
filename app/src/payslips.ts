@@ -134,18 +134,34 @@ export function payslipForecast(
   for (const [key, docs] of byEarner) {
     const withEnd = docs.map((d) => ({ d, end: slipEnd(d) })).filter((x) => x.end !== null) as Array<{ d: DocumentRecord; end: string }>;
     if (withEnd.length === 0) continue;
-    withEnd.sort((a, b) => (a.end < b.end ? -1 : a.end > b.end ? 1 : (a.d.capturedOn < b.d.capturedOn ? -1 : 1)));
-    const anchor = withEnd[withEnd.length - 1];
-    if (anchor.end.slice(0, 4) !== thisYear) continue; // last year's slips anchor last year, not this forecast
+    // Freshest first; a fuller reading wins a same-date tie (a
+    // re-uploaded clearer screenshot of the same slip beats the
+    // partial first reading).
+    const fieldCount = (d: DocumentRecord) => Object.values(d.fields ?? {}).filter((v) => v !== "").length;
+    withEnd.sort((a, b) => (a.end > b.end ? -1 : a.end < b.end ? 1 : fieldCount(b.d) - fieldCount(a.d) || (a.d.capturedOn > b.d.capturedOn ? -1 : 1)));
+    if (withEnd[0].end.slice(0, 4) !== thisYear) continue; // last year's slips anchor last year, not this forecast
     const regulars = withEnd.filter((x) => (x.d.fields?.["payslip_kind"] ?? "regular") !== "bonus");
-    const run = regulars.length > 0 ? regulars[regulars.length - 1] : null;
+    const run = regulars.length > 0 ? regulars[0] : null;
 
-    const af = anchor.d.fields ?? {};
-    const ytdGross = num(af["ytd_gross"]);
-    const ytdTaxable = num(af["ytd_taxable_wages"]) ?? ytdGross;
-    const ytdFederal = num(af["ytd_federal_withheld"]);
-    const ytdState = num(af["ytd_state_withheld"]) ?? 0;
-    if (ytdTaxable === null || ytdFederal === null) continue; // cannot drive a forecast
+    // Per-component anchors (robustness, 2026-11-08): a single
+    // screenshot reading can miss a whole section, so each YTD
+    // component comes from the freshest slip that HAS it, and
+    // projects forward from THAT slip's date. The bonus slip usually
+    // anchors everything; when its reading is partial, the regular
+    // slip's figures carry the missing components instead of the
+    // whole earner dropping out of the forecast.
+    const pick = (get: (f: Record<string, string>) => number | null) => {
+      for (const x of withEnd) {
+        const v = get(x.d.fields ?? {});
+        if (v !== null) return { value: v, end: x.end };
+      }
+      return null;
+    };
+    const cTaxable = pick((f) => num(f["ytd_taxable_wages"]) ?? num(f["ytd_gross"]));
+    const cFederal = pick((f) => num(f["ytd_federal_withheld"]));
+    const cState = pick((f) => num(f["ytd_state_withheld"]));
+    const cGross = pick((f) => num(f["ytd_gross"]) ?? num(f["ytd_taxable_wages"]));
+    if (cTaxable === null || cFederal === null) continue; // income + federal withholding are the forecast's minimum
 
     const rf = run?.d.fields ?? {};
     const rateGross = run ? num(rf["gross_pay"]) ?? 0 : 0;
@@ -162,25 +178,25 @@ export function payslipForecast(
       frequency = "semimonthly"; // period ends on the 15th / month-end are the semimonthly signature
       frequencyAssumed = true;
     }
-    const remaining = periodsRemaining(frequency, anchor.end);
+    const anchorEnd = [cTaxable.end, cFederal.end, cState?.end ?? "", cGross?.end ?? ""].sort().slice(-1)[0];
 
     earners.push({
-      name: member?.name ?? anchor.d.fields!["employee_name"],
+      name: member?.name ?? withEnd[0].d.fields!["employee_name"],
       memberId: member?.id ?? null,
-      anchorEnd: anchor.end,
+      anchorEnd,
       runRateEnd: run?.end ?? null,
-      periodsRemaining: remaining,
+      periodsRemaining: periodsRemaining(frequency, cTaxable.end),
       frequency,
       frequencyAssumed,
       hasRunRate: run !== null,
-      ytdGross: ytdGross ?? ytdTaxable,
-      ytdTaxable,
-      ytdFederal,
-      ytdState,
-      projectedGross: (ytdGross ?? ytdTaxable) + rateGross * remaining,
-      projectedTaxable: ytdTaxable + rateTaxable * remaining,
-      projectedFederal: ytdFederal + rateFederal * remaining,
-      projectedState: ytdState + rateState * remaining,
+      ytdGross: cGross?.value ?? cTaxable.value,
+      ytdTaxable: cTaxable.value,
+      ytdFederal: cFederal.value,
+      ytdState: cState?.value ?? 0,
+      projectedGross: (cGross?.value ?? cTaxable.value) + rateGross * periodsRemaining(frequency, cGross?.end ?? cTaxable.end),
+      projectedTaxable: cTaxable.value + rateTaxable * periodsRemaining(frequency, cTaxable.end),
+      projectedFederal: cFederal.value + rateFederal * periodsRemaining(frequency, cFederal.end),
+      projectedState: (cState?.value ?? 0) + rateState * (cState ? periodsRemaining(frequency, cState.end) : 0),
     });
   }
   if (earners.length === 0) return null;

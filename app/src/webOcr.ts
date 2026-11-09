@@ -53,18 +53,80 @@ function loadLib(): Promise<TesseractLib> {
   return libPromise;
 }
 
+async function getWorker(onProgress?: (pct: number) => void) {
+  if (!workerPromise) {
+    const lib = await loadLib();
+    workerPromise = lib.createWorker("eng", 1, {
+      ...WORKER_OPTS,
+      logger: (m: { status: string; progress: number }) => {
+        if (m.status === "recognizing text" && onProgress) onProgress(Math.round((m.progress || 0) * 100));
+      },
+    });
+  }
+  return workerPromise;
+}
+
+// Tall screenshots (a two-page payslip captured as one long image)
+// make the OCR engine drop whole text blocks on memory-constrained
+// devices - measured on the owner's phone (2026-11-08): the same
+// engine read the same files completely in a desktop browser, but
+// on-device entire sections (federal withholding, taxable wages)
+// vanished from some readings. Reading a tall image in two
+// overlapping halves gives the segmenter two ordinary pages instead
+// of one extreme one; the overlap band repeats a few lines, which
+// the field parser tolerates (first reading of a figure wins).
+async function splitTallImage(file: File | Blob): Promise<Blob[] | null> {
+  try {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error("image decode failed"));
+        el.src = url;
+      });
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h || h < w * 1.5) return null; // not a tall capture - single pass
+      const cut = Math.floor(h * 0.42); // first half 0-58%, second 42-100% (16% overlap)
+      const parts: Blob[] = [];
+      for (const [y0, y1] of [[0, Math.floor(h * 0.58)], [cut, h]] as Array<[number, number]>) {
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = y1 - y0;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
+        ctx.drawImage(img, 0, y0, w, y1 - y0, 0, 0, w, y1 - y0);
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+        if (!blob) return null;
+        parts.push(blob);
+      }
+      return parts;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  } catch {
+    return null;
+  }
+}
+
 export async function recognizeWithWebOcr(file: File | Blob, onProgress?: (pct: number) => void): Promise<WebOcrOutcome> {
   try {
-    if (!workerPromise) {
-      const lib = await loadLib();
-      workerPromise = lib.createWorker("eng", 1, {
-        ...WORKER_OPTS,
-        logger: (m: { status: string; progress: number }) => {
-          if (m.status === "recognizing text" && onProgress) onProgress(Math.round((m.progress || 0) * 100));
-        },
-      });
+    const worker = await getWorker(onProgress);
+    const parts = await splitTallImage(file);
+    if (parts && parts.length === 2) {
+      const texts: string[] = [];
+      for (let i = 0; i < parts.length; i++) {
+        const { data } = await worker.recognize(parts[i]);
+        if (data.text.trim()) texts.push(data.text);
+        if (onProgress) onProgress(Math.round(((i + 1) / parts.length) * 100));
+      }
+      const text = texts.join("\n");
+      if (!text.trim()) {
+        return { text: "", stage: "web-ocr-split", error: "Web OCR found no text in this image." };
+      }
+      return { text, stage: "web-ocr-split", error: null };
     }
-    const worker = await workerPromise;
     const { data } = await worker.recognize(file);
     if (!data.text.trim()) {
       return { text: "", stage: "web-ocr", error: "Web OCR found no text in this image." };
