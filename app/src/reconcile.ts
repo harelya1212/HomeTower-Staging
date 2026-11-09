@@ -26,6 +26,7 @@ import type { DocumentRecord } from "../engine/intake.ts";
 import { textToRawFields } from "./textFields.ts";
 import {
   extractSectionReading,
+  hsaDepositFields,
   k401DetailFields,
   parse401kDetail,
   parseHsaPageFields,
@@ -62,6 +63,18 @@ export function dateLabel(iso: string): string {
   if (!/^\d{4}-\d{2}-\d{2}/.test(iso)) return iso;
   return `${MONTHS[Number(iso.slice(5, 7)) - 1]} ${Number(iso.slice(8, 10))}, ${iso.slice(0, 4)}`;
 }
+/** "October" for an ISO date (round 57: the statement-snapshot
+ * label names the statement's month). */
+export function monthNameOf(iso: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(iso)) return iso;
+  return MONTHS[Number(iso.slice(5, 7)) - 1];
+}
+/** "October 2026" for an ISO date (round 57: a statement period
+ * figure is labelled with the period it covers). */
+export function monthYearOf(iso: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(iso)) return iso;
+  return `${MONTHS[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
+}
 
 // ---------------------------------------------------------------------------
 // Per-field resolution (workstream B)
@@ -81,7 +94,7 @@ export interface AccountResolution {
   conflicts: FieldConflict[];
 }
 
-const BALANCE_LIKE = ["ending_balance", "contributions_ytd", "distributions_ytd", "monthly_contribution", "contributions_period"];
+const BALANCE_LIKE = ["ending_balance", "contributions_ytd", "distributions_ytd", "monthly_contribution", "contributions_period", "per_payroll_contribution"];
 
 /** Resolve each account field from the freshest source for that
  * field. Same-date disagreement on a field is a conflict: the
@@ -117,6 +130,41 @@ export function resolveFields(docs: DocumentRecord[], fieldKeys: string[] = BALA
  * is a source (the SA tax forms are NOT - workstream E). */
 export function hsaResolution(docs: DocumentRecord[]): AccountResolution {
   return resolveFields(docs.filter((d) => d.docType === "hsa_statement"));
+}
+
+export interface HsaBalanceSnapshots {
+  /** The resolved current balance (freshest source for the field). */
+  current: ResolvedField;
+  /** The freshest STATEMENT balance dated strictly earlier than
+   * the current balance's as-of, when one exists: an earlier
+   * snapshot of the same account, not a conflict and not a loser
+   * of the resolution - the card shows both, dated (round 57). */
+  statementSnapshot: { value: number; asOf: string; source: DocumentRecord } | null;
+}
+
+/** The HSA's two-snapshot view (round 57): a November screenshot
+ * balance and the October statement balance are two snapshots at
+ * different times. The resolution picks the current figure per
+ * field as always; this model additionally keeps the earlier
+ * dated STATEMENT snapshot visible instead of letting it vanish
+ * behind the newer reading. Only statement-sourced balances
+ * (records carrying a statement period end) can be the snapshot,
+ * and only when strictly earlier than the current balance. */
+export function hsaBalanceSnapshots(docs: DocumentRecord[]): HsaBalanceSnapshots {
+  const stmts = docs.filter((d) => d.docType === "hsa_statement");
+  const current = resolveFields(stmts).fields.ending_balance;
+  let statementSnapshot: HsaBalanceSnapshots["statementSnapshot"] = null;
+  if (current.value !== null && current.asOf) {
+    for (const d of stmts) {
+      if (!d.fields?.["statement_as_of"]) continue;
+      const v = fieldNum(d.fields, "ending_balance");
+      if (v === null) continue;
+      const asOf = docAsOf(d);
+      if (!(asOf < current.asOf)) continue;
+      if (!statementSnapshot || asOf > statementSnapshot.asOf) statementSnapshot = { value: v, asOf, source: d };
+    }
+  }
+  return { current, statementSnapshot };
 }
 
 /** One child's resolved 529 facts, from the statements assigned to
@@ -244,8 +292,29 @@ function versionBehind(have: string | null | undefined, current: string): boolea
 
 export interface ReprocessResult { docs: DocumentRecord[]; notes: string[] }
 
-const RAW_CAP = 60000;
+/** The extractor/parser generation (round 57). Generation 1 is
+ * the round-55/56 reader. Generation 2 adds the HSA deposit
+ * detail (per-payroll contribution read from the statement's own
+ * deposit lines). Every save and every reprocess stamps the
+ * record with the generation that read it, and the pass below
+ * re-reads a record whose stamp is behind EVEN WHEN its field
+ * maps are current - a parser improvement alone reaches saved
+ * records, no re-upload. Records saved before stamping existed
+ * carry no stamp and are governed by their mapsVersion alone. */
+export const EXTRACTOR_VERSION = 2;
+
+/** Retained-text bound (round 55, raised round 57). Measured on
+ * the owner's real combined statement (October 2026, 20 pages,
+ * four accounts): the full extracted text is 38,856 characters
+ * and its HSA section - near the END of the document - is 28,671.
+ * The old 60,000 cap held that file, but with only ~55% headroom:
+ * a longer statement would have its tail sections silently cut
+ * out of every future re-read. The bound is now 200,000 - over
+ * 5x the largest real document - so a whole statement's text is
+ * retained; local storage holds it easily. */
+const RAW_CAP = 200000;
 export const boundRawText = (t: string): string => (t.length > RAW_CAP ? t.slice(0, RAW_CAP) : t);
+export const RAW_TEXT_CAP = RAW_CAP;
 
 function nameMatch(personPrinted: string | null, members: { id: string; name: string; role: string }[], roles: string[]): string | null {
   if (!personPrinted) return null;
@@ -260,7 +329,7 @@ function nameMatch(personPrinted: string | null, members: { id: string; name: st
 
 function sectionRecord(section: StatementSection, base: DocumentRecord, periodEnd: string | null, uploadId: string, members: { id: string; name: string; role: string }[], mapsVersion: string): DocumentRecord {
   const reading = extractSectionReading(section, statementPeriodOf(base.rawText ?? ""));
-  const fields: Record<string, string> = Object.fromEntries(Object.entries(reading.fields).map(([k, v]) => [k, String(v)]));
+  const fields: Record<string, string> = { ...Object.fromEntries(Object.entries(reading.fields).map(([k, v]) => [k, String(v)])), ...hsaDepositFields(section) };
   if (periodEnd) fields["statement_as_of"] = periodEnd;
   if (section.kind === "529" && section.personName) fields["beneficiary_name"] = section.personName;
   const owner = section.kind === "529"
@@ -278,11 +347,14 @@ function sectionRecord(section: StatementSection, base: DocumentRecord, periodEn
     accountId: section.accountId,
     rawText: boundRawText(section.text),
     mapsVersion,
+    extractorVersion: EXTRACTOR_VERSION,
   };
 }
 
 /** Re-read every record that retained its text and sits behind the
- * current field maps. New coverage only ADDS: a re-read fills
+ * current field maps OR behind the current extractor generation
+ * (round 57: a parser change alone triggers the re-read, not only
+ * a maps change). New coverage only ADDS: a re-read fills
  * fields the record does not carry yet and never overwrites a
  * confirmed value; a combined statement saved as one record fans
  * out into its account readings; a form saved under a generic type
@@ -297,7 +369,8 @@ export function reprocessDocuments(
   const notes: string[] = [];
   const out: DocumentRecord[] = [];
   docs.forEach((doc, idx) => {
-    if (!doc.rawText || !versionBehind(doc.mapsVersion, currentVersion)) {
+    const extractorBehind = typeof doc.extractorVersion === "number" && doc.extractorVersion < EXTRACTOR_VERSION;
+    if (!doc.rawText || (!versionBehind(doc.mapsVersion, currentVersion) && !extractorBehind)) {
       out.push(doc);
       return;
     }
@@ -316,7 +389,7 @@ export function reprocessDocuments(
       if (form.sourceDate) fields["source_date"] = form.sourceDate;
       const formBoxes: Record<string, string> = {};
       for (const [k, v] of Object.entries(fields)) if (k.startsWith("box_")) formBoxes[k] = v;
-      out.push({ ...doc, docType: form.kind, fields, formBoxes, mapsVersion: currentVersion });
+      out.push({ ...doc, docType: form.kind, fields, formBoxes, mapsVersion: currentVersion, extractorVersion: EXTRACTOR_VERSION });
       notes.push(`Re-read ${label}: it is a ${form.kind === "hsa_5498_sa" ? "Form 5498-SA" : "Form 1099-SA"} (${form.taxYear ?? ""}) - saved under its own type now, with its boxes read.`);
       return;
     }
@@ -329,8 +402,13 @@ export function reprocessDocuments(
     if (sections.length >= 2) {
       const period = statementPeriodOf(text);
       const uploadId = doc.uploadId ?? `up-reprocess-${idx}`;
-      for (const s of sections) out.push(sectionRecord(s, doc, period?.endIso ?? null, uploadId, members, currentVersion));
+      const recs = sections.map((s) => sectionRecord(s, doc, period?.endIso ?? null, uploadId, members, currentVersion));
+      for (const r of recs) out.push(r);
       notes.push(`Re-read ${label}: it holds ${sections.length} accounts - split into ${sections.length} account readings, each with its own balance.`);
+      const hsaRec = recs.find((d) => d.docType === "hsa_statement" && d.fields?.["per_payroll_contribution"] !== undefined);
+      if (hsaRec) {
+        notes.push(`Re-read ${label}: the HSA section's deposit detail shows a per-payroll contribution of $${Number(hsaRec.fields?.["per_payroll_contribution"]).toFixed(2)}, read from the statement's own deposit lines. It is on the HSA reading now.`);
+      }
       return;
     }
 
@@ -342,9 +420,33 @@ export function reprocessDocuments(
         if (merged[k] === undefined && v !== "") { merged[k] = v; added.push(k); }
       }
     };
+    // A fanned account reading retains only its own section's
+    // text, and the account number that opens a section in
+    // segmentation can sit OUTSIDE the retained span (on the real
+    // combined statement the HSA span holds no Account # line -
+    // the number appears earlier in the document flow). Such a
+    // span segments to nothing on its own; the record still IS
+    // one account's reading, so it is re-read as its own section.
+    // The statement_as_of field is the tell: only a record fanned
+    // out of a statement carries one (a screenshot reading does
+    // not, and keeps the generic read below).
+    let ownSection: StatementSection | null = null;
     if (sections.length === 1 && sections[0].docType === doc.docType) {
-      const reading = extractSectionReading(sections[0], statementPeriodOf(text));
+      ownSection = sections[0];
+    } else if (sections.length === 0 && (doc.docType === "hsa_statement" || doc.docType === "529_statement")
+      && typeof doc.fields?.["statement_as_of"] === "string" && doc.fields["statement_as_of"] !== "") {
+      ownSection = {
+        kind: doc.docType === "hsa_statement" ? "hsa" : "529",
+        docType: doc.docType,
+        accountId: doc.accountId ?? null,
+        personName: null,
+        text,
+      };
+    }
+    if (ownSection) {
+      const reading = extractSectionReading(ownSection, statementPeriodOf(text));
       fill(Object.fromEntries(Object.entries(reading.fields).map(([k, v]) => [k, String(v)])));
+      fill(hsaDepositFields(ownSection));
       const period = statementPeriodOf(text);
       if (period && merged["statement_as_of"] === undefined) { merged["statement_as_of"] = period.endIso; added.push("statement_as_of"); }
     } else {
@@ -356,7 +458,7 @@ export function reprocessDocuments(
         fill(Object.fromEntries(Object.entries(r.fields).map(([k, v]) => [k, String(v)])));
       } catch { /* a type the maps no longer carry: leave the record as it is */ }
     }
-    let next: DocumentRecord = { ...doc, fields: merged, mapsVersion: currentVersion };
+    let next: DocumentRecord = { ...doc, fields: merged, mapsVersion: currentVersion, extractorVersion: EXTRACTOR_VERSION };
     if (doc.docType === "401k_statement") {
       const detail = parse401kDetail(text);
       if (detail) {
@@ -371,6 +473,9 @@ export function reprocessDocuments(
     }
     out.push(next);
     if (added.length) notes.push(`Re-read ${label}: new facts found - ${added.join(", ")}.`);
+    if (added.includes("per_payroll_contribution")) {
+      notes.push(`Re-read ${label}: the statement's deposit detail shows a per-payroll HSA contribution of $${Number(merged["per_payroll_contribution"]).toFixed(2)}, read from the statement's own deposit lines. It is on the HSA card now, beside the period total it adds up to.`);
+    }
   });
   return { docs: out, notes };
 }

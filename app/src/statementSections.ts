@@ -26,6 +26,15 @@
 //   against real tesseract output of the owner's HSA screenshot,
 //   where the contributions panel garbles but the balance figure
 //   survives verbatim a line or two under its heading.
+// - parseHsaDepositDetail (round 57): the HSA section's own
+//   Contributions activity table - the individual dated deposits
+//   behind the period total. The period total is a MONTHLY figure
+//   (one statement period); a per-payroll figure exists only when
+//   the detail itself proves one - a single contribution stream
+//   repeating one equal amount that accounts for the whole period
+//   total. Anything else (one deposit, unequal amounts, mixed
+//   streams, a partial listing) leaves per-payroll UNKNOWN: it is
+//   never guessed by dividing or multiplying the period total.
 import { extractFields, type ExtractionResult, type RawField } from "../engine/extract.ts";
 import { textToRawFields } from "./textFields.ts";
 
@@ -167,6 +176,81 @@ export function segmentStatement(text: string): StatementSection[] {
   return sections;
 }
 
+export interface HsaDeposit { date: string; amount: number; description: string }
+export interface HsaDepositDetail { deposits: HsaDeposit[]; perPayroll: number | null }
+
+/** The HSA section's Contributions activity table: the dated
+ * deposit lines behind the period total ("10/14 Participant Cur
+ * Yr $44.65"). The block opens at the bare "Contributions"
+ * activity heading (the summary rows never print the word alone)
+ * and closes at its "Total Contributions" line. Deposit dates
+ * print as M/D; the year is resolved against the statement's own
+ * period when the section carries one (the custodian repeats the
+ * period header on the section's own pages), and stays as printed
+ * when it does not. perPayroll is derived ONLY from detail that
+ * proves it: at least two deposits, all one description (a single
+ * contribution stream), all the same amount, and - when a period
+ * total is known from the summary row or the block's own total
+ * line - the deposits account for all of it. */
+export function parseHsaDepositDetail(text: string, periodTotal: number | null): HsaDepositDetail {
+  const lines = text.split(/\r?\n/);
+  const period = statementPeriodOf(text);
+  const dateFor = (m: number, d: number): string => {
+    if (period) {
+      const years = [...new Set([Number(period.startIso.slice(0, 4)), Number(period.endIso.slice(0, 4))])];
+      for (const y of years) {
+        const c = iso(y, m, d);
+        if (c >= period.startIso && c <= period.endIso) return c;
+      }
+      return iso(Number(period.endIso.slice(0, 4)), m, d);
+    }
+    return `${m}/${d}`;
+  };
+  const deposits: HsaDeposit[] = [];
+  let blockTotal: number | null = null;
+  const start = lines.findIndex((l) => l.trim().toLowerCase() === "contributions");
+  if (start >= 0) {
+    for (let i = start + 1; i < Math.min(start + 42, lines.length); i++) {
+      const line = lines[i].trim();
+      const total = line.match(/^total contributions\s+\$?([\d,]+\.\d{2})$/i);
+      if (total) { blockTotal = Number(total[1].replace(/,/g, "")); break; }
+      if (/^date\b/i.test(line) && /amount/i.test(line)) continue;
+      const e = line.match(/^(\d{1,2})\/(\d{1,2})\s+(.+?)\s+\$?(-?[\d,]+\.\d{2})$/);
+      if (e) {
+        deposits.push({ date: dateFor(Number(e[1]), Number(e[2])), amount: Number(e[4].replace(/,/g, "")), description: e[3].trim().replace(/\s+/g, " ") });
+        continue;
+      }
+      if (deposits.length) break;
+    }
+  }
+  let perPayroll: number | null = null;
+  if (deposits.length >= 2) {
+    const first = deposits[0];
+    const oneStream = deposits.every((d) => d.amount === first.amount
+      && d.description.toLowerCase() === first.description.toLowerCase());
+    const sum = Math.round(deposits.reduce((s, d) => s + d.amount, 0) * 100) / 100;
+    const checkTotal = blockTotal ?? periodTotal;
+    if (oneStream && first.amount > 0 && (checkTotal === null || Math.abs(sum - checkTotal) < 0.01)) {
+      perPayroll = first.amount;
+    }
+  }
+  return { deposits, perPayroll };
+}
+
+/** The flat field strings a saved HSA section record carries for
+ * its deposit detail (round 57) - the analogue of k401DetailFields,
+ * shared by the fan-out save path and the reprocess pass so both
+ * write the identical shape. The deposits persist whenever the
+ * statement prints them; per_payroll_contribution rides the field
+ * maps as a number (emitted by parseSectionFields) and is NOT
+ * repeated here. */
+export function hsaDepositFields(section: StatementSection): Record<string, string> {
+  if (section.kind !== "hsa") return {};
+  const detail = parseHsaDepositDetail(section.text, null);
+  if (!detail.deposits.length) return {};
+  return { deposit_detail: JSON.stringify(detail.deposits) };
+}
+
 /** One account section's facts, YTD-aware. Emits raw fields under
  * the section-parser labels of the ocr-field-maps pack, so the
  * figures resolve through extractFields like every other reading.
@@ -220,6 +304,15 @@ export function parseSectionFields(section: StatementSection, periodMonths: numb
   }
   if (contribPeriod !== null && periodMonths === 1) {
     push("statement monthly contribution", String(contribPeriod));
+  }
+
+  // HSA deposit detail (round 57): the period total above is a
+  // MONTHLY figure, never a per-paycheck one. A per-payroll
+  // figure is emitted only when the section's own deposit lines
+  // prove a single repeated deposit (see parseHsaDepositDetail).
+  if (section.kind === "hsa") {
+    const detail = parseHsaDepositDetail(section.text, contribPeriod);
+    if (detail.perPayroll !== null) push("statement per-payroll contribution", String(detail.perPayroll));
   }
 
   // Distributions YTD, by the preference order in the header note.

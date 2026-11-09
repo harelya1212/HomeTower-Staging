@@ -340,6 +340,10 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
   // re-read records are stamped with the current maps version, so
   // the pass is a no-op until the maps advance again. It must never
   // break a load, so a failure leaves the saved state untouched.
+  // Round 57: the pass ALSO fires when only the extractor/parser
+  // generation has advanced (the record's extractorVersion stamp
+  // is behind), so a parser improvement reaches saved documents
+  // without a re-upload and without waiting for a maps change.
   try {
     const rp = reprocessDocuments(
       merged.intake.documents ?? [],
