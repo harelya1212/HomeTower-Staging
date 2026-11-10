@@ -15,13 +15,14 @@ import { parseHoldings, parsePlanAccount, positionValue, type HoldingsParse, typ
 import { parseSpendingCsv, type CsvSpending } from "../spendingCsv.ts";
 import { parsePayslipRows } from "../payslipRows.ts";
 import { docEvidenceStatus, employerMatchFor, k401StatementFacts, k401StatementMatchFor, monthYearLabel, statementMatchLine } from "../goals.ts";
+import { hsaAccuracy } from "../domainAccuracy.ts";
 import { mergePayslipFields, payslip401kTotals, payslipDeductionTotals, payslipKey } from "../payslips.ts";
 import {
   extractSectionReading, hsaDepositFields, hsaPageDetectedFields, k401DetailFields, parse401kDetail, parseSaForm,
   portfolioTotalOf, segmentStatement, statementPeriodOf,
   type K401Detail, type SaFormParse, type StatementPeriod, type StatementSection,
 } from "../statementSections.ts";
-import { boundRawText, dateLabel, eduMonthlyTotal, eduReconYearsFor, eduResolutionFor, eduVerifiedKey, EXTRACTOR_VERSION, fingerprintForSave, hsaBalanceSnapshots, hsaContributionReconciliation, hsaReconciliation, hsaResolution, monthNameOf, monthYearOf, sourceLabelFor, upsertDocument } from "../reconcile.ts";
+import { boundRawText, dateLabel, eduMonthlyTotal, eduReconYearsFor, eduResolutionFor, eduVerifiedKey, EXTRACTOR_VERSION, fingerprintForSave, hsaBalanceSnapshots, hsaContributionReconciliation, hsaReconciliation, hsaResolution, monthNameOf, monthYearOf, sourceLabelFor, upsertDocument, validateCanonicalEvidence } from "../reconcile.ts";
 import { ocrMapsPack } from "../../engine/packs.ts";
 import { pickFiles, pickImageFiles } from "../filePick";
 import { isEmptyRead, unmatchedExcerpt } from "../textFields.ts";
@@ -121,6 +122,10 @@ export default function DocumentsScreen() {
   const [showManual, setShowManual] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [ocrNote, setOcrNote] = useState<string | null>(null);
+  // Round 60 (P0-B): a canonical-validation block on the pending
+  // save - the reasons the reading was NOT saved, shown on the
+  // confirm card itself.
+  const [saveBlock, setSaveBlock] = useState<string[] | null>(null);
   const [flowNote, setFlowNote] = useState<string | null>(null);
   // 529 assignment (owner QA round 19): a statement can fill a specific
   // child's college funding - picked from the My House child card (via
@@ -278,6 +283,7 @@ export default function DocumentsScreen() {
 
   const runExtraction = (text: string, namedType?: string, pages?: string[], columnByPage?: RawField[][], opts?: { openUnmatchedCard?: boolean }) => {
     try {
+      setSaveBlock(null);
       const textRaw = textToRawFields(text);
       if (!textRaw.length && isEmptyRead(text)) {
         // Round 56 (device QA defect 3): an empty read is an
@@ -931,6 +937,17 @@ export default function DocumentsScreen() {
       uploadId: `up-${Date.now()}`,
       ...(formBoxes ? { formBoxes } : {}),
     };
+    // ROUND 60 (P0-B): canonical validation BEFORE any save path.
+    // Dedupe (upsertDocument) prevents a duplicate fact; this
+    // layer prevents a WRONG one - a reading whose balance is a
+    // known 401(k) balance, or whose HSA identity does not hold
+    // up, is not saved at all, and the confirm card shows why.
+    const validation = validateCanonicalEvidence({ proposedRecord: record, existingDocuments: docs, householdAccounts: state.assets });
+    if (validation.status === "needs_review") {
+      setSaveBlock(validation.reasons);
+      return;
+    }
+    setSaveBlock(null);
     // Multi-page payslips (owner, 2026-11-08): a slip spans several
     // screenshots. Inside one batch, a reading whose earner + period
     // match the payslip saved from the previous screenshot is a PAGE
@@ -1050,6 +1067,7 @@ export default function DocumentsScreen() {
     let refreshedCount = 0;
     const eduPatch = new Map<string, { eduBalance: number; eduMonthly?: number }>();
     const savedNames: string[] = [];
+    const blockedNotes: string[] = [];
     for (const fs of fanOut.sections) {
       const fields: Record<string, string> = Object.fromEntries(Object.entries(fs.fields).map(([k, v]) => [k, String(v)]));
       if (fanOut.period) fields["statement_as_of"] = fanOut.period.endIso;
@@ -1070,6 +1088,16 @@ export default function DocumentsScreen() {
         extractorVersion: EXTRACTOR_VERSION,
         ...(fingerprintForSave(sectionText) ? { fingerprint: fingerprintForSave(sectionText) } : {}),
       };
+      // ROUND 60 (P0-B): canonical validation before the save, the
+      // same layer as the single-reading path - a section whose
+      // balance is a known 401(k) balance, or whose HSA identity
+      // does not hold up, is not saved, and the completion note
+      // says so with the reason.
+      const validation = validateCanonicalEvidence({ proposedRecord: record, existingDocuments: newDocs, householdAccounts: state.assets });
+      if (validation.status === "needs_review") {
+        blockedNotes.push(`${fs.section.kind === "529" ? `529 for ${fs.section.personName ?? "a beneficiary"}` : "The HSA reading"} was not saved: ${validation.reasons[0]}`);
+        continue;
+      }
       // Round 58: the same single dedupe path as every other save -
       // re-saving the same account's statement for the same period
       // refreshes that account's reading in place.
@@ -1089,12 +1117,15 @@ export default function DocumentsScreen() {
     if (eduPatch.size) {
       update({ family: state.family.map((m) => (eduPatch.has(m.id) ? { ...m, ...eduPatch.get(m.id)! } : m)) });
     }
-    const n = fanOut.sections.length;
+    const n = savedNames.length;
     setFanOut(null);
     setPendingText(null);
     const moreComing = intakeBatch && intakeBatch.queue.length > 0 ? ` ${intakeBatch.noun} ${intakeBatch.done + 1} of ${intakeBatch.total} is being read now.` : "";
     const refreshNote = refreshedCount > 0 ? ` ${refreshedCount} of these readings were already on file - HomeTower refreshed them in place. No duplicates were created.` : "";
-    setOcrNote(`Saved ${n} account reading${n === 1 ? "" : "s"} from one document (${savedNames.join("; ")}). Each account keeps its own balance, contributions and distributions - the document's combined total was not saved as any account's balance.${refreshNote} Check the Tasks page: distributions start their reconciliation there.${moreComing}`);
+    const blockedNote = blockedNotes.length > 0 ? `${blockedNotes.join(" ")} ` : "";
+    setOcrNote(n > 0
+      ? `${blockedNote}Saved ${n} account reading${n === 1 ? "" : "s"} from one document (${savedNames.join("; ")}). Each account keeps its own balance, contributions and distributions - the document's combined total was not saved as any account's balance.${refreshNote} Check the Tasks page: distributions start their reconciliation there.${moreComing}`
+      : `${blockedNote}Nothing from this document was saved.${moreComing}`);
     advanceIntakeBatch();
   };
 
@@ -1194,6 +1225,13 @@ export default function DocumentsScreen() {
       const who = pacers.length === 1 ? ` (${pacers[0].name.split(" ")[0]}'s payslips)` : " (from your payslips)";
       lines.push(`Payroll pace: $${Math.round(dedTotals.hsaMonthlyPace)}/mo${who}`);
     }
+    // ROUND 60 (P1-C): the HSA domain's own accuracy level, from
+    // its own evidence - not the global completeness score.
+    const hsaDomain = hsaAccuracy(
+      docs.some((d) => d.docType === "hsa_statement" && d.status === "parsed"),
+      hsaRecon.delta !== null ? hsaRecon.explained : null,
+    );
+    lines.push(`HSA accuracy: ${hsaDomain.label} (${hsaDomain.level}) - ${hsaDomain.basis}`);
     return lines;
   })();
   const edu529Line = (() => {
@@ -1545,6 +1583,15 @@ export default function DocumentsScreen() {
           {Object.keys(extraction.fields).length === 0 && !extractionEmptyRead && (
             <Text style={styles.line}>No known fields matched this document type. You can still save it as a register entry.</Text>
           )}
+          {saveBlock && (
+            <View style={styles.mismatch}>
+              <Text style={styles.line}>Not saved - HomeTower needs a second look at this one:</Text>
+              {saveBlock.map((r, i) => (
+                <Text key={i} style={styles.line}>{r}</Text>
+              ))}
+              <Text style={styles.line}>If the document really is what it claims to be, check the figures above against it and try the upload again; otherwise discard this reading.</Text>
+            </View>
+          )}
           <Pressable style={styles.button} onPress={confirmExtraction}>
             <Text style={styles.buttonText}>
               {intakeBatch
@@ -1554,7 +1601,7 @@ export default function DocumentsScreen() {
                 : `Confirm and save as ${extractionType}`}
             </Text>
           </Pressable>
-          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); setPendingPlan(null); setPendingSpending(null); setPending401kDetail(null); setPendingSaForm(null); advanceIntakeBatch(); }}>
+          <Pressable onPress={() => { setExtraction(null); setDetection(null); setPendingText(null); setPendingHoldings(null); setPendingPlan(null); setPendingSpending(null); setPending401kDetail(null); setPendingSaForm(null); setSaveBlock(null); advanceIntakeBatch(); }}>
             <Text style={styles.remove}>{intakeBatch ? `Discard (${intakeBatch.done} of ${intakeBatch.total})` : "Discard"}</Text>
           </Pressable>
         </View>

@@ -6,6 +6,8 @@ import { householdFreshness, reminderCandidates } from "../../engine/freshness.t
 import { annualFocus, documentRequests, nextAction, nextPhaseStart } from "../../engine/guidance.ts";
 import { computeHouseholdTax } from "../../engine/snapshot.ts";
 import { computeFederalTax } from "../../engine/federal.ts";
+import { stateTaxModelInfo } from "../../engine/state.ts";
+import { domainAccuracy } from "../domainAccuracy.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
 import { ageOn, educationLine, educationOutlookFor, faceStatusFor } from "../goals.ts";
@@ -154,6 +156,21 @@ export default function HomeScreen() {
   const eduOutlook = educationOutlookFor(children, today, g.assumedReturnPct, DEFAULT_EDU_ANNUAL_COST)
     .map((e) => ({ ...e, c: e.child }));
 
+  // ROUND 60 (P1-C): per-domain accuracy. Each forecast area
+  // carries its own level from its own evidence; the global
+  // prediction confidence below is a data-completeness indicator
+  // and no longer governs these displays (it used to scale both
+  // tax gauges' ranges). The state domain is capped by the state
+  // model's honesty (P1-A).
+  const domains = domainAccuracy({
+    intake: state.intake,
+    retirementLevel: accuracy.level,
+    eduChildren: eduOutlook.map((e) => ({ onDefaultCost: e.usingDefaultCost })),
+    hsaReconExplained: null, // the HSA verdict lives on the Documents HSA card, which computes it there
+  });
+  const azModel = stateTaxModelInfo(state.intake.state || "");
+  const stateModelLabel = azModel.fullReturnModeled ? null : azModel.label;
+
   useEffect(() => {
     getPushStatus().then(setPush);
   }, []);
@@ -231,9 +248,9 @@ export default function HomeScreen() {
   // Round 44 (external design review + reconciliation, 2026-11-08):
   // every gauge carries its own next-action line and an expected
   // range, the two gauges get a combined position card, and the tax
-  // picture shows its full calculation. The range is scaled by the
-  // confidence score - the less verified data behind a number, the
-  // wider its band.
+  // picture shows its full calculation. (Round 60, P1-C: the range
+  // is scaled by each gauge's OWN domain accuracy now - see
+  // rangeFor - not by the global completeness score.)
   const fedDetail = useMemo(() => {
     try { return computeFederalTax(effIncome, state.intake.filingStatus, state.ltcgIncome); } catch { return null; }
   }, [effIncome, state.intake.filingStatus, state.ltcgIncome]);
@@ -260,8 +277,13 @@ export default function HomeScreen() {
     }
     return "No action recommended - you are inside your target.";
   };
-  const rangeFor = (value: number): string => {
-    const half = Math.max(150, Math.abs(value) * (0.55 - 0.45 * (confidence.score / 100)));
+  // ROUND 60 (P1-C): a gauge's expected range is scaled by ITS
+  // OWN domain accuracy now - the global completeness score used
+  // to widen and narrow both gauges together, whatever each
+  // forecast's own evidence looked like.
+  const rangeFor = (value: number, level: "X" | "X+" | "X++"): string => {
+    const factor = level === "X++" ? 0.19 : level === "X+" ? 0.32 : 0.5;
+    const half = Math.max(150, Math.abs(value) * factor);
     return `Expected range: ${money(value - half)} - ${money(value + half)}`;
   };
   const combined = fed + st;
@@ -379,7 +401,8 @@ export default function HomeScreen() {
             <RefundGauge value={fed} low={fedLow} high={fedHigh} />
             <Text style={styles.line}>{fed < 0 ? `At this pace you owe the IRS ${money(-fed)} - your target is a ${money(fedLow)} - ${money(fedHigh)} refund.` : fed < fedLow ? `A refund is coming - ${money(fedLow - fed)} below your ${money(fedLow)} - ${money(fedHigh)} target.` : fed > fedHigh ? `A refund is coming - ${money(fed - fedHigh)} above your ${money(fedLow)} - ${money(fedHigh)} target.` : `Right inside your ${money(fedLow)} - ${money(fedHigh)} target.`}</Text>
             <Text style={styles.actionLine}>{gaugeAction(fed, fedLow, fedHigh, "federal")}</Text>
-            <Text style={styles.rangeLine}>{rangeFor(fed)}</Text>
+            <Text style={styles.rangeLine}>{rangeFor(fed, domains.federalTax.level)}</Text>
+            <Text style={styles.rangeLine}>Federal tax accuracy: {domains.federalTax.label} ({domains.federalTax.level})</Text>
             {snap && !snap.medicareIncluded && <Text style={styles.rangeLine}>Before final Medicare reconciliation - add payslips in Documents and HomeTower runs the Additional Medicare calculation too.</Text>}
             {snap && snap.medicareIncluded && slipFc && slipFc.medicareBasis === "estimated" && <Text style={styles.rangeLine}>Medicare is estimated from your pay for now - the calculation below says how.</Text>}
           </>
@@ -401,7 +424,9 @@ export default function HomeScreen() {
             <RefundGauge value={st} low={g.stateRefundTargetLow} high={g.stateRefundTargetHigh} />
             <Text style={styles.line}>{st < 0 ? `At this pace you owe the state ${money(-st)} - your target is a ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} refund.` : st < g.stateRefundTargetLow ? `A refund is coming - ${money(g.stateRefundTargetLow - st)} below your ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} target.` : st > g.stateRefundTargetHigh ? `A refund is coming - ${money(st - g.stateRefundTargetHigh)} above your ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} target.` : `Right inside your ${money(g.stateRefundTargetLow)} - ${money(g.stateRefundTargetHigh)} target.`}</Text>
             <Text style={styles.actionLine}>{gaugeAction(st, g.stateRefundTargetLow, g.stateRefundTargetHigh, "state")}</Text>
-            <Text style={styles.rangeLine}>{rangeFor(st)}</Text>
+            <Text style={styles.rangeLine}>{rangeFor(st, domains.stateTax.level)}</Text>
+            {stateModelLabel && <Text style={styles.rangeLine}>{stateModelLabel}</Text>}
+            <Text style={styles.rangeLine}>State tax accuracy: {domains.stateTax.label} ({domains.stateTax.level})</Text>
           </>
         ) : (
           <Text style={styles.line}>Same story on the state side: no income yet, so no projection. Your state target stays {money(g.stateRefundTargetLow)} - {money(g.stateRefundTargetHigh)}.</Text>
@@ -554,6 +579,7 @@ export default function HomeScreen() {
       {children.length > 0 && (
         <View style={styles.card}>
           <Text style={styles.cardLabel}>Education - timing and funding, per child **</Text>
+          {domains.education && <Text style={styles.line}>Education accuracy: {domains.education.label} ({domains.education.level}) - {domains.education.basis}</Text>}
           {eduOutlook.map(({ c, yearsToStart, duration, funding, usingDefaultCost, earlyEstimate }) => {
             const pct = funding.pctFunded ?? 0;
             return (
@@ -650,7 +676,7 @@ export default function HomeScreen() {
 
       <View style={styles.card}>
         <View style={styles.confRow}>
-          <RingGauge pct={confidence.score} label={`Prediction confidence (${confidence.band})`} color={confColor} />
+          <RingGauge pct={confidence.score} label={`Data completeness (${confidence.band})`} color={confColor} />
           <View style={{ flex: 1 }}>
             <Text style={styles.cardLabel}>What would raise it</Text>
             {confidence.reasons.length === 0 ? (
@@ -667,6 +693,13 @@ export default function HomeScreen() {
             {provenance.map((p, i) => (
               <Text key={i} style={styles.line}>{p}</Text>
             ))}
+            <Text style={[styles.cardLabel, { marginTop: 10 }]}>Accuracy by area</Text>
+            <Text style={styles.line}>The ring counts the documents on file - completeness, not the accuracy of any one forecast. Each area carries its own level, from its own evidence:</Text>
+            <Text style={styles.line}>Federal tax: {domains.federalTax.label} ({domains.federalTax.level}) - {domains.federalTax.basis}</Text>
+            <Text style={styles.line}>{state.intake.state} tax: {domains.stateTax.label} ({domains.stateTax.level}) - {domains.stateTax.basis}</Text>
+            <Text style={styles.line}>Retirement: {domains.retirement.label} ({domains.retirement.level})</Text>
+            {domains.education && <Text style={styles.line}>Education: {domains.education.label} ({domains.education.level}) - {domains.education.basis}</Text>}
+            <Text style={styles.line}>HSA: {domains.hsa.label} ({domains.hsa.level}) - {domains.hsa.basis}</Text>
           </View>
         </View>
       </View>
@@ -728,7 +761,7 @@ export default function HomeScreen() {
           <Text style={styles.actionRow}><Text style={styles.actionKey}>Why: </Text>{action.why}</Text>
           <Text style={styles.actionRow}><Text style={styles.actionKey}>Expected benefit: </Text>{action.expectedBenefit}</Text>
           <Text style={styles.actionRow}><Text style={styles.actionKey}>Trade-off: </Text>{action.tradeOff}</Text>
-          <Text style={styles.actionRow}><Text style={styles.actionKey}>Confidence: </Text>{action.confidence}</Text>
+          <Text style={styles.actionRow}><Text style={styles.actionKey}>Data completeness behind this: </Text>{action.confidence}</Text>
           <Text style={styles.actionRow}><Text style={styles.actionKey}>What could change this: </Text>{action.whatCouldChange}</Text>
           {actionTarget && (
             <Pressable style={styles.button} onPress={() => { setTasksOpen(false); navigation.navigate(actionTarget); }}>
