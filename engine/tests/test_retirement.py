@@ -114,8 +114,28 @@ def test_balance_without_statement_is_owned_or_fallback():
     assert adult_starting_balance([], fallback=9000, statement401k=0).balance == 9000
 
 
-def test_balance_statement_alone_and_fallback_wins():
+def test_balance_statement_alone():
     assert adult_starting_balance([], fallback=0, statement401k=52000).balance == 52000
+
+
+def test_balance_statement_applies_over_fallback_round60():
+    # ROUND 60 (P0-A) SUPERSEDES the round-53 "fallback wins" half
+    # of the old test: Copilot's golden case - fallback > 0,
+    # ownedRows = [], statement401k > 0 -> the statement applies
+    # ALWAYS, and the fallback is reported separately as the
+    # genuinely unmapped residual.
     out = adult_starting_balance([], fallback=9000, statement401k=52000)
-    assert out.balance == 9000
-    assert out.statement_applied is False
+    assert out.balance == 61000  # 0 identified + 52,000 statement + 9,000 residual
+    assert out.statement_applied is True
+    assert out.known_owned_non401k == 0
+    assert out.statement_amount == 52000
+    assert out.unmapped_fallback == 9000
+
+
+def test_balance_composition_with_owned_rows_round60():
+    owned = [{"kind": "401k", "value": 40000}, {"kind": "ira", "value": 5000}]
+    out = adult_starting_balance(owned, fallback=9000, statement401k=52000)
+    assert out.balance == 57000  # identified non-401k 5,000 + statement 52,000 + residual 0
+    assert out.known_owned_non401k == 5000
+    assert out.unmapped_fallback == 0  # owned rows exist: the fallback plays no part
+    assert out.replaced_401k == 40000
