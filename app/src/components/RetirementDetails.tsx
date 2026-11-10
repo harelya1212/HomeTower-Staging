@@ -114,11 +114,19 @@ export default function RetirementDetails({ model, g, householdName, k401Totals,
           <Text style={styles.line}>Pension: {pensionAnnualEff > 0 ? `${money(pensionAnnualEff)}/year${pensionFromStatement ? " (from your pension statement)" : " (entered by you)"}` : pensionKnown ? "$0/year (you told HomeTower there is no pension)" : "Unknown - not entered yet"}</Text>
           {adultOutlook.map((a) => {
             const who = a.m.name || (a.m.role === "self" ? "You" : "Spouse");
-            if (a.matchMo > 0 && a.matchRes.status === "from_statement") {
+            if (a.matchMo > 0 && a.matchRes.status === "from_statement" && a.stmtMatch) {
+              // ROUND 60 (P2): the same provenance family as the
+              // Documents 401(k) card (round 59, trace E) - the
+              // statement CONFIRMS the year-to-date total; the
+              // monthly pace is derived from its period and is
+              // labelled as derived, never presented as a figure
+              // the statement stated.
+              const sm = a.stmtMatch;
               return (
                 <View key={`match-${a.m.id}`}>
-                  <Text style={styles.line}>Employer match ({who}): {money(a.matchMo)}/mo</Text>
-                  <Text style={styles.line}>Source: 401(k) statement, {monthYearLabel(a.matchRes.statementOn)}</Text>
+                  <Text style={styles.line}>Employer contributions YTD ({who}): {money(sm.periodTotal)} confirmed</Text>
+                  <Text style={styles.line}>Estimated monthly pace: ~{money(a.matchMo)}/mo</Text>
+                  <Text style={styles.line}>Derived from {sm.periodLabel ? `the ${sm.periodLabel} statement period` : sm.months ? `the statement's ${sm.months}-month period` : "the statement period"} - the statement confirms the year-to-date total; it does not state a monthly figure.</Text>
                 </View>
               );
             }
@@ -164,7 +172,9 @@ export default function RetirementDetails({ model, g, householdName, k401Totals,
           })}
           <Text style={styles.line}>Net rental / other dependable: {money(g.otherRetirementIncomeAnnual || 0)}/year</Text>
           <Text style={styles.line}>Home equity: excluded from the investable portfolio</Text>
-          {phases && <Text style={styles.line}>Bridge years ({phases.y1}-{phases.y2}): the retired spouse's portfolio keeps growing and is not drawn - the working spouse's income covers those years</Text>}
+          {phases && model.bridge && (
+            <Text style={styles.line}>Bridge years ({phases.y1}-{phases.y2}): {phases.earlyName} is retired while {phases.lateName} works. Computed bridge: needs of {money(model.bridge.needsAnnual)}/yr (spending {money(model.bridge.spendingAnnual)} + healthcare {money(model.bridge.healthcareAnnual)} + taxes {money(model.bridge.taxesAnnual)} + debt service {money(model.bridge.debtServiceAnnual)}) against {money(model.bridge.workingSpouseNetAnnual)}/yr of {phases.lateName}&apos;s income after withholding plus {money(model.bridge.dependableAnnual)}/yr of dependable income - {model.bridge.covered ? "the gap is $0/yr, so the portfolio is not drawn during the bridge." : `a gap of ${money(model.bridge.gapAnnual)}/yr, drawn from the portfolio during the bridge years; the projected portfolio above is already net of that draw.`}</Text>
+          )}
           <Text style={styles.line}>Healthcare: not included yet</Text>
           <Text style={styles.line}>Last updated: {updatedLabel}</Text>
         </>
