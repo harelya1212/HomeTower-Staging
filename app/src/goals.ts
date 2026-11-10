@@ -1748,15 +1748,25 @@ export function educationFunding(balance: number, monthly: number, yearsToStart:
  * presentation unlocks per child, only when that child's real
  * costs are set. Gating is per child by construction: each entry
  * carries its own earlyEstimate flag. */
+/** The default annual college cost a child runs on until a real
+ * figure is entered (moved here from HomeScreen in round 62 so
+ * the forecast snapshot and the screens share one constant). */
+export const DEFAULT_EDU_ANNUAL_COST = 24000;
+
 export interface EduChildLike {
   id: string;
   name: string;
   dob: string;
   studentNow?: boolean;
   collegeStartYear?: number;
-  yearsLeftInCollege?: number;
+  yearsLeftInCollege?: number | null;
   eduDurationYears?: number;
   eduAnnualCost?: number;
+  /** Round 62 (R62-9): where the annual cost figure came from -
+   * "user" when the user typed it, "default" when a preset wrote
+   * it (the My House in-state / room-and-board presets), absent
+   * on legacy state saved before provenance existed. */
+  eduCostSource?: "user" | "default" | null;
   eduBalance?: number;
   eduMonthly?: number;
   eduScholarshipYear?: number;
@@ -1783,8 +1793,20 @@ export function educationOutlookFor(
     let yearsToStart = 0;
     if (!c.studentNow && (c.collegeStartYear ?? 0) > 0) yearsToStart = Math.max(0, (c.collegeStartYear ?? 0) - thisYear);
     else if (!c.studentNow && age !== null) yearsToStart = Math.max(0, 18 - age);
-    const duration = c.studentNow && (c.yearsLeftInCollege ?? 0) > 0 ? (c.yearsLeftInCollege ?? 4) : c.eduDurationYears || 4;
-    const usingDefaultCost = !((c.eduAnnualCost ?? 0) > 0);
+    // ROUND 62 (R62-9): for a student in college NOW, the stored
+    // years-left is authoritative INCLUDING 0 - 0 remaining years
+    // means 0 years of cost, and the duration fallback must not
+    // resurrect a full degree's cost behind it. The fallback
+    // applies only when years-left is genuinely unknown (absent).
+    const duration = c.studentNow && c.yearsLeftInCollege != null
+      ? Math.max(0, c.yearsLeftInCollege)
+      : c.eduDurationYears || 4;
+    // ROUND 62 (R62-9): cost provenance - a figure stamped
+    // "default" was written by a preset, not typed by the user,
+    // so it behaves exactly like the default figure: it drives
+    // an early estimate and cannot unlock the verdict
+    // presentation (the round-59 trace-F gate, keyed honestly).
+    const usingDefaultCost = !((c.eduAnnualCost ?? 0) > 0) || c.eduCostSource === "default";
     const effCost = usingDefaultCost ? defaultAnnualCost : (c.eduAnnualCost ?? 0);
     const funding = educationFunding(c.eduBalance || 0, c.eduMonthly || 0, yearsToStart, duration, effCost, c.eduScholarshipYear || 0, assumedReturnPct);
     const earlyEstimate = usingDefaultCost;

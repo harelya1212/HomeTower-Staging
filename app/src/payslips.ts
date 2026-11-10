@@ -17,7 +17,7 @@
 import type { DocumentRecord } from "../engine/intake.ts";
 
 export interface MemberLike { id: string; name: string; role: string }
-export interface JobLike { memberName: string; payFrequency: string }
+export interface JobLike { memberName: string; payFrequency: string; employer?: string }
 
 export interface EarnerProjection {
   name: string;
@@ -77,25 +77,112 @@ const PERIODS_PER_YEAR: Record<string, number> = { weekly: 52, biweekly: 26, sem
  * week, about two weeks, or about a month. Anything indecisive
  * falls back to the job record, then to semi-monthly (the app's
  * standing default - see the forecast's signature comment). */
-export function periodsPerYearForEarner(ends: string[], jobFrequency?: string | null): number {
+/** The DECISIVE signature in a set of period ends, or null when
+ * the ends cannot decide on their own. This is the round-59 rule
+ * set, unchanged: the 15th + month-end pair (semi-monthly), one
+ * day-of-month or all month-ends across 2+ months (monthly), and
+ * the median-spacing signatures. */
+export function signaturePeriods(ends: string[]): number | null {
   const sorted = [...new Set(ends.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)))].sort();
-  if (sorted.length >= 2) {
-    const parts = sorted.map((e) => ({ y: Number(e.slice(0, 4)), m: Number(e.slice(5, 7)), d: Number(e.slice(8, 10)) }));
-    const lastDay = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate();
-    const isLast = parts.map((p) => p.d === lastDay(p.y, p.m));
-    const allSemiDays = parts.every((p, i) => p.d === 15 || isLast[i]);
-    if (allSemiDays && parts.some((p) => p.d === 15) && isLast.some(Boolean)) return 24;
-    const months = new Set(parts.map((p) => `${p.y}-${p.m}`));
-    if (months.size >= 2 && (parts.every((p) => p.d === parts[0].d) || isLast.every(Boolean))) return 12;
-    const gaps: number[] = [];
-    for (let i = 1; i < sorted.length; i++) gaps.push(Math.round((Date.parse(sorted[i]) - Date.parse(sorted[i - 1])) / 86400000));
-    gaps.sort((a, b) => a - b);
-    const median = gaps[Math.floor(gaps.length / 2)];
-    if (median >= 6 && median <= 8) return 52;
-    if (median >= 13 && median <= 15) return 26;
-    if (median >= 27 && median <= 32) return 12;
+  if (sorted.length < 2) return null;
+  const parts = sorted.map((e) => ({ y: Number(e.slice(0, 4)), m: Number(e.slice(5, 7)), d: Number(e.slice(8, 10)) }));
+  const lastDay = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const isLast = parts.map((p) => p.d === lastDay(p.y, p.m));
+  const allSemiDays = parts.every((p, i) => p.d === 15 || isLast[i]);
+  if (allSemiDays && parts.some((p) => p.d === 15) && isLast.some(Boolean)) return 24;
+  const months = new Set(parts.map((p) => `${p.y}-${p.m}`));
+  if (months.size >= 2 && (parts.every((p) => p.d === parts[0].d) || isLast.every(Boolean))) return 12;
+  const gaps: number[] = [];
+  for (let i = 1; i < sorted.length; i++) gaps.push(Math.round((Date.parse(sorted[i]) - Date.parse(sorted[i - 1])) / 86400000));
+  gaps.sort((a, b) => a - b);
+  const median = gaps[Math.floor(gaps.length / 2)];
+  if (median >= 6 && median <= 8) return 52;
+  if (median >= 13 && median <= 15) return 26;
+  if (median >= 27 && median <= 32) return 12;
+  return null;
+}
+
+/** Sparse payroll evidence (ROUND 62, R62-8): a period end ON the
+ * 15th or ON a month-end is itself semi-monthly-shaped evidence -
+ * a biweekly cycle lands on rotating weekdays and only
+ * occasionally touches those days. When it is all the evidence an
+ * earner has, it still outranks an unconfirmed job record. */
+function sparseSemiMonthly(ends: string[]): boolean {
+  const valid = ends.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e));
+  if (valid.length === 0) return false;
+  return valid.every((e) => {
+    const y = Number(e.slice(0, 4));
+    const m = Number(e.slice(5, 7));
+    const d = Number(e.slice(8, 10));
+    return d === 15 || d === new Date(Date.UTC(y, m, 0)).getUTCDate();
+  });
+}
+
+/** ROUND 62 (R62-8) - the resolution order for one earner's pay
+ * frequency: (1) the earner's own decisive signature, read from
+ * ALL of their period ends - regular AND bonus slips alike (a
+ * regular end on 10/31 and a bonus end on 11/15 are themselves
+ * the semi-monthly signature); (2) the household's shared-employer
+ * pattern (householdPeriods, computed by householdPeriodsByEarner);
+ * (3) sparse payroll evidence (every end on the 15th or a
+ * month-end); (4) the job record - only when payroll evidence
+ * says nothing at all, because the job record's frequency is a
+ * form value that is "biweekly" by default and was never
+ * confirmed against a slip; (5) semi-monthly, the standing
+ * default. A job record never silently overrides payroll
+ * evidence again. */
+export function periodsPerYearForEarner(ends: string[], jobFrequency?: string | null, householdPeriods?: number | null): number {
+  return signaturePeriods(ends)
+    ?? householdPeriods
+    ?? (sparseSemiMonthly(ends) ? 24 : null)
+    ?? PERIODS_PER_YEAR[(jobFrequency ?? "").toLowerCase()]
+    ?? 24;
+}
+
+/** The household's shared-employer pattern (ROUND 62, R62-8):
+ * for every earner whose own ends are indecisive, the periods of
+ * a DECISIVE earner at the same employer (per the job records);
+ * when no same-employer earner is decisive but every decisive
+ * earner in the household agrees on one value, that value - a
+ * household's payroll pattern is shared evidence, and it outranks
+ * any single earner's unconfirmed job record. Keys are the
+ * normalized earner names the totals functions group by. */
+export function householdPeriodsByEarner(
+  earners: { key: string; ends: string[] }[],
+  jobs: JobLike[],
+): Map<string, number> {
+  const decisive = new Map<string, number>();
+  for (const e of earners) {
+    const sig = signaturePeriods(e.ends);
+    if (sig !== null) decisive.set(e.key, sig);
   }
-  return PERIODS_PER_YEAR[(jobFrequency ?? "semimonthly").toLowerCase()] ?? 24;
+  const employerOf = (key: string): string => {
+    const job = jobs.find((j) => normName(j.memberName) === key);
+    return (job?.employer ?? "").trim().toLowerCase();
+  };
+  const agreed = decisive.size > 0 && [...decisive.values()].every((v) => v === [...decisive.values()][0])
+    ? [...decisive.values()][0]
+    : null;
+  const out = new Map<string, number>();
+  for (const e of earners) {
+    if (decisive.has(e.key)) continue;
+    const emp = employerOf(e.key);
+    const sameEmployer = emp
+      ? earners.filter((o) => o.key !== e.key && employerOf(o.key) === emp && decisive.has(o.key))
+      : [];
+    if (sameEmployer.length > 0) {
+      out.set(e.key, decisive.get(sameEmployer[0].key)!);
+    } else if (agreed !== null) {
+      out.set(e.key, agreed);
+    }
+  }
+  return out;
+}
+
+/** The frequency NAME for a periods-per-year count (the forecast
+ * speaks in names; the pace functions speak in counts). */
+export function frequencyNameForPeriods(periods: number): string {
+  return periods === 52 ? "weekly" : periods === 26 ? "biweekly" : periods === 12 ? "monthly" : "semimonthly";
 }
 
 function normName(s: string): string {
@@ -207,6 +294,15 @@ export function payslipDeductionTotals(
     byEarner.set(key, arr);
   }
   const fieldCount = (d: DocumentRecord) => Object.values(d.fields ?? {}).filter((v) => v !== "").length;
+  // ROUND 62 (R62-8): the household frequency pattern is computed
+  // once, from every earner's ends, before any earner resolves.
+  const household = householdPeriodsByEarner(
+    [...byEarner.entries()].map(([key, docs]) => ({
+      key,
+      ends: docs.map((d) => slipEnd(d)).filter((e): e is string => e !== null && e.slice(0, 4) === thisYear),
+    })),
+    jobs,
+  );
   const perEarner: PayslipDeductionTotals["perEarner"] = [];
   for (const [key, docs] of byEarner) {
     const withEnd = docs.map((d) => ({ d, end: slipEnd(d) })).filter((x) => x.end !== null && x.end.slice(0, 4) === thisYear) as Array<{ d: DocumentRecord; end: string }>;
@@ -220,7 +316,7 @@ export function payslipDeductionTotals(
       return null;
     };
     const job = jobs.find((j) => normName(j.memberName) === key);
-    const perYear = periodsPerYearForEarner(withEnd.map((x) => x.end), job?.payFrequency);
+    const perYear = periodsPerYearForEarner(withEnd.map((x) => x.end), job?.payFrequency, household.get(key) ?? null);
     const pace = (field: string) => {
       for (const x of withEnd) {
         const f = x.d.fields ?? {};
@@ -311,6 +407,15 @@ export function payslip401kTotals(documents: DocumentRecord[], todayIso: string,
     byEarner.set(key, arr);
   }
   const fieldCount = (d: DocumentRecord) => Object.values(d.fields ?? {}).filter((v) => v !== "").length;
+  // ROUND 62 (R62-8): the household frequency pattern, as in
+  // payslipDeductionTotals.
+  const household = householdPeriodsByEarner(
+    [...byEarner.entries()].map(([key, docs]) => ({
+      key,
+      ends: docs.map((d) => slipEnd(d)).filter((e): e is string => e !== null && e.slice(0, 4) === thisYear),
+    })),
+    jobs,
+  );
   const perEarner: Payslip401k["perEarner"] = [];
   let through = "";
   for (const [key, docs] of byEarner) {
@@ -336,7 +441,7 @@ export function payslip401kTotals(documents: DocumentRecord[], todayIso: string,
     // not a pace, so they never set it.
     let monthlyPace: number | null = null;
     const job = jobs.find((j) => normName(j.memberName) === key);
-    const perYear = periodsPerYearForEarner(withEnd.map((x) => x.end), job?.payFrequency);
+    const perYear = periodsPerYearForEarner(withEnd.map((x) => x.end), job?.payFrequency, household.get(key) ?? null);
     for (const x of withEnd) {
       const f = x.d.fields ?? {};
       if ((f["payslip_kind"] ?? "regular") === "bonus") continue;
@@ -383,6 +488,16 @@ export function payslipForecast(
     arr.push(s);
     byEarner.set(key, arr);
   }
+  // ROUND 62 (R62-8): the household frequency pattern, as in the
+  // totals functions - the forecast resolves frequency from the
+  // same evidence order, never from the job record alone.
+  const household = householdPeriodsByEarner(
+    [...byEarner.entries()].map(([key, docs]) => ({
+      key,
+      ends: docs.map((d) => slipEnd(d)).filter((e): e is string => e !== null && e.slice(0, 4) === thisYear),
+    })),
+    jobs,
+  );
 
   const earners: EarnerProjection[] = [];
   for (const [key, docs] of byEarner) {
@@ -428,7 +543,15 @@ export function payslipForecast(
     const member = family.find((m) => normName(m.name) === key)
       ?? family.find((m) => normName(m.name).split(" ")[0] !== "" && normName(m.name).split(" ")[0] === key.split(" ")[0] && normName(m.name).split(" ").slice(-1)[0] === key.split(" ").slice(-1)[0]);
     const job = member ? jobs.find((j) => normName(j.memberName) === normName(member.name)) : undefined;
-    let frequency = job?.payFrequency ?? "";
+    // ROUND 62 (R62-8): the earner's own period ends decide the
+    // frequency first (all of them, bonus slips included), then
+    // the household pattern, then sparse semi-monthly evidence;
+    // the job record is believed only when payroll evidence is
+    // silent, and the standing semi-monthly default is labelled
+    // assumed only when nothing at all spoke.
+    const ends = withEnd.map((x) => x.end);
+    const evidence = signaturePeriods(ends) ?? household.get(key) ?? (sparseSemiMonthly(ends) ? 24 : null);
+    let frequency = evidence !== null ? frequencyNameForPeriods(evidence) : (job?.payFrequency ?? "");
     let frequencyAssumed = false;
     if (!frequency) {
       frequency = "semimonthly"; // period ends on the 15th / month-end are the semimonthly signature

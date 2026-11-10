@@ -36,6 +36,7 @@ import {
   type StatementMatch,
 } from "./goals.ts";
 import type { Payslip401k, PayslipForecast } from "./payslips.ts";
+import { buildAssetRegistry, registryOwnedForAdult } from "./assetRegistry.ts";
 import type { HouseholdState, UiMember } from "./store.tsx";
 
 export interface AdultOutlook {
@@ -156,11 +157,19 @@ export function computeRetirementModel(input: {
 }): RetirementModel {
   const { state, today, slipFc, k401Totals, retBalance, retMonthly, effIncome, moneyFmt } = input;
   const g = state.goals;
+  // ROUND 62 (R62-4): the owned accounts come from the Asset
+  // Registry - the one derivation every consumer reads - instead
+  // of a name filter over the raw assets table. Document-derived
+  // accounts (an owned 401(k) statement, the HSA) are identified
+  // rows now, so adultStartingBalance's composition treats them
+  // as what they are: the fallback aggregate no longer stacks on
+  // top of an identified account.
+  const registry = buildAssetRegistry(state);
   const adults = state.family.filter((m) => m.role === "self" || m.role === "spouse");
   const relevantDocsExist = state.intake.documents.some((d) => d.docType === "payslip" || d.docType === "401k_statement");
   const adultOutlook: AdultOutlook[] = adults.map((m) => {
     const age = ageOn(m.dob, today);
-    const owned = state.assets.filter((a) => (a.kind === "401k" || a.kind === "ira" || a.kind === "hsa") && m.name.trim() !== "" && a.ownerName.trim().toLowerCase() === m.name.trim().toLowerCase());
+    const owned = registryOwnedForAdult(registry, m);
     // Statement precedence (round 51, Copilot's source doctrine:
     // statements say what the household HAS): an owned 401(k)
     // statement's ending balance is this adult's 401(k) starting

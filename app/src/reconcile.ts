@@ -130,7 +130,130 @@ export function resolveFields(docs: DocumentRecord[], fieldKeys: string[] = BALA
 /** The household HSA's resolved facts: every hsa_statement record
  * is a source (the SA tax forms are NOT - workstream E). */
 export function hsaResolution(docs: DocumentRecord[]): AccountResolution {
-  return resolveFields(docs.filter((d) => d.docType === "hsa_statement"));
+  return resolveFields(eligibleDocs(docs).filter((d) => d.docType === "hsa_statement"));
+}
+
+// ---------------------------------------------------------------------------
+// ROUND 62 (trust layer) - cross-account contamination: the screen,
+// the read-path defense and the load-time repair.
+// ---------------------------------------------------------------------------
+//
+// Round 60's validateCanonicalEvidence guards the SAVE path. It
+// cannot help a record that is already stored - and the owner's
+// device holds exactly one: an hsa_statement whose ending_balance
+// is the Fidelity sidebar's 401(k) figure ($271,019.12), captured
+// 2026-11-09 with no statement_as_of, so per-field freshness made
+// it the HSA's current balance over the October statement. Three
+// layers close it:
+//
+// (a) the extraction root is fixed in parseHsaPageFields
+//     (statementSections.ts): an HSA page's balance is read from
+//     the HSA's own block, never from a sidebar account's block.
+// (b) repairContaminatedDocuments (below) runs on every load: a
+//     contaminated record is re-derived from its retained text
+//     with the corrected reader; what cannot be cleanly
+//     re-derived is QUARANTINED - kept in state, excluded from
+//     every resolution, and reported in the reprocess banner.
+// (c) the read-path defense: eligibleDocs excludes quarantined
+//     and currently-contaminated records from every resolution,
+//     so a contaminated record never wins a field even before
+//     the repair has run - freshness never rehabilitates a fact
+//     that fails cross-account validation.
+
+/** Indices of hsa_statement records whose ending balance matches
+ * a KNOWN 401(k) balance (another record's 401k_statement ending
+ * balance) within $1 - round 60's rule 1 applied to stored state.
+ * Quarantined records are already excluded and are not re-flagged. */
+export function contaminatedHsaIndices(docs: DocumentRecord[]): Set<number> {
+  const known: number[] = [];
+  for (const d of docs) {
+    if (d.docType !== "401k_statement") continue;
+    const v = fieldNum(d.fields, "ending_balance");
+    if (v !== null && v > 0) known.push(v);
+  }
+  const out = new Set<number>();
+  docs.forEach((d, i) => {
+    if (d.docType !== "hsa_statement" || d.quarantined) return;
+    const b = fieldNum(d.fields, "ending_balance");
+    if (b === null || b <= 0) return;
+    if (known.some((k) => Math.abs(k - b) <= 1)) out.add(i);
+  });
+  return out;
+}
+
+/** The records a resolution may read: never quarantined, never
+ * currently contaminated. Every account resolution in this module
+ * (and the asset registry) reads through this filter. */
+export function eligibleDocs(docs: DocumentRecord[]): DocumentRecord[] {
+  const bad = contaminatedHsaIndices(docs);
+  if (bad.size === 0 && !docs.some((d) => d.quarantined)) return docs;
+  return docs.filter((d, i) => !d.quarantined && !bad.has(i));
+}
+
+export interface RepairResult {
+  docs: DocumentRecord[];
+  notes: string[];
+  repaired: number;
+  quarantined: number;
+}
+
+/** The load-time repair (R62-1b). For every contaminated HSA
+ * record: re-derive the page-owned fields (ending balance, total
+ * contributions, employer contribution) from the retained text
+ * with the corrected page reader. A field the corrected reader
+ * does not find on the page is REMOVED - the stored figure came
+ * from the same broken read and is unknown, not a documented
+ * zero (R62-3). When no clean re-derivation exists (no retained
+ * text, no balance found, or the re-derived balance still
+ * matches the 401(k)), the record is quarantined instead.
+ * Idempotent: a repaired record no longer matches, and a
+ * quarantined record is never re-processed, so later loads are
+ * silent. Pure: the caller persists the result. */
+export function repairContaminatedDocuments(docs: DocumentRecord[]): RepairResult {
+  const bad = contaminatedHsaIndices(docs);
+  if (bad.size === 0) return { docs, notes: [], repaired: 0, quarantined: 0 };
+  const known401k: number[] = [];
+  for (const d of docs) {
+    if (d.docType !== "401k_statement") continue;
+    const v = fieldNum(d.fields, "ending_balance");
+    if (v !== null && v > 0) known401k.push(v);
+  }
+  const notes: string[] = [];
+  let repaired = 0;
+  let quarantined = 0;
+  const out = docs.map((doc, i) => {
+    if (!bad.has(i)) return doc;
+    const stored = fieldNum(doc.fields, "ending_balance");
+    const label = `an HSA reading captured ${doc.capturedOn ?? "on an unknown date"}`;
+    let candidate: number | null = null;
+    let pageFields: Record<string, string> = {};
+    if (doc.rawText) {
+      try {
+        const r = extractFields(parseHsaPageFields(doc.rawText), "hsa_statement");
+        pageFields = Object.fromEntries(Object.entries(r.fields).map(([k, v]) => [k, String(v)]));
+        const c = fieldNum(pageFields, "ending_balance");
+        if (c !== null && c > 0 && !known401k.some((k) => Math.abs(k - c) <= 1)) candidate = c;
+      } catch { /* no clean re-derivation: quarantine below */ }
+    }
+    if (candidate !== null && stored !== null && Math.abs(candidate - stored) > 0.005) {
+      const fields: Record<string, string> = { ...(doc.fields ?? {}) };
+      for (const key of ["ending_balance", "total_contributions", "employer_contribution"]) {
+        if (pageFields[key] !== undefined && pageFields[key] !== "") fields[key] = pageFields[key];
+        else delete fields[key];
+      }
+      repaired++;
+      notes.push(`HomeTower repaired ${label}: its balance had been read from another account on the same page (${money2(stored)}). Re-read from the HSA's own part of the page, the balance is ${money2(candidate)} - the wrong figure no longer feeds any balance or forecast.`);
+      return { ...doc, fields };
+    }
+    quarantined++;
+    notes.push(`HomeTower quarantined ${label}: its balance (${stored !== null ? money2(stored) : "unknown"}) matches a known 401(k) account and the original page could not be re-read cleanly, so the reading no longer feeds any balance or forecast. Upload the HSA page again to restore it.`);
+    return {
+      ...doc,
+      quarantined: true,
+      quarantineReason: "Balance matches a known 401(k) account; the original page could not be re-read cleanly.",
+    };
+  });
+  return { docs: out, notes, repaired, quarantined };
 }
 
 export interface HsaBalanceSnapshots {
@@ -152,7 +275,7 @@ export interface HsaBalanceSnapshots {
  * (records carrying a statement period end) can be the snapshot,
  * and only when strictly earlier than the current balance. */
 export function hsaBalanceSnapshots(docs: DocumentRecord[]): HsaBalanceSnapshots {
-  const stmts = docs.filter((d) => d.docType === "hsa_statement");
+  const stmts = eligibleDocs(docs).filter((d) => d.docType === "hsa_statement");
   const current = resolveFields(stmts).fields.ending_balance;
   let statementSnapshot: HsaBalanceSnapshots["statementSnapshot"] = null;
   if (current.value !== null && current.asOf) {
@@ -171,7 +294,7 @@ export function hsaBalanceSnapshots(docs: DocumentRecord[]): HsaBalanceSnapshots
 /** One child's resolved 529 facts, from the statements assigned to
  * that child on their confirm cards. */
 export function eduResolutionFor(docs: DocumentRecord[], childId: string): AccountResolution {
-  return resolveFields(docs.filter((d) => d.docType === "529_statement" && d.ownerMemberId === childId));
+  return resolveFields(eligibleDocs(docs).filter((d) => d.docType === "529_statement" && d.ownerMemberId === childId));
 }
 
 /** ROUND 59 (TRACE D) - the household 529 pace: the freshest
@@ -186,10 +309,11 @@ export function eduMonthlyTotal(
   children: { id: string; name: string }[],
 ): { total: number; perChild: { childId: string; name: string; monthly: number }[] } {
   const perChild: { childId: string; name: string; monthly: number }[] = [];
+  const pool = eligibleDocs(docs);
   for (const child of children) {
-    let owned = docs.filter((d) => d.docType === "529_statement" && d.ownerMemberId === child.id);
+    let owned = pool.filter((d) => d.docType === "529_statement" && d.ownerMemberId === child.id);
     if (!owned.length && firstName(child.name)) {
-      owned = docs.filter((d) => d.docType === "529_statement" && !d.ownerMemberId
+      owned = pool.filter((d) => d.docType === "529_statement" && !d.ownerMemberId
         && firstName(d.fields?.["beneficiary_name"] ?? "") === firstName(child.name));
     }
     let best: { monthly: number; asOf: string } | null = null;
@@ -236,7 +360,7 @@ export function hsaContributionReconciliation(
   // The freshest HSA statement reading on file: its owner and its
   // own confirmed contributions YTD.
   let stmt: DocumentRecord | null = null;
-  for (const d of docs) {
+  for (const d of eligibleDocs(docs)) {
     if (d.docType !== "hsa_statement") continue;
     if (!stmt || docAsOf(d) >= docAsOf(stmt)) stmt = d;
   }
@@ -284,7 +408,7 @@ export interface HsaReconYear {
  * as-of falls in the year. Years are never merged. */
 export function hsaReconciliation(docs: DocumentRecord[], matchedByYear: Record<string, number>): HsaReconYear[] {
   const byYear = new Map<number, { distributions: number; source: "1099-SA" | "statement"; asOf: string }>();
-  for (const d of docs) {
+  for (const d of eligibleDocs(docs)) {
     if (d.docType !== "hsa_statement") continue;
     const dist = fieldNum(d.fields, "distributions_ytd");
     if (dist === null || dist <= 0) continue;
@@ -346,9 +470,9 @@ export function eduReconYearsFor(
   child: { id: string; name: string },
   verifiedByChildYear: Record<string, number>,
 ): EduReconYear[] {
-  let owned = docs.filter((d) => d.docType === "529_statement" && d.ownerMemberId === child.id);
+  let owned = eligibleDocs(docs).filter((d) => d.docType === "529_statement" && d.ownerMemberId === child.id);
   if (!owned.length && firstName(child.name)) {
-    owned = docs.filter((d) => d.docType === "529_statement" && !d.ownerMemberId
+    owned = eligibleDocs(docs).filter((d) => d.docType === "529_statement" && !d.ownerMemberId
       && firstName(d.fields?.["beneficiary_name"] ?? "") === firstName(child.name));
   }
   const byYear = new Map<number, { dist: number; asOf: string }>();

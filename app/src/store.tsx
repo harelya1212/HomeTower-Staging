@@ -6,7 +6,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { DocumentRecord, HouseholdIntake, Member } from "../engine/intake.ts";
 import { ocrMapsPack } from "../engine/packs.ts";
-import { reprocessDocuments } from "./reconcile.ts";
+import { buildAssetRegistry, registryHasKind } from "./assetRegistry.ts";
+import { repairContaminatedDocuments, reprocessDocuments } from "./reconcile.ts";
 
 /** The Retirement Lifestyle page's working state (round 48): the
  * household's spending today, per category, with each lifestyle
@@ -107,6 +108,7 @@ export interface UiMember {
   eduBalance: number; // this child's saved balance
   eduMonthly: number; // this child's monthly contribution
   eduAnnualCost: number; // expected cost per college year, 0 = unset
+  eduCostSource?: "user" | "default" | null; // round 62 (R62-9): "user" = typed in My House, "default" = written by a cost preset; absent on legacy state (migrated at load - see coerceState)
   eduInState: boolean; // true = in-state costs, false = out-of-state
   eduRoomBoard: boolean; // true = cost includes room & board
   eduScholarshipYear: number; // expected scholarship per year
@@ -246,14 +248,17 @@ export function defaultState(): HouseholdState {
   };
 }
 
-/** SPEC45 sec. 16 profile signals, derived from the My House tables. */
+/** SPEC45 sec. 16 profile signals. Round 62 (R62-4): derived
+ * from the Asset Registry, so an account a document proves counts
+ * even when the user never typed a row for it in My House. */
 export function buildProfileExtras(state: HouseholdState) {
+  const registry = buildAssetRegistry(state);
   return {
-    hasHsa: state.assets.some((a) => a.kind === "hsa"),
-    hasBrokerage: state.assets.some((a) => a.kind === "brokerage"),
-    hasRental: state.assets.some((a) => a.kind === "rental"),
+    hasHsa: registryHasKind(registry, "hsa"),
+    hasBrokerage: registryHasKind(registry, "brokerage"),
+    hasRental: registryHasKind(registry, "rental"),
     hasCollegeStudent:
-      state.family.some((m) => m.role === "child" && m.studentNow) || state.assets.some((a) => a.kind === "529"),
+      state.family.some((m) => m.role === "child" && m.studentNow) || registryHasKind(registry, "529"),
   };
 }
 
@@ -363,6 +368,32 @@ export function coerceState(parsed: Partial<HouseholdState>): HouseholdState {
     merged.intake = { ...merged.intake, documents: rp.docs };
     if (rp.notes.length) merged.reprocessNotes = rp.notes;
   } catch { /* the saved state stands */ }
+  // Round 62 (trust layer, R62-1b): the contamination repair runs
+  // on EVERY load, after reprocessing - a stored HSA reading whose
+  // balance is another account's figure is re-derived from its
+  // retained text, or quarantined when it cannot be. Idempotent:
+  // once repaired or quarantined, later loads are silent. Its
+  // notes join the same banner family on Documents.
+  try {
+    const rep = repairContaminatedDocuments(merged.intake.documents ?? []);
+    if (rep.repaired > 0 || rep.quarantined > 0) {
+      merged.intake = { ...merged.intake, documents: rep.docs };
+      merged.reprocessNotes = [...merged.reprocessNotes, ...rep.notes];
+    }
+  } catch { /* the saved state stands */ }
+  // Round 62 (R62-9): education cost provenance migration. Stored
+  // costs saved before provenance existed are stamped by the only
+  // rule that can tell them apart: a value equal to one of the
+  // My House preset figures (11,000 / 29,000 / 44,000 / 60,000) is
+  // indistinguishable from a preset write, so it is NOT confirmed
+  // (R62-3: indistinguishable means not confirmed); any other
+  // positive value could only have been typed, so it is the
+  // user's. New writes stamp themselves at the source.
+  const EDU_PRESET_COSTS = new Set([11000, 29000, 44000, 60000]);
+  merged.family = merged.family.map((m) => {
+    if (m.eduCostSource !== undefined || !(m.eduAnnualCost > 0)) return m;
+    return { ...m, eduCostSource: EDU_PRESET_COSTS.has(m.eduAnnualCost) ? "default" as const : "user" as const };
+  });
   // Migrate legacy member roles saved before the vocabulary bridge:
   // any role outside the engine's three words is mapped now, using
   // the family table (matched by name) for the student flag.

@@ -521,14 +521,43 @@ export function parseHsaPageFields(text: string): RawField[] {
   if (!/health savings account/i.test(text) || !/balance/i.test(text)) return [];
   const lines = text.split(/\r?\n/);
   const out: RawField[] = [];
+  // ROUND 62 (trust layer, R62-1a) - the balance must be HSA-local.
+  // The Fidelity balances page lists EVERY account in a sidebar
+  // before the HSA block: the old first-"balance"-line rule read
+  // the sidebar's first figure (the 401(k)'s $271,019.12) as the
+  // HSA balance on the owner's device. The page is read in BLOCKS:
+  // an account heading line opens a block, and a balance line
+  // belongs to the block it sits in. A balance inside another
+  // account's block (401(k), 529, IRA, brokerage) is never the
+  // HSA's; a balance inside the HSA block wins over any unblocked
+  // candidate; only when no block structure exists at all does
+  // the historical first-candidate rule apply. A stray cross-link
+  // ("Go to NetBenefits") is not a heading - it opens no block,
+  // so the real page's own layout still reads correctly.
+  const headingKind = (line: string): "hsa" | "other" | null => {
+    // Cross-links are stripped first: "Go to NetBenefits" on the
+    // HSA page's own balance line is a link, not an account block.
+    const stripped = line.replace(/go to netbenefits[^ ]*/gi, "");
+    if (/health savings account/i.test(stripped)) return "hsa";
+    if (/401\(k\)|\b401k\b|netbenefits|retirement savings|\bira\b|\b529\b|college savings|brokerage/i.test(stripped)) return "other";
+    return null;
+  };
+  const candidates: { value: string; block: "hsa" | "other" | null }[] = [];
+  let block: "hsa" | "other" | null = null;
   for (let i = 0; i < lines.length; i++) {
-    if (!/\bbalance\b/i.test(lines[i]) || lines[i].length > 80) continue;
-    for (let j = i; j <= Math.min(i + 3, lines.length - 1); j++) {
-      const m = lines[j].match(FIRST_MONEY);
-      if (m) { out.push({ key: "statement ending balance", value: m[0], confidence: 0.9 }); break; }
+    const selfKind = headingKind(lines[i]);
+    if (/\bbalance\b/i.test(lines[i]) && lines[i].length <= 80) {
+      for (let j = i; j <= Math.min(i + 3, lines.length - 1); j++) {
+        const m = lines[j].match(FIRST_MONEY);
+        if (m) { candidates.push({ value: m[0], block: selfKind ?? block }); break; }
+      }
     }
-    if (out.length) break;
+    if (selfKind) block = selfKind;
   }
+  const chosen = candidates.find((c) => c.block === "hsa")
+    ?? candidates.find((c) => c.block === null)
+    ?? null;
+  if (chosen) out.push({ key: "statement ending balance", value: chosen.value, confidence: 0.9 });
   const proximity = (labelRe: RegExp, key: string) => {
     for (let i = 0; i < lines.length; i++) {
       if (!labelRe.test(lines[i])) continue;
