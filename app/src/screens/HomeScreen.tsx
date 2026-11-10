@@ -10,9 +10,11 @@ import { stateTaxModelInfo } from "../../engine/state.ts";
 import { domainAccuracy } from "../domainAccuracy.ts";
 import { GREEN, RED, RefundGauge, RingGauge, YELLOW } from "../components/Gauge.tsx";
 import { StateFlag } from "../components/StateFlag.tsx";
-import { ageOn, educationLine, educationOutlookFor, faceStatusFor } from "../goals.ts";
+import { ageOn, DEFAULT_EDU_ANNUAL_COST, educationLine, educationOutlookFor, faceStatusFor } from "../goals.ts";
+export { DEFAULT_EDU_ANNUAL_COST };
 import RetirementDetails from "../components/RetirementDetails.tsx";
 import RetirementTimeline from "../components/RetirementTimeline.tsx";
+import { buildAssetRegistry } from "../assetRegistry.ts";
 import { computeRetirementModel } from "../retirementModel.ts";
 import { reconciliationTasks } from "../reconcile.ts";
 import { isoToUs } from "../components/Fields.tsx";
@@ -45,7 +47,9 @@ export function moneyShort(x: number): string {
  * unscored). Roughly the published average for an in-state public
  * four-year year including room & board - always labelled on screen
  * as a default, and replaced the moment a real figure is set. */
-export const DEFAULT_EDU_ANNUAL_COST = 24000;
+// Round 62: the constant itself lives in goals.ts now (one
+// source for the screens and the forecast snapshot); this
+// re-export keeps existing imports working.
 
 export default function HomeScreen() {
   const { state, loaded } = useHousehold();
@@ -105,12 +109,17 @@ export default function HomeScreen() {
   const selfMember = state.family.find((m) => m.role === "self") ?? state.family.find((m) => m.role === "spouse");
   const selfAge = selfMember ? ageOn(selfMember.dob, today) : null;
   const yearsToRetire = selfAge !== null && selfMember ? Math.max(0, (selfMember.retireAge || 67) - selfAge) : g.retirementYears;
-  const retAssets = state.assets.filter((a) => a.kind === "401k" || a.kind === "ira");
-  const eduAssets = state.assets.filter((a) => a.kind === "529");
-  const retBalance = retAssets.length ? retAssets.reduce((s, a) => s + a.value, 0) : g.retirementBalance;
-  const retMonthly = retAssets.length ? retAssets.reduce((s, a) => s + a.monthly, 0) : g.retirementMonthly;
-  const eduBalance = eduAssets.length ? eduAssets.reduce((s, a) => s + a.value, 0) : g.eduBalance;
-  const eduMonthly = eduAssets.length ? eduAssets.reduce((s, a) => s + a.monthly, 0) : g.eduMonthly;
+  // ROUND 62 (R62-4): balances come from the Asset Registry - the
+  // one derivation from documents + user entries - not from the
+  // raw assets table (on a documents-first household that table
+  // can hold a single home row while the statements prove every
+  // balance). The goal aggregates remain the fallback only when
+  // the registry identifies no account of the kind at all.
+  const registry = useMemo(() => buildAssetRegistry(state), [state]);
+  const retBalance = registry.retirementAccounts.length ? registry.retirementTotal : g.retirementBalance;
+  const retMonthly = registry.retirementAccounts.length ? registry.retirementMonthly : g.retirementMonthly;
+  const eduBalance = registry.educationAccounts.length ? registry.educationTotal : g.eduBalance;
+  const eduMonthly = registry.educationAccounts.length ? registry.educationMonthly : g.eduMonthly;
   // Owner QA round 8: targets are per person / per child when set -
   // the rings use the sum of the personal targets; the single Intake
   // goal fields remain the fallback.
@@ -153,7 +162,15 @@ export default function HomeScreen() {
   // child on default costs is early-estimate, never a red verdict)
   // is built by goals.educationOutlookFor so it is pinned in the
   // suite; this screen only renders it.
-  const eduOutlook = educationOutlookFor(children, today, g.assumedReturnPct, DEFAULT_EDU_ANNUAL_COST)
+  // ROUND 62 (R62-4): a child's 529 balance comes from the
+  // registry (their statement) when one is on file - the My
+  // House field remains the fallback for children without a
+  // statement, and their monthly stays their own savings plan.
+  const eduChildren = children.map((c) => {
+    const acct = registry.byKey.get(`529:${c.id}`);
+    return acct ? { ...c, eduBalance: acct.value } : c;
+  });
+  const eduOutlook = educationOutlookFor(eduChildren, today, g.assumedReturnPct, DEFAULT_EDU_ANNUAL_COST)
     .map((e) => ({ ...e, c: e.child }));
 
   // ROUND 60 (P1-C): per-domain accuracy. Each forecast area

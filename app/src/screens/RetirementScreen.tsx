@@ -21,6 +21,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import RetirementDetails from "../components/RetirementDetails.tsx";
 import { monthYearLabel, prescriptionLevel, recommendedActionText } from "../goals.ts";
 import { payslip401kTotals, payslipForecast } from "../payslips.ts";
+import { buildAssetRegistry } from "../assetRegistry.ts";
 import { computeRetirementModel } from "../retirementModel.ts";
 import { setWizardIntent, todayIso, useHousehold, type RetirementSection } from "../store.tsx";
 import { money, moneyShort, NAVY, TEAL } from "./HomeScreen.tsx";
@@ -44,9 +45,11 @@ export default function RetirementScreen({ section, onSelectSection, onBack }: {
     () => payslip401kTotals(state.intake.documents, today, state.jobs),
     [state.intake.documents, today, state.jobs],
   );
-  const retAssets = state.assets.filter((a) => a.kind === "401k" || a.kind === "ira");
-  const retBalance = retAssets.length ? retAssets.reduce((s, a) => s + a.value, 0) : state.goals.retirementBalance;
-  const retMonthly = retAssets.length ? retAssets.reduce((s, a) => s + a.monthly, 0) : state.goals.retirementMonthly;
+  // ROUND 62 (R62-4): balances from the Asset Registry, as on
+  // Home - one derivation for every consumer.
+  const registry = useMemo(() => buildAssetRegistry(state), [state]);
+  const retBalance = registry.retirementAccounts.length ? registry.retirementTotal : state.goals.retirementBalance;
+  const retMonthly = registry.retirementAccounts.length ? registry.retirementMonthly : state.goals.retirementMonthly;
   const effIncome = slipFc ? slipFc.projectedTaxable : state.grossIncome;
   const model = computeRetirementModel({ state, today, slipFc, k401Totals, retBalance, retMonthly, effIncome, moneyFmt: money });
   const g = state.goals;

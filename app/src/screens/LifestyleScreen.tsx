@@ -304,7 +304,10 @@ export default function LifestyleScreen() {
   // the EARLIER adult retirement year (date of birth + retire age).
   const thisYear = Number(today.slice(0, 4));
   const collegeEndYear = (c: (typeof children)[number]): number | null => {
-    if (c.studentNow) return thisYear + (c.yearsLeftInCollege > 0 ? c.yearsLeftInCollege : c.eduDurationYears || 4);
+    // Round 62 (R62-9): a current student's stored years-left is
+    // authoritative including 0 - the college end is this year,
+    // not a fresh duration from now.
+    if (c.studentNow) return thisYear + Math.max(0, c.yearsLeftInCollege || 0);
     let start = c.collegeStartYear > 0 ? c.collegeStartYear : null;
     if (start === null) {
       const age = ageOn(c.dob, today);

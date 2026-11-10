@@ -217,17 +217,17 @@ export default function MyHouseScreen() {
               <Text style={styles.label}>Where will they study?</Text>
               <View style={styles.chipWrap}>
                 {([true, false] as const).map((v) => (
-                  <Pressable key={String(v)} onPress={() => patchMember(m.id, { eduInState: v, eduAnnualCost: eduCostPreset(v, m.eduRoomBoard) })} style={[styles.chip, m.eduInState === v && styles.chipOn]}>
+                  <Pressable key={String(v)} onPress={() => patchMember(m.id, { eduInState: v, eduAnnualCost: eduCostPreset(v, m.eduRoomBoard), eduCostSource: "default" as const })} style={[styles.chip, m.eduInState === v && styles.chipOn]}>
                     <Text style={[styles.chipText, m.eduInState === v && styles.chipTextOn]}>{v ? "In-state" : "Out-of-state"}</Text>
                   </Pressable>
                 ))}
               </View>
               <View style={styles.toggleRow}>
                 <Text style={styles.label}>Include room & board in the cost</Text>
-                <Switch value={m.eduRoomBoard} onValueChange={(v) => patchMember(m.id, { eduRoomBoard: v, eduAnnualCost: eduCostPreset(m.eduInState, v) })} />
+                <Switch value={m.eduRoomBoard} onValueChange={(v) => patchMember(m.id, { eduRoomBoard: v, eduAnnualCost: eduCostPreset(m.eduInState, v), eduCostSource: "default" as const })} />
               </View>
               <Text style={styles.label}>Expected cost per year ($) - typical US averages filled in, edit to your school</Text>
-              <TextInput style={styles.input} value={m.eduAnnualCost ? String(m.eduAnnualCost) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduAnnualCost: num(v) })} placeholder="e.g. 29000" />
+              <TextInput style={styles.input} value={m.eduAnnualCost ? String(m.eduAnnualCost) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduAnnualCost: num(v), eduCostSource: num(v) > 0 ? "user" as const : null })} placeholder="e.g. 29000" />
               <Text style={styles.label}>Expected scholarship per year ($)</Text>
               <TextInput style={styles.input} value={m.eduScholarshipYear ? String(m.eduScholarshipYear) : ""} keyboardType="numeric" onChangeText={(v) => patchMember(m.id, { eduScholarshipYear: num(v) })} placeholder="0" />
               <Text style={styles.label}>Years of college to fund</Text>

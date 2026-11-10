@@ -22,6 +22,8 @@ import {
   portfolioTotalOf, segmentStatement, statementPeriodOf,
   type K401Detail, type SaFormParse, type StatementPeriod, type StatementSection,
 } from "../statementSections.ts";
+import { invariantViolations, runInvariants } from "../invariants.ts";
+import { kpiLineage, lineageCoverage } from "../kpiLineage.ts";
 import { boundRawText, dateLabel, eduMonthlyTotal, eduReconYearsFor, eduResolutionFor, eduVerifiedKey, EXTRACTOR_VERSION, fingerprintForSave, hsaBalanceSnapshots, hsaContributionReconciliation, hsaReconciliation, hsaResolution, monthNameOf, monthYearOf, sourceLabelFor, upsertDocument, validateCanonicalEvidence } from "../reconcile.ts";
 import { ocrMapsPack } from "../../engine/packs.ts";
 import { pickFiles, pickImageFiles } from "../filePick";
@@ -445,12 +447,18 @@ export default function DocumentsScreen() {
       // was automatic and the classifier missed the document
       // entirely, the signature identifies it and the reading
       // saves as an HSA statement.
-      const pageFields = result.fields["ending_balance"] === undefined ? hsaPageDetectedFields(text) : null;
+      const pageFields = hsaPageDetectedFields(text);
       if (pageFields && useType === "hsa_statement") {
         const extra = extractFields(pageFields, "hsa_statement");
         const mergedFields = { ...result.fields };
         for (const [k, v] of Object.entries(extra.fields)) {
-          if (mergedFields[k] === undefined) mergedFields[k] = v;
+          // ROUND 62 (R62-1a): for the ending balance the page
+          // read WINS over the generic pairing - the page reader
+          // is block-aware (it reads the HSA's own block, never a
+          // sidebar account's), while the generic label pairing
+          // can pair a "balance" label in the sidebar with the
+          // 401(k)'s figure. Every other field still fills only.
+          if (k === "ending_balance" || mergedFields[k] === undefined) mergedFields[k] = v;
         }
         result = { ...result, fields: mergedFields };
       } else if (pageFields && namedType == null && !form && detected.docType === "other") {
@@ -1171,6 +1179,14 @@ export default function DocumentsScreen() {
   // first, then any member's owned statement); ESPP and HSA read
   // off the payslips via payslipDeductionTotals.
   const dedTotals = useMemo(() => payslipDeductionTotals(docs, today, state.jobs), [docs, today, state.jobs]);
+  // ROUND 62 (R62-5 + R62-7): the developer diagnostics - runtime
+  // invariant verdicts over canonical state, and the KPI lineage
+  // ("Why this number?") traces. Developer-only: collapsed behind
+  // one row at the bottom of this screen's model, rendered in the
+  // diagnostics block after the re-read banner.
+  const invariantResults = useMemo(() => runInvariants(state, today), [state, today]);
+  const lineageTraces = useMemo(() => kpiLineage(state, today), [state, today]);
+  const [showDiag, setShowDiag] = useState(false);
   const matchHouseholdLine = (() => {
     const k = payslip401kTotals(docs, today);
     const slipMatch = k ? k.perEarner.reduce<number | null>((acc, e) => (e.matchMonthlyPace === null ? acc : (acc ?? 0) + e.matchMonthlyPace), null) : null;
@@ -1368,6 +1384,29 @@ export default function DocumentsScreen() {
           <Pressable onPress={() => update({ reprocessNotes: [] })}><Text style={styles.remove}>Dismiss</Text></Pressable>
         </View>
       )}
+
+      {/* ROUND 62 (R62-5 + R62-7): developer diagnostics - the
+          runtime invariants over canonical state and the "Why
+          this number?" lineage for every material Home KPI. */}
+      <View style={styles.assignBanner}>
+        <Pressable onPress={() => setShowDiag(!showDiag)}>
+          <Text style={styles.assignText}>
+            Developer diagnostics: {invariantViolations(invariantResults)} invariant violation{invariantViolations(invariantResults) === 1 ? "" : "s"} - KPI lineage coverage {Math.round(lineageCoverage(lineageTraces) * 100)}% {showDiag ? "(hide)" : "(show)"}
+          </Text>
+        </Pressable>
+        {showDiag && (
+          <View>
+            {invariantResults.map((r, i) => (
+              <Text key={`inv-${i}`} style={styles.assignText}>{r.ok ? "OK" : "VIOLATION"} - {r.rule}: {r.detail}</Text>
+            ))}
+            {lineageTraces.map((t, i) => (
+              <Text key={`lin-${i}`} style={styles.assignText}>
+                Why this number? {t.kpi} = {t.displayed} - from {t.sources.join("; ") || "no document source"}{t.accounts.length ? ` - accounts: ${t.accounts.join(", ")}` : ""} - facts: {t.facts.map((f) => `${f.field} ${f.value ?? ""} (${f.docType}, as of ${f.asOf ?? "unknown"}, ref ${f.docRef})`).join("; ") || "none"}
+              </Text>
+            ))}
+          </View>
+        )}
+      </View>
 
 
       <Text style={styles.section}>Upload any document</Text>
