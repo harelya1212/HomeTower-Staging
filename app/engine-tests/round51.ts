@@ -141,11 +141,18 @@ const jobsAB = [
   const c5 = adultStartingBalance({ owned: [], fallback: 0, statement401k: 250000 });
   eq("statement, nothing entered: statement is the start", c5.balance, 250000);
   eq("statement, nothing entered: applied", c5.statementApplied, true);
-  // Statement + household-aggregate fallback: no guessing - the
-  // fallback already lumps every 401(k)/IRA row, so it stands.
+  // ROUND 60 (P0-A) SUPERSEDES the round-51 c6 expectation: the
+  // owned statement applies ALWAYS - the household-aggregate
+  // fallback no longer defeats it. The fallback rides along as a
+  // genuinely unmapped residual, reported separately, never as a
+  // reason to ignore the statement (Copilot's golden case:
+  // fallback > 0, ownedRows = [], statement401k > 0).
   const c6 = adultStartingBalance({ owned: [], fallback: 90000, statement401k: 250000 });
-  eq("statement + aggregate fallback: fallback stands", c6.balance, 90000);
-  eq("statement + aggregate fallback: not applied", c6.statementApplied, false);
+  eq("statement + aggregate fallback: statement applies over the fallback", c6.balance, 340000);
+  eq("statement + aggregate fallback: applied", c6.statementApplied, true);
+  eq("statement + aggregate fallback: residual reported separately", c6.unmappedFallback, 90000);
+  eq("statement + aggregate fallback: nothing identified", c6.knownOwnedNon401k, 0);
+  eq("statement + aggregate fallback: statement part", c6.statementAmount, 250000);
 }
 
 // ---- 4. Owner harness: unchanged end to end ------------------------

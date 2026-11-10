@@ -244,7 +244,14 @@ eq("required portfolio floors at 0", requiredPortfolioFor(30000, 40000, 0.04), 0
   eq("harness accuracy still X", model.accuracy.level, "X");
   eq("harness spending tier still none (placeholder)", model.spendingTier, "none");
   eq("harness placeholder spending", model.spendingAnnual, 341566);
-  eq("harness projected (today's $) unchanged", Math.round(model.projectedToday), 374033);
+  // ROUND 60 (P1-B) SUPERSEDES the pre-round-60 figure of 374,033:
+  // that number embodied the blanket no-draw bridge assumption
+  // Copilot struck down. On this fixture the computed bridge gap
+  // (placeholder spending $341,566/yr against the working spouse's
+  // net $267,704/yr = $73,862/yr over the 9 bridge years) is drawn
+  // from the portfolio and exhausts the pace-only projection -
+  // the round-60 suite pins the bridge arithmetic itself.
+  eq("harness projected (today's $) after the computed bridge draw", Math.round(model.projectedToday), 0);
   eq("harness need unchanged", model.hhRet.needBase, 8539150);
   // The directional answer on the same state.
   const d = model.directional!;
