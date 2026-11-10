@@ -5,7 +5,10 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import React from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
-import AdBanner, { AD_BANNER_HEIGHT } from "./src/components/AdBanner.tsx";
+// Extensionless on purpose (round 62): Metro resolves
+// AdBanner.native.tsx (the AdMob banner) on iOS/Android and
+// AdBanner.tsx (the placeholder strip) on web.
+import AdBanner, { AD_BANNER_HEIGHT } from "./src/components/AdBanner";
 import { checkBuildFreshness } from "./src/buildCheck.ts";
 import DocumentsScreen from "./src/screens/DocumentsScreen.tsx";
 import HomeScreen, { NAVY, TEAL } from "./src/screens/HomeScreen.tsx";
