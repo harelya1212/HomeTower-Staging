@@ -97,7 +97,11 @@ export default function RetirementDetails({ model, g, householdName, k401Totals,
         </>
       )}
       {spendingTier === "quick" && (
-        <Text style={styles.line}>Spending basis: your quick estimate.</Text>
+        // ROUND 62 (R62-3): the quick-estimate target is a
+        // PLANNING estimate - it must never read as if its
+        // unknowns (Social Security above all) were confirmed
+        // zeros, so the missing components are named right here.
+        <Text style={styles.line}>Spending basis: your quick estimate. The {moneyShort(hhRet.needBase)} target is a planning estimate, not a confirmed forecast - it does not assume Social Security or a pension is $0; those are simply not in yet. Still missing: {accuracy.missing.length ? accuracy.missing.join("; ") : "nothing major"}.</Text>
       )}
       <Pressable onPress={() => setShowAssumptions(!showAssumptions)}>
         <Text style={styles.manualLink}>Forecast assumptions {showAssumptions ? "(hide)" : "(show)"}</Text>
