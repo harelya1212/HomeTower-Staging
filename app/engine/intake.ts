@@ -56,6 +56,14 @@ export interface DocumentRecord {
    * fingerprint is recomputed from the retained rawText whenever
    * one is needed, so they dedupe too. */
   fingerprint?: string | null;
+  /** Round 62 (trust layer): a record the load-time repair pass
+   * could not cleanly re-derive after it failed cross-account
+   * validation is QUARANTINED - it stays in state (nothing is
+   * silently deleted) but is excluded from every resolution,
+   * registry derivation and forecast until the user re-uploads
+   * the document. Absent/false on every healthy record. */
+  quarantined?: boolean | null;
+  quarantineReason?: string | null;
 }
 /** Round 48: what a bank/card statement CSV proved about household
  * spending - months of evidence and annualized outflows per

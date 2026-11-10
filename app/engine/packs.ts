@@ -6,6 +6,12 @@ import states2026 from "../packs/states-2026.json" with { type: "json" };
 import ocrFieldMaps from "../packs/ocr-field-maps.json" with { type: "json" };
 import treatyUsIl from "../packs/treaty-us-il.json" with { type: "json" };
 
+/** The engine generation (ROUND 62, R62-6). Every forecast
+ * snapshot stamps this version alongside the content-pack
+ * versions, so a figure can always be tied to the exact engine
+ * that produced it. Bump on any change to forecast semantics. */
+export const ENGINE_VERSION = "62.1.0";
+
 export type Pack = Record<string, any>;
 
 export function federalPack(): Pack {
