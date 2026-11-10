@@ -663,6 +663,153 @@ export function upsertDocument(docs: DocumentRecord[], record: DocumentRecord): 
 }
 
 // ---------------------------------------------------------------------------
+// Canonical cross-account validation (round 60, P0-B)
+// ---------------------------------------------------------------------------
+//
+// "Dedupe prevents duplication. It does not prevent a wrong
+// fact." (Copilot.) The save path used to run extract -> confirm
+// -> build record -> upsertDocument with no layer asking whether
+// the fact about to be written contradicts a fact the household
+// already holds. validateCanonicalEvidence is that layer: every
+// save (single confirm, fan-out section) runs it BEFORE
+// upsertDocument, and a blocking verdict means the reading is
+// NOT saved - the confirm flow shows the block and the user
+// decides what the document really is.
+//
+// The rules guard the HSA classification, the confusion the
+// evidence actually produces (an HSA page and a 401(k) statement
+// from the same provider look alike and carry alike figures):
+//
+// 1. CROSS-ACCOUNT BALANCE MATCH: a proposed HSA ending balance
+//    within $1 of a KNOWN 401(k) balance (an owned 401(k)
+//    statement on file, or a 401(k) asset row) blocks. The
+//    balance is the account's identity figure - two different
+//    accounts do not share it to the dollar.
+// 2. HSA IDENTITY: saving as an HSA requires at least two HSA
+//    identity signals AND balance-local HSA context. The signals
+//    are Copilot's phrase list, plus two structural anchors the
+//    extraction itself establishes: a statement section the
+//    segmenter split out on the account's own header (account id
+//    + statement period + the header phrase opening the span),
+//    and HSA deposit detail read from the section (per-payroll
+//    deposits exist only in HSA activity). Balance-local means
+//    an identity phrase appears within 600 characters of the
+//    balance figure in the text; a fields-only record (no text
+//    occurrence) is local when it carries HSA activity facts,
+//    which are only ever read from HSA-context lines.
+// 3. RETIREMENT IDENTITY: two or more distinct retirement
+//    signal types (NetBenefits, 401(k), vested, Roth in-plan,
+//    415 limit, retirement savings plan) alongside the balance
+//    block an HSA save. One stray mention does not - the real
+//    Fidelity HSA page itself carries a "Go to NetBenefits"
+//    link, and the real combined statement's HSA section
+//    mentions "vested" once, deep in its holdings; both are
+//    pinned as saves. The NetBenefits statement carries five.
+// 4. Magnitude alone never blocks: a large HSA is possible, so
+//    no rule here reads the balance's size, only its identity.
+
+export const HSA_IDENTITY_PHRASES = [
+  "health savings account", "hsa contribution", "family limit",
+  "qualified medical", "amount contributed", "employer contribution",
+];
+export const RETIREMENT_IDENTITY_SIGNALS = [
+  "netbenefits", "401(k)", "401k", "vested", "roth in-plan", "415 limit", "retirement savings plan",
+];
+export const NEEDS_REVIEW_BALANCE_MATCH = "This balance matches a known 401(k) account.";
+
+export interface CanonicalValidation {
+  status: "ok" | "needs_review";
+  /** User-facing blocking lines, in the order to show them. */
+  reasons: string[];
+  hsaPhrases: string[];
+  identityCount: number;
+  retirementTypes: string[];
+  balanceLocal: boolean;
+  matched401kBalance: number | null;
+}
+
+const money2str = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+export function validateCanonicalEvidence(input: {
+  proposedRecord: DocumentRecord;
+  existingDocuments: DocumentRecord[];
+  householdAccounts?: { kind: string; value: number }[];
+  extractedFacts?: Record<string, string>;
+}): CanonicalValidation {
+  const rec = input.proposedRecord;
+  const facts = input.extractedFacts ?? rec.fields ?? {};
+  const clean: CanonicalValidation = { status: "ok", reasons: [], hsaPhrases: [], identityCount: 0, retirementTypes: [], balanceLocal: false, matched401kBalance: null };
+  // The rules guard HSA saves; every other type passes (a wrong
+  // fact of another kind is a classification question, already
+  // the confirm card's own check).
+  if (rec.docType !== "hsa_statement") return clean;
+
+  const text = (rec.rawText ?? "").toLowerCase();
+  const balance = fieldNum(facts, "ending_balance");
+  const hsaPhrases = HSA_IDENTITY_PHRASES.filter((p) => text.includes(p));
+  const retirementTypes = [...new Set(RETIREMENT_IDENTITY_SIGNALS.filter((s) => text.includes(s)))];
+
+  // Structural anchors the extraction itself established.
+  let identityCount = hsaPhrases.length;
+  const headerAnchor = !!rec.accountId && !!facts["statement_as_of"]
+    && text.slice(0, 300).includes("health savings account");
+  if (headerAnchor) identityCount += 1;
+  const hasDepositDetail = facts["per_payroll_contribution"] !== undefined || facts["deposit_detail"] !== undefined;
+  if (hasDepositDetail) identityCount += 1;
+
+  // Balance-local HSA context.
+  let balanceLocal = false;
+  if (balance !== null && balance > 0 && text) {
+    const forms = [
+      balance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      String(balance),
+    ];
+    let idx = -1;
+    for (const f of forms) { const i = text.indexOf(f.toLowerCase()); if (i >= 0) { idx = i; break; } }
+    if (idx >= 0) {
+      const win = text.slice(Math.max(0, idx - 600), idx + 600);
+      balanceLocal = HSA_IDENTITY_PHRASES.some((p) => win.includes(p));
+    } else {
+      balanceLocal = facts["contributions_ytd"] !== undefined || facts["distributions_ytd"] !== undefined || hasDepositDetail;
+    }
+  } else if (balance === null) {
+    // No balance figure at all: nothing for the locality rule to
+    // attach to - locality is a property of a balance reading.
+    balanceLocal = true;
+  }
+
+  const reasons: string[] = [];
+  let matched401kBalance: number | null = null;
+  if (balance !== null && balance > 0) {
+    const known: number[] = [];
+    for (const d of input.existingDocuments) {
+      if (d.docType !== "401k_statement") continue;
+      const v = fieldNum(d.fields, "ending_balance");
+      if (v !== null && v > 0) known.push(v);
+    }
+    for (const a of input.householdAccounts ?? []) {
+      if (a.kind === "401k" && a.value > 0) known.push(a.value);
+    }
+    const hit = known.find((k) => Math.abs(k - balance) <= 1);
+    if (hit !== undefined) {
+      matched401kBalance = hit;
+      reasons.push(NEEDS_REVIEW_BALANCE_MATCH);
+      reasons.push(`The balance on this reading (${money2str(balance)}) equals the 401(k) balance HomeTower already holds (${money2str(hit)}). It was not saved as a health savings account.`);
+    }
+    if (retirementTypes.length >= 2) {
+      reasons.push(`This page carries 401(k) statement identity (${retirementTypes.join(", ")}) alongside its balance, so HomeTower will not save it as a health savings account.`);
+    }
+  }
+  if (balance !== null && balance > 0 && (identityCount < 2 || !balanceLocal)) {
+    reasons.push("HomeTower could not confirm this is a health savings account: an HSA saving needs at least two HSA identity signals with HSA context next to the balance. This reading was not saved as an HSA.");
+  }
+  return {
+    status: reasons.length > 0 ? "needs_review" : "ok",
+    reasons, hsaPhrases, identityCount, retirementTypes, balanceLocal, matched401kBalance,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Reprocessing (workstream G)
 // ---------------------------------------------------------------------------
 

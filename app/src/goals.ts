@@ -105,6 +105,73 @@ export function projectToCommonDate(balance: number, monthly: number, yearsContr
   return projectValue(atOwn, 0, Math.max(0, yearsTotal - yearsContributing), annualReturnPct);
 }
 
+/** ROUND 60 (P1-B) - the bridge years, computed instead of
+ * assumed. When one spouse retires before the other, the years
+ * between the two dates are the bridge. The pre-round-60 model
+ * stated as fact that the retired spouse's portfolio "keeps
+ * growing and is not drawn because the working spouse's income
+ * covers those years" - a blanket assumption, true only when the
+ * arithmetic says so. The bridge gap is now computed from the
+ * household's own figures:
+ *
+ *   bridgeGapAnnual = max(spending + healthcare + taxes
+ *     + debtService - workingSpouseNetIncome - dependableIncome, 0)
+ *
+ * and the gap, when there is one, is DRAWN from the portfolio
+ * during the bridge years (portfolioDrawDuringBridge =
+ * bridgeGapAnnual). Term sourcing lives in retirementModel.ts and
+ * is stated in the copy wherever the bridge is described: the
+ * working spouse's income enters NET of their own projected
+ * withholding, so the taxes term carries only taxes beyond that
+ * withholding (taxes on other bridge income - not modeled today,
+ * so the term is 0 until it is). */
+export interface BridgeTerms {
+  spendingAnnual: number;
+  healthcareAnnual: number;
+  taxesAnnual: number;
+  debtServiceAnnual: number;
+  workingSpouseNetAnnual: number;
+  dependableAnnual: number;
+}
+export interface BridgeModel extends BridgeTerms {
+  /** spending + healthcare + taxes + debtService. */
+  needsAnnual: number;
+  /** workingSpouseNetAnnual + dependableAnnual. */
+  incomeAnnual: number;
+  /** The annual portfolio draw during the bridge (0 = covered). */
+  gapAnnual: number;
+  covered: boolean;
+  bridgeYears: number;
+}
+export function bridgeGapAnnual(t: BridgeTerms): number {
+  return Math.max(
+    t.spendingAnnual + t.healthcareAnnual + t.taxesAnnual + t.debtServiceAnnual
+      - t.workingSpouseNetAnnual - t.dependableAnnual,
+    0,
+  );
+}
+export function bridgeModel(t: BridgeTerms, bridgeYears: number): BridgeModel {
+  const gapAnnual = bridgeGapAnnual(t);
+  return {
+    ...t,
+    needsAnnual: t.spendingAnnual + t.healthcareAnnual + t.taxesAnnual + t.debtServiceAnnual,
+    incomeAnnual: t.workingSpouseNetAnnual + t.dependableAnnual,
+    gapAnnual,
+    covered: gapAnnual <= 0,
+    bridgeYears,
+  };
+}
+/** The bridge draws accumulated to the common (later) date: a
+ * draw at each bridge year-end, grown at the portfolio's assumed
+ * return - the amount the early retiree's projected value is
+ * reduced by at the later retirement date. */
+export function accumulatedBridgeDraw(gapAnnual: number, bridgeYears: number, annualReturnPct: number): number {
+  if (gapAnnual <= 0 || bridgeYears <= 0) return 0;
+  const r = annualReturnPct / 100;
+  if (r <= 0) return gapAnnual * bridgeYears;
+  return gapAnnual * ((Math.pow(1 + r, bridgeYears) - 1) / r);
+}
+
 /** Today's purchasing power of a future amount, and its inverse
  * (round 47): retirement figures are presented in today's dollars
  * first, with the future-dollar equivalent shown second. */
@@ -514,39 +581,67 @@ export interface AdultStartingBalance {
   /** The value of the adult's own 401(k) asset rows the statement
    * replaced (0 when it replaced nothing or did not apply). */
   replaced401k: number;
+  /** ROUND 60 (P0-A): the composition of the balance, reported as
+   * three separate parts so the split is visible wherever the
+   * figure is used - the adult's identified owned assets EXCLUDING
+   * the 401(k) sleeve (their IRA/HSA rows), the owned statement's
+   * 401(k) figure itself, and the genuinely unmapped fallback
+   * residual (fallback dollars no evidence identifies as any
+   * particular account of this adult's). balance is always the
+   * sum of the three. */
+  knownOwnedNon401k: number;
+  statementAmount: number;
+  unmappedFallback: number;
 }
 
 /** One adult's projection starting balance, with statement
- * precedence (round 51): when the adult has an owned 401(k)
- * statement, its ending balance IS the starting balance of their
- * 401(k) sleeve - it replaces the sum of their own 401(k) asset
- * rows, so the same account is never counted twice; their other
- * kinds (IRA, HSA) are untouched, and the payslip pace still sets
- * future contributions either way. With no owned statement the
- * composition is exactly what it was before this round: the sum of
- * the adult's name-matched asset rows, or the caller's fallback
- * when they have none. The one case precedence does NOT reach: an
- * adult with no name-matched rows whose fallback is a household
- * aggregate (it already lumps every 401(k)/IRA row, attributed or
- * not, so the statement's dollars are in there but cannot be
- * separated back out without guessing - no guessing). */
+ * precedence (round 51; completed round 60, P0-A): when the adult
+ * has an owned 401(k) statement, its ending balance IS the
+ * starting balance of their 401(k) sleeve - it replaces the sum
+ * of their own 401(k) asset rows, so the same account is never
+ * counted twice; their other kinds (IRA, HSA) are untouched, and
+ * the payslip pace still sets future contributions either way.
+ *
+ * Round 60 removes the last exception. The pre-round-60 rule kept
+ * a household-aggregate fallback INSTEAD of the statement when
+ * the adult had no name-matched rows, on the theory that the
+ * aggregate already contained the statement's dollars. Copilot's
+ * root-cause verdict: that made the fallback defeat the statement
+ * - the document was understood, but never became the
+ * authoritative fact. Now an owned current statement replaces
+ * the owned 401(k) balance ALWAYS, and the fallback is split
+ * honestly: identified owned assets (the name-matched rows) +
+ * the statement's 401(k) + the genuinely unmapped residual,
+ * reported separately - never "statement OR household fallback".
+ * When the adult HAS name-matched rows the fallback plays no part
+ * at all (the rows are the identified assets; the aggregate is
+ * other accounts' money or unattributed, and stays out). With no
+ * owned statement the composition is exactly what it was before
+ * round 51: the owned rows, or the fallback standing alone as an
+ * unmapped residual. */
 export function adultStartingBalance(input: {
   owned: Array<{ kind: string; value: number }>;
   fallback: number;
   statement401k: number;
 }): AdultStartingBalance {
   const ownedSum = input.owned.reduce((s, a) => s + a.value, 0);
+  const own401 = input.owned.filter((a) => a.kind === "401k").reduce((s, a) => s + a.value, 0);
+  const non401 = ownedSum - own401;
   if (!(input.statement401k > 0)) {
-    return { balance: input.owned.length ? ownedSum : input.fallback, statementApplied: false, replaced401k: 0 };
+    return {
+      balance: input.owned.length ? ownedSum : input.fallback,
+      statementApplied: false, replaced401k: 0,
+      knownOwnedNon401k: non401, statementAmount: 0,
+      unmappedFallback: input.owned.length ? 0 : input.fallback,
+    };
   }
-  if (input.owned.length > 0) {
-    const own401 = input.owned.filter((a) => a.kind === "401k").reduce((s, a) => s + a.value, 0);
-    return { balance: ownedSum - own401 + input.statement401k, statementApplied: true, replaced401k: own401 };
-  }
-  if (!(input.fallback > 0)) {
-    return { balance: input.statement401k, statementApplied: true, replaced401k: 0 };
-  }
-  return { balance: input.fallback, statementApplied: false, replaced401k: 0 };
+  const unmappedFallback = input.owned.length ? 0 : Math.max(0, input.fallback);
+  return {
+    balance: non401 + input.statement401k + unmappedFallback,
+    statementApplied: true, replaced401k: own401,
+    knownOwnedNon401k: non401, statementAmount: input.statement401k,
+    unmappedFallback,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -668,6 +763,38 @@ export function statementPeriodMonths(fields: Record<string, string>): number | 
   return null;
 }
 
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** The statement's own period as a short label ("Jan-Nov 2026"),
+ * from its start/end fields or its period range string - the
+ * label provenance copy cites when a monthly pace is DERIVED
+ * from the period (round 60, P2). Null when the statement does
+ * not date its period. */
+export function statementPeriodLabel(fields: Record<string, string>): string | null {
+  const ym = (s: string | undefined): { y: number; m: number } | null => {
+    if (!s) return null;
+    const iso = /^(\d{4})-(\d{2})-\d{2}/.exec(s);
+    if (iso) return { y: Number(iso[1]), m: Number(iso[2]) };
+    const us = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);
+    if (us) return { y: Number(us[3]), m: Number(us[1]) };
+    return null;
+  };
+  let start = ym(fields["statement_period_start"]);
+  let end = ym(fields["statement_period_end"]);
+  if (!start || !end) {
+    const range = fields["statement_period"];
+    const dates = range ? range.match(/\d{1,2}\/\d{1,2}\/\d{4}|\d{4}-\d{2}-\d{2}/g) : null;
+    if (dates && dates.length >= 2) {
+      start = start ?? ym(dates[0]);
+      end = end ?? ym(dates[dates.length - 1]);
+    }
+  }
+  if (!start || !end) return null;
+  return start.y === end.y
+    ? `${MONTH_ABBR[start.m - 1]}-${MONTH_ABBR[end.m - 1]} ${end.y}`
+    : `${MONTH_ABBR[start.m - 1]} ${start.y}-${MONTH_ABBR[end.m - 1]} ${end.y}`;
+}
+
 export interface StatementMatch {
   /** Monthly employer match derived from the statement's period
    * total; null when the total was detected but the statement does
@@ -676,6 +803,9 @@ export interface StatementMatch {
   periodTotal: number;
   months: number | null;
   capturedOn: string | null;
+  /** ROUND 60 (P2): the statement period's own label ("Jan-Nov
+   * 2026") for provenance copy; null when not stated. */
+  periodLabel: string | null;
 }
 
 /** The freshest 401(k) statement OWNED by a member that carries an
@@ -697,13 +827,14 @@ export function k401StatementMatchFor(docs: SsDocLike[], memberId: string): Stat
         periodTotal: total,
         months,
         capturedOn: d.capturedOn ?? null,
+        periodLabel: statementPeriodLabel(d.fields),
         capturedKey: key,
       };
     }
   }
   if (!best) return null;
-  const { monthly, periodTotal, months, capturedOn } = best;
-  return { monthly, periodTotal, months, capturedOn };
+  const { monthly, periodTotal, months, capturedOn, periodLabel } = best;
+  return { monthly, periodTotal, months, capturedOn, periodLabel };
 }
 
 export interface MatchResolution {

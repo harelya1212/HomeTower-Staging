@@ -7,9 +7,11 @@
 // household monthly net for the action plausibility rule, and the
 // directional outlook itself.
 import {
+  accumulatedBridgeDraw,
   adultStartingBalance,
   ageOn,
   biggestOpportunityLine,
+  bridgeModel as buildBridgeModel,
   chooseSpending,
   deflateToToday,
   directionalOutlook,
@@ -26,6 +28,7 @@ import {
   retirementTimelineModel,
   ssForMember,
   WITHDRAWAL_RATES,
+  type BridgeModel,
   type DirectionalOutlook,
   type K401Facts,
   type MatchResolution,
@@ -45,6 +48,11 @@ export interface AdultOutlook {
   projected: number;
   paceFromSlips: boolean;
   stmt401k: { balance: number; capturedOn: string | null } | null;
+  /** ROUND 60 (P0-A): how this adult's starting balance is
+   * composed - identified owned non-401(k) assets + the owned
+   * statement's 401(k) + the genuinely unmapped fallback residual,
+   * reported separately (adultStartingBalance owns the split). */
+  startComposition: { knownOwnedNon401k: number; statementAmount: number; unmappedFallback: number; replaced401k: number };
   /** Round 52: the resolved employer match with its provenance -
    * the projection stream uses matchMo; the details surfaces quote
    * matchRes for the source label (AC-D5). */
@@ -128,6 +136,12 @@ export interface RetirementModel {
   /** Round 53: the X face's one opportunity line, composed from the
    * accuracy missing list (null when nothing is missing). */
   opportunityLine: string | null;
+  /** ROUND 60 (P1-B): the bridge between the two retirement dates,
+   * computed from the household's own figures (null when there is
+   * no bridge: one adult, or both retire together). The headline
+   * projection is already net of the bridge draw; the details
+   * state this model's basis in words. */
+  bridge: BridgeModel | null;
 }
 
 export function computeRetirementModel(input: {
@@ -181,10 +195,11 @@ export function computeRetirementModel(input: {
     const stmtMatch = k401StatementMatchFor(state.intake.documents, m.id);
     const matchRes = employerMatchFor({ payslipMonthly: slipEarner?.matchMonthlyPace ?? null, statement: stmtMatch, relevantDocsExist });
     const matchMo = assetMo > 0 ? 0 : matchRes.monthly;
-    if (age === null) return { m, age, bal, mo, matchMo, years: 0, projected: 0, paceFromSlips, stmt401k, matchRes, stmtMatch, facts: k401StatementFacts(state.intake.documents, m.id) };
+    const startComposition = { knownOwnedNon401k: start.knownOwnedNon401k, statementAmount: start.statementAmount, unmappedFallback: start.unmappedFallback, replaced401k: start.replaced401k };
+    if (age === null) return { m, age, bal, mo, matchMo, years: 0, projected: 0, paceFromSlips, stmt401k, startComposition, matchRes, stmtMatch, facts: k401StatementFacts(state.intake.documents, m.id) };
     const years = Math.max(0, (m.retireAge || 67) - age);
     const projected = projectValue(bal, mo + matchMo, years, g.assumedReturnPct);
-    return { m, age, bal, mo, matchMo, years, projected, paceFromSlips, stmt401k, matchRes, stmtMatch, facts: k401StatementFacts(state.intake.documents, m.id) };
+    return { m, age, bal, mo, matchMo, years, projected, paceFromSlips, stmt401k, startComposition, matchRes, stmtMatch, facts: k401StatementFacts(state.intake.documents, m.id) };
   });
 
   // Retirement is a HOUSEHOLD goal (round 46, Copilot's pension
@@ -228,18 +243,72 @@ export function computeRetirementModel(input: {
   const pensionKnown = memberPension > 0 || g.pensionAnnual > 0 || pensionStmtMonthly > 0 || g.noPension;
   const currentRetBalance = adultOutlook.reduce((sum, a) => sum + a.bal, 0);
   // Timeline (round 47): every adult is valued at the LATER
-  // retirement date - contributions stop at their own date, the
-  // balance keeps growing, no bridge draws (the working spouse's
-  // income covers the bridge years; the assumptions drawer says so).
-  // All household figures are then deflated to today's dollars,
-  // because the spending target is in today's dollars.
+  // retirement date - contributions stop at their own date and
+  // the balance keeps growing to the common date. All household
+  // figures are then deflated to today's dollars, because the
+  // spending target is in today's dollars.
+  // ROUND 60 (P1-B): the bridge between the two dates is no
+  // longer assumed free. The gap between the household's bridge
+  // needs and the working spouse's net income plus dependable
+  // income is computed (bridgeModel in goals.ts) and DRAWN from
+  // the early retiree's projected value, accumulated at the
+  // assumed return. Term sourcing: spending = the model's
+  // spendingAnnual; healthcare = the bridge-healthcare figure
+  // from the Lifestyle exceptions / quick estimate (0 when unset);
+  // debt service = the mortgage payment x 12 while the mortgage
+  // continues into retirement (0 when it ends); taxes = taxes
+  // beyond the working spouse's own withholding, which is already
+  // inside their net - not modeled today, so 0; the working
+  // spouse's net = their own payslip-forecast projection (gross
+  // minus their federal and state withholding), 0 when no earner
+  // projection matches them.
+  const bridgeHealthcareAnnual = (g.exceptions.healthcareBridgeAnnual || 0) || (g.quickEstimate.healthcareBridgeAnnual || 0);
+  const bridgeMortgageEnds = g.exceptions.mortgageAtRetirement === "ends" || g.lifestyle.states["housing"] === "ends";
+  const bridgeDebtServiceAnnual = bridgeMortgageEnds ? 0 : (g.exceptions.mortgageMonthly || 0) * 12;
   const flexYearsOf = (m: (typeof adults)[number]) => (m.retireFlex === "plus1" ? 1 : m.retireFlex === "plus3" || m.retireFlex === "flexible" ? 3 : 0);
   const projectHousehold = (delay: boolean) => {
     const yearsOwn = adultOutlook.map((a) => a.years + (delay ? flexYearsOf(a.m) : 0));
     const laterYears = yearsOwn.reduce((mx, y) => Math.max(mx, y), 0);
     const perAtLater = adultOutlook.map((a, i) => projectToCommonDate(a.bal, a.mo + a.matchMo, yearsOwn[i], laterYears, g.assumedReturnPct));
+    let bridge: BridgeModel | null = null;
+    if (adultOutlook.length >= 2) {
+      const earlyIdx = yearsOwn.indexOf(Math.min(...yearsOwn));
+      const lateIdx = yearsOwn.indexOf(laterYears);
+      const bridgeYears = laterYears - yearsOwn[earlyIdx];
+      if (earlyIdx !== lateIdx && bridgeYears >= 0.5) {
+        const late = adultOutlook[lateIdx].m;
+        const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+        const earner = slipFc?.earners.find((e) => e.memberId !== null && e.memberId === late.id)
+          ?? slipFc?.earners.find((e) => norm(e.name) === norm(late.name));
+        const workingSpouseNetAnnual = earner ? Math.max(0, earner.projectedGross - earner.projectedFederal - earner.projectedState) : 0;
+        bridge = buildBridgeModel({
+          spendingAnnual,
+          healthcareAnnual: bridgeHealthcareAnnual,
+          taxesAnnual: 0,
+          debtServiceAnnual: bridgeDebtServiceAnnual,
+          workingSpouseNetAnnual,
+          dependableAnnual: ssAnnualTotal + pensionAnnualEff + (g.otherRetirementIncomeAnnual || 0),
+        }, bridgeYears);
+        // The draw comes out of the portfolio (Copilot's rule:
+        // portfolioDrawDuringBridge = bridgeGapAnnual) - the
+        // earliest-retired sleeve first, then the next, floored
+        // at zero: a portfolio cannot be drawn below nothing, and
+        // capping the draw at the first sleeve would silently
+        // shrink the stated gap to whatever that sleeve held.
+        let drawLeft = accumulatedBridgeDraw(bridge.gapAnnual, bridgeYears, g.assumedReturnPct);
+        if (drawLeft > 0) {
+          const order = yearsOwn.map((y, i) => ({ y, i })).sort((a, b) => a.y - b.y);
+          for (const { i } of order) {
+            if (drawLeft <= 0) break;
+            const take = Math.min(perAtLater[i], drawLeft);
+            perAtLater[i] -= take;
+            drawLeft -= take;
+          }
+        }
+      }
+    }
     const nominal = perAtLater.reduce((sum, v) => sum + v, 0);
-    return { yearsOwn, laterYears, perAtLater, nominal, todays: deflateToToday(nominal, laterYears, g.inflationPct) };
+    return { yearsOwn, laterYears, perAtLater, nominal, todays: deflateToToday(nominal, laterYears, g.inflationPct), bridge };
   };
   const projNow = projectHousehold(false);
   const projectedToday = projNow.todays;
@@ -372,6 +441,6 @@ export function computeRetirementModel(input: {
     realReturnPct, hhShort, hhReqMo, accuracy, projDelay, delayReadiness, showSensitivity,
     futureNeed, supportAnnual, accuracyLine, coveredByDependable, retHeadline, spendingKnown,
     personalizeParts, personalizeSentence, phases, updatedLabel, monthlyNet, directional,
-    timeline, opportunityLine, homeRangeLabel, homeTimeline,
+    timeline, opportunityLine, homeRangeLabel, homeTimeline, bridge: projNow.bridge,
   };
 }
