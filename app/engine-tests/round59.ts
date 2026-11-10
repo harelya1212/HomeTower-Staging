@@ -196,7 +196,12 @@ const family59 = [
   eq("C: 14-day spacing = biweekly", periodsPerYearForEarner(["2026-10-02", "2026-10-16", "2026-10-30"], null), 26);
   eq("C: 7-day spacing = weekly", periodsPerYearForEarner(["2026-10-05", "2026-10-12", "2026-10-19"], null), 52);
   eq("C: month-ends across months = monthly", periodsPerYearForEarner(["2026-09-30", "2026-10-31"], null), 12);
-  eq("C: one slip is indecisive - the job record decides", periodsPerYearForEarner(["2026-10-31"], "biweekly"), 26);
+  // ROUND 62 (R62-8) supersedes this pin: a single period end ON a
+  // month-end is semi-monthly-shaped PAYROLL evidence, and an
+  // unconfirmed job-record default ("biweekly" is the form's
+  // default value) never silently overrides payroll evidence -
+  // the sparse case resolves to 24, not the job record's 26.
+  eq("C: one slip ending on a month-end - payroll evidence beats the job record (round 62)", periodsPerYearForEarner(["2026-10-31"], "biweekly"), 24);
   eq("C: one slip, no job record - the standing default", periodsPerYearForEarner(["2026-10-31"], null), 24);
   eq("C: no slips at all - the standing default", periodsPerYearForEarner([], null), 24);
 

@@ -133,15 +133,24 @@ const NB_DOC: DocumentRecord = {
   const k = payslip401kTotals(state.intake.documents, TODAY, state.jobs);
   const model = computeRetirementModel({ state, today: TODAY, slipFc, k401Totals: k, retBalance: 374033, retMonthly: 0, effIncome: slipFc ? slipFc.projectedTaxable : 0, moneyFmt: money });
   const assaf = model.adultOutlook[0];
-  near("A2 model: Assaf start = statement + residual", assaf.bal, 645052.12);
+  // ROUND 62 (R62-4) supersedes the A2 integration figures: the
+  // Asset Registry now identifies Assaf's 401(k) from the
+  // statement, so he HAS an identified row - and round 60's own
+  // composition rule says an adult with identified rows carries
+  // NO unmapped fallback (the aggregate would count the same
+  // account twice). The section-A function goldens above are
+  // unchanged: with owned = [] the residual still applies. Here:
+  // start 645,052.12 -> 271,019.12; residual 374,033 -> 0;
+  // projected 839,595 -> 288,956.
+  near("A2 model: Assaf start = the identified statement (round 62 registry)", assaf.bal, 271019.12);
   near("A2 model: composition statement part", assaf.startComposition.statementAmount, 271019.12);
-  near("A2 model: composition residual part", assaf.startComposition.unmappedFallback, 374033);
+  near("A2 model: composition residual part (identified now - round 62)", assaf.startComposition.unmappedFallback, 0);
   eq("A2 model: composition identified part", assaf.startComposition.knownOwnedNon401k, 0);
   ok("A2 model: the statement became the outlook's 401(k) fact", assaf.stmt401k !== null && Math.abs(assaf.stmt401k.balance - 271019.12) < 0.02);
-  near("A2 model: household current balance", model.currentRetBalance, 645052.12);
+  near("A2 model: household current balance", model.currentRetBalance, 271019.12);
   // After BOTH round-60 fixes (the bridge draw of section D also
   // lands on this state): projected portfolio in today's dollars.
-  eq("A2 model: projected after statement + bridge", Math.round(model.projectedToday), 839595);
+  eq("A2 model: projected after statement + bridge", Math.round(model.projectedToday), 288956);
 }
 
 // ---- B (P0-B): canonical validation --------------------------------
