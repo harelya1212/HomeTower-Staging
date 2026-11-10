@@ -49,3 +49,28 @@ export function computeStateTaxOnGain(
 export function computeArizonaTax(arizonaAgi: number, pack: Pack = statesPack()): number {
   return Math.max(0, arizonaAgi * pack.flat_rates.AZ);
 }
+
+/** ROUND 60 (P1-A) - what the Arizona model IS, stated by the
+ * engine itself so every surface labels it the same way: Arizona
+ * AGI x the 2.5% flat rate, with NO Form 140 logic - no standard
+ * deduction, no additions or subtractions, no dependent, school
+ * or charitable credits, no prior-year adjustments. It is a
+ * planning estimate, and the state domain's accuracy is capped
+ * (domainAccuracy.ts) until a full Form 140 model exists. */
+export interface StateTaxModelInfo {
+  state: string;
+  modelKind: "flat_rate_approximation" | "full_return";
+  fullReturnModeled: boolean;
+  /** The four label parts, in display order. */
+  labelParts: string[];
+  label: string;
+}
+
+export function stateTaxModelInfo(stateIn: string): StateTaxModelInfo {
+  const state = stateIn.toUpperCase();
+  if (state === "AZ") {
+    const labelParts = ["Arizona projection", "Planning estimate", "Flat-rate approximation", "Full Arizona return adjustments not yet modeled"];
+    return { state, modelKind: "flat_rate_approximation", fullReturnModeled: false, labelParts, label: labelParts.join(" - ") };
+  }
+  return { state, modelKind: "full_return", fullReturnModeled: true, labelParts: [], label: "" };
+}
