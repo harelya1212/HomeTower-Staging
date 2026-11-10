@@ -63,3 +63,21 @@ def compute_arizona_tax(arizona_agi: float, pack: dict | None = None) -> float:
     rate to AZ AGI with no AZ-specific subtraction or deduction modelling."""
     pack = pack or states_pack()
     return max(0.0, arizona_agi * pack["flat_rates"]["AZ"])
+
+
+def state_tax_model_info(state: str) -> dict:
+    """ROUND 60 (P1-A) - what the state model IS, stated by the
+    engine itself (mirror of the TS helper): for Arizona, AGI x
+    the 2.5% flat rate with NO Form 140 logic - no standard
+    deduction, additions/subtractions, dependent/school/charitable
+    credits or prior-year adjustments. A planning estimate; the
+    state domain's accuracy is capped until a full Form 140 model
+    exists."""
+    state = state.upper()
+    if state == "AZ":
+        parts = ["Arizona projection", "Planning estimate", "Flat-rate approximation",
+                 "Full Arizona return adjustments not yet modeled"]
+        return {"state": state, "model_kind": "flat_rate_approximation",
+                "full_return_modeled": False, "label_parts": parts, "label": " - ".join(parts)}
+    return {"state": state, "model_kind": "full_return", "full_return_modeled": True,
+            "label_parts": [], "label": ""}
